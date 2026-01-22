@@ -1,0 +1,18 @@
+services:
+  ros_dev:
+    build: .
+    image: autonav_sim:latest
+    container_name: autonav_dev
+    # Networking: Host allows the container to use your PC's network (easier for ROS)
+    network_mode: host
+    ipc: host
+    privileged: true
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      # Sync your local 'src' folder with the container's 'src' folder
+      # This allows you to edit code in VS Code on your PC, and run it in Docker instantly.
+      - ./src:/root/dev_ws/src
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    command: sleep infinity
