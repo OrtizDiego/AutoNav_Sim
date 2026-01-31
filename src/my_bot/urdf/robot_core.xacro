@@ -37,8 +37,8 @@
             </geometry>
         </collision>
         <inertial>
-            <mass value="2.0"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <origin xyz="0.15 0 0.075" rpy="0 0 0"/> <mass value="0.5"/>
+            <inertia ixx="0.003" ixy="0.0" ixz="0.0" iyy="0.003" iyz="0.0" izz="0.003"/>
         </inertial>
     </link>
 
