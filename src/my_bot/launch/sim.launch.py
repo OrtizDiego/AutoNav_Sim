@@ -8,31 +8,44 @@ from launch_ros.actions import Node
 def generate_launch_description():
     pkg_name = 'my_bot'
 
-    # 1. Start the Robot State Publisher (RSP)
-    # This processes the URDF and publishes the robot state
+# 1. Start Robot State Publisher (No change)
     rsp = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
             get_package_share_directory(pkg_name), 'launch', 'rsp.launch.py'
         )]), launch_arguments={'use_sim_time': 'true'}.items()
     )
 
-    # 2. Start Gazebo
-    # We include the standard gazebo_ros launch file
+    # 2. Start Gazebo (MODIFIED)
+    # Define the path to your world file
+    world_path = os.path.join(get_package_share_directory(pkg_name), 'worlds', 'obstacles.world')
+
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
             get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py'
-        )])
+        )]),
+        launch_arguments={'world': world_path}.items() # Load your custom world
     )
 
-    # 3. Spawn the Robot
-    # This node simply asks Gazebo to "spawn" the entity published by RSP
+    # 3. Spawn Entity
     spawn_entity = Node(package='gazebo_ros', executable='spawn_entity.py',
                         arguments=['-topic', 'robot_description',
                                    '-entity', 'my_bot'],
                         output='screen')
 
+    # 4. Launch RViz (New Step!)
+    # We find the config file we just saved
+    rviz_config_file = os.path.join(get_package_share_directory(pkg_name), 'config', 'view_robot.rviz')
+    
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        arguments=['-d', rviz_config_file], # -d means "load this description file"
+        output='screen'
+    )
+
     return LaunchDescription([
         rsp,
         gazebo,
         spawn_entity,
+        rviz_node, # Add the new node here
     ])
