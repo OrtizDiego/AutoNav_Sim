@@ -25,7 +25,7 @@ def generate_launch_description():
                 'map': map_file,
                 'use_sim_time': 'true',
                 # We will use the default params provided by nav2 for now to keep it simple
-                # 'params_file': params_file 
+                'params_file': params_file 
             }.items()
         )
     ])
