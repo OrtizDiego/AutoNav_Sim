@@ -10,9 +10,29 @@ services:
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
+      # --- ADDED: NVIDIA Environment Variables ---
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # Force the container to look at the mounted WSL drivers
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
+      - MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+
+    # --- ADDED: GPU Resource Reservation ---
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+
     volumes:
       # Sync your local 'src' folder with the container's 'src' folder
-      # This allows you to edit code in VS Code on your PC, and run it in Docker instantly.
       - ./src:/root/dev_ws/src
-      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /mnt/wslg/.X11-unix:/tmp/.X11-unix
+      # --- ADDED: WSL Graphics Mounts ---
+      # Required to pass the GUI socket and drivers from Windows to Docker
+      - /mnt/wslg:/mnt/wslg
+      - /usr/lib/wsl:/usr/lib/wsl
+
     command: sleep infinity

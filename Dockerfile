@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y \
     nano \
     && rm -rf /var/lib/apt/lists/*
 
+# Install glxinfo diagnostic tool 
+RUN apt-get update && apt-get install -y mesa-utils
+
 # 4. Create the Workspace
 WORKDIR /root/dev_ws
 COPY src ./src
