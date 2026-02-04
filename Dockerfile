@@ -4,6 +4,9 @@ FROM osrf/ros:humble-desktop-full
 # 2. Set environment variables to non-interactive (prevents installation prompts)
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Set the terminal to support 256 colors
+ENV TERM xterm-256color
+
 # 3. Update and Install Essential Robotics Tools
 RUN apt-get update && apt-get install -y \
     python3-colcon-common-extensions \
