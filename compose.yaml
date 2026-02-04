@@ -1,23 +1,41 @@
+version: '3.8'
+
 services:
-  ros_dev:
-    build: .
+  # 1. The Base Image (Common to everyone)
+  autonav_base:
     image: autonav_sim:latest
-    container_name: autonav_dev
-    # Networking: Host allows the container to use your PC's network (easier for ROS)
+    build: .
     network_mode: host
     ipc: host
     privileged: true
     environment:
-      - DISPLAY=${DISPLAY}
+      - DISPLAY=${DISPLAY:-:0}
       - QT_X11_NO_MITSHM=1
-      # --- ADDED: NVIDIA Environment Variables ---
+    volumes:
+      - ./src:/root/dev_ws/src
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      # Map the graphics socket if it exists (safe even if empty on some systems)
+      - /mnt/wslg:/mnt/wslg
+
+  # 2. CPU Mode (Default - works for everyone)
+  cpu:
+    extends: autonav_base
+    container_name: autonav_cpu
+    environment:
+      - LIBGL_ALWAYS_SOFTWARE=1 # Forces software rendering if hardware fails
+    command: sleep infinity
+
+  # 3. GPU Mode (Only for NVIDIA users)
+  gpu:
+    extends: autonav_base
+    container_name: autonav_gpu
+    # Only Start this service if specifically asked
+    profiles: [ "gpu" ]
+    environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
-      # Force the container to look at the mounted WSL drivers
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
       - MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
-
-    # --- ADDED: GPU Resource Reservation ---
     deploy:
       resources:
         reservations:
@@ -25,14 +43,6 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [ gpu ]
-
     volumes:
-      # Sync your local 'src' folder with the container's 'src' folder
-      - ./src:/root/dev_ws/src
-      - /mnt/wslg/.X11-unix:/tmp/.X11-unix
-      # --- ADDED: WSL Graphics Mounts ---
-      # Required to pass the GUI socket and drivers from Windows to Docker
-      - /mnt/wslg:/mnt/wslg
       - /usr/lib/wsl:/usr/lib/wsl
-
     command: sleep infinity
