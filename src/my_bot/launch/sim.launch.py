@@ -34,7 +34,7 @@ def generate_launch_description():
 
     # 4. Launch RViz (New Step!)
     # We find the config file we just saved
-    rviz_config_file = os.path.join(get_package_share_directory(pkg_name), 'config', 'view_robot.rviz')
+    rviz_config_file = os.path.join(get_package_share_directory(pkg_name), 'config', 'navigation.rviz')
     
     rviz_node = Node(
         package='rviz2',
