@@ -17,7 +17,7 @@ def generate_launch_description():
 
     # 2. Start Gazebo (MODIFIED)
     # Define the path to your world file
-    world_path = os.path.join(get_package_share_directory(pkg_name), 'worlds', 'obstacles.world')
+    world_path = os.path.join(get_package_share_directory(pkg_name), 'worlds', 'room.world')
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
