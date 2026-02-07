@@ -22,6 +22,7 @@ install(
 # Install Python Scripts
 install(PROGRAMS
   scripts/patrol.py
+  scripts/camera_test.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
