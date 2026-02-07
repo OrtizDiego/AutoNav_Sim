@@ -1,151 +1,150 @@
-# Master Cheat Sheet
+# AutoNav Sim: Autonomous Mobile Robot Simulation 🤖📍
 
-These are all the critical commands used to build, map, and navigate with the robot.
+![CI](https://img.shields.io/github/actions/workflow/status/OrtizDiego/AutoNav_Sim/ci.yml?style=for-the-badge)
+![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-349cfa.svg?style=for-the-badge&logo=ros&logoColor=white)
+![Gazebo](https://img.shields.io/badge/Gazebo-Sim-orange.svg?style=for-the-badge&logo=gazebo&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Containerized-2496ed.svg?style=for-the-badge&logo=docker&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.10-blue.svg?style=for-the-badge&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)
 
-These are organized by **Workflow Phase** to easily reference them.
-
----
-
-### **1. The Golden Rule (Workspace Management)**
-
-*Run these whenever you change code, launch files, or configuration files.*
-
-**Build the Workspace:**
-
-```bash
-cd ~/dev_ws
-colcon build --symlink-install
-
-```
-
-**Source the Overlay (Run in EVERY new terminal):**
-
-```bash
-source install/setup.bash
-
-```
-
-**The "Nuclear Clean" (If things are acting weird):**
-
-```bash
-rm -rf build/ install/ log/
-colcon build --symlink-install
-source install/setup.bash
-
-```
+A comprehensive simulation environment for developing and testing autonomous navigation algorithms, featuring SLAM, path planning (Nav2), and computer vision-based behaviors.
 
 ---
 
-### **2. Simulation Phase**
+## 📸 Demo & Visuals
 
-*Starts Gazebo, RViz, and the Robot State Publisher.*
+![alt text](assets/slam.gif?raw=true "SLAM")
+> **SLAM:** The robot exploring the `room.world` and generating a map in RViz (SLAM in action).
 
-**Launch Simulation:**
+![alt text](assets/gazebo.gif?raw=true "Navigation")
+> **Navigation:** Left side: Gazebo view of the robot navigating the room. Right side: RViz view of the robot with the planned path and navigation costmap.
+
+---
+
+## 🚀 Project Overview
+
+**AutoNav Sim** is a modular robotics framework designed to simulate a differential drive robot in complex environments. Built on **ROS 2 Humble**, it serves as a testbed for verifying navigation stacks and perception algorithms before deployment on physical hardware.
+
+This project demonstrates expertise in:
+
+* **Full-Stack Robotics:** From URDF modeling to high-level behavior scripting.
+* **Autonomous Navigation:** Implementing the **Nav2** stack for dynamic path planning and obstacle avoidance.
+* **SLAM (Simultaneous Localization and Mapping):** Using `slam_toolbox` for real-time occupancy grid generation.
+* **Computer Vision:** Integrating **OpenCV** with ROS 2 nodes for object detection and tracking.
+* **DevOps & Reproducibility:** Fully containerized development environment using **Docker** and **Docker Compose**.
+
+---
+
+## 🛠️ Key Features
+
+### 1. Autonomous Navigation & Mapping
+
+The robot utilizes the standard ROS 2 Navigation Stack (Nav2) to navigate known and unknown environments.
+
+* **Mapping:** Asynchronous SLAM using `slam_toolbox`.
+* **Localization:** AMCL (Adaptive Monte Carlo Localization) particle filter.
+* **Planning:** A* (Global Planner) and DWB (Local Planner) controllers.
+
+### 2. Intelligent Behaviors
+
+Custom Python nodes extend the robot's capabilities beyond simple point-to-point navigation:
+
+* **🛡️ Security Guard Mode:** A hybrid behavior state machine. The robot autonomously patrols a set of waypoints. If an "intruder" (specifically colored object) is detected via the camera, it interrupts the patrol to track and chase the target.
+* **🔴 Ball Chaser:** A reactive vision-based controller that uses HSV color thresholding to follow targets.
+
+### 3. Simulation Environment
+
+* **Gazebo:** Physics-based simulation with custom worlds (`obstacles.world`, `intruder.world`).
+* **RViz:** configured for visualizing Lidar scans, costmaps, and camera feeds.
+* **URDF/Xacro:** Modular robot description including Lidar, Camera, and Differential Drive plugins.
+
+---
+
+## 🏗️ System Architecture
+
+*(Space for a diagram)*
+> **[Recommended Visual 3]:** A system diagram showing the nodes.
+>
+> * `Hardware Interface` (Gazebo) -> `/scan`, `/odom`, `/camera`
+> * `SLAM Toolbox` <- `/scan`, `/odom` -> `/map`
+> * `Nav2 Stack` <- `/map`, `/scan` -> `/cmd_vel`
+> * `Security Guard Node` <- `/camera`, `Nav2 API` -> `/cmd_vel`
+
+The system is built on a distributed node architecture:
+
+* **`my_bot` Package:** The core package containing launch files, config, and source code.
+* **Docker Container:** Encapsulates ROS 2 Humble, classic Gazebo, and all dependencies, ensuring the simulation runs identically on any Linux machine (or WSL).
+
+---
+
+## 💻 Installation & Usage
+
+### Prerequisites
+
+* Docker & Docker Compose
+* NVIDIA GPU (Optional, for hardware acceleration)
+
+### 1. Build the Environment
 
 ```bash
+# Build the Docker image containing ROS 2 & dependencies
+docker compose build
+```
+
+### 2. Run the Simulation
+
+```bash
+# Start the container (CPU mode)
+docker compose run --rm -p 6080:80 ros_dev
+
+# Inside the container, launch the full simulation
 ros2 launch my_bot sim.launch.py
-
 ```
 
-**Reset World (Fixes Time Sync/Odometry issues):**
+### 3. Launch Capabilities
 
-* **In Gazebo:** Menu `Edit` -> `Reset World` (or press `Ctrl+R`).
-
----
-
-### **3. Mapping Phase (SLAM)**
-
-*Creates the map while you drive.*
-
-**Start SLAM:**
+**To start Mapping (SLAM):**
 
 ```bash
 ros2 launch my_bot slam.launch.py
-
 ```
 
-**Drive the Robot (Teleop):**
+**To start Autonomous Patrol:**
 
 ```bash
-ros2 run teleop_twist_keyboard teleop_twist_keyboard
-
-```
-
-**Save the Map (Run inside `src/my_bot/maps/`):**
-
-```bash
-ros2 run nav2_map_server map_saver_cli -f my_map
-
-```
-
----
-
-### **4. Navigation Phase (Nav2)**
-
-*Loads the saved map and drives autonomously.*
-
-**Start Navigation:**
-
-```bash
+# Ensure navigation is running first
 ros2 launch my_bot navigation.launch.py
-
-```
-
-**The "Manual Kickstart" (Fixes "AMCL cannot publish pose"):**
-*If the "2D Pose Estimate" button in RViz fails, reset the Gazebo world (`Ctrl+R`) and IMMEDIATELY run this:*
-
-```bash
-ros2 topic pub -1 /initialpose geometry_msgs/PoseWithCovarianceStamped "{ header: { frame_id: 'map' }, pose: { pose: { position: { x: 0.0, y: 0.0, z: 0.0 }, orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } } } }"
-
+# In a new terminal
+ros2 run my_bot security_guard.py
 ```
 
 ---
 
-### **5. Diagnostics & Debugging (The "Why isn't it working?" Kit)**
+## 📂 Project Structure
 
-**Check if a Node is Alive (Lifecycle):**
-
-```bash
-ros2 lifecycle get map_server
-# Should say: "active"
-
+```text
+src/my_bot/
+├── config/         # Params for Nav2, SLAM, and RViz
+├── launch/         # Python launch files for Sim, SLAM, and Nav
+├── maps/           # Saved occupancy grids
+├── scripts/        # Python nodes (CV logic, Behavior Trees)
+├── urdf/           # Robot physical description (Xacro)
+└── worlds/         # Gazebo simulation environments
 ```
 
-**Check the Transform Tree (TF) Connections:**
+---
 
-```bash
-# Check if Map connects to Odom (Localization)
-ros2 run tf2_ros tf2_echo map odom
+## 🔮 Future Improvements
 
-# Check if Odom connects to Base Link (Odometry)
-ros2 run tf2_ros tf2_echo odom base_link
+* [ ] Implement **BehaviorTree.CPP** for more complex decision-making logic.
+* [ ] Integrate **YOLOv8** for semantic object detection instead of simple color thresholding.
+* [ ] Add **EKF (Extended Kalman Filter)** Sensor Fusion (IMU + Odom) for better localization accuracy.
 
-```
+---
 
-**Check if Sensors are Publishing:**
+## 👤 Author
 
-```bash
-# Check Lidar
-ros2 topic echo /scan --once
+**Diego Ortiz**
+*Robotics Engineer | ROS 2 Developer*
 
-# Check Odometry
-ros2 topic echo /odom --once
-
-```
-
-**Verify "Sim Time" is Active:**
-
-```bash
-ros2 param get /slam_toolbox use_sim_time
-# Should say: "Boolean value is: True"
-
-```
-
-**Check if Files were Installed Correctly:**
-*Use this if "Node not found" errors appear.*
-
-```bash
-ls ~/dev_ws/install/my_bot/share/my_bot/maps/
-# Should show: my_map.pgm  my_map.yaml
-
-```
+[🔗 LinkedIn](https://www.linkedin.com/in/diego-ortiz-maldonado/) | [🔗 Portfolio](https://www.diego-ortiz.net/)
