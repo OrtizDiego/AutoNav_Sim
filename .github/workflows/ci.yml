@@ -1,0 +1,62 @@
+name: AutoNav_Sim CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  ros-humble-ci:
+    runs-on: ubuntu-latest
+    container:
+      image: osrf/ros:humble-desktop-full
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3-colcon-common-extensions python3-pip python3-pytest-cov
+          rosdep update
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Linting (ament_lint)
+        run: |
+          . /opt/ros/humble/setup.sh
+          # Build only the package we want to test to save time
+          colcon build --packages-select my_bot --cmake-args -DBUILD_TESTING=ON
+          # Run linting tests (cppcheck, flake8, pep8, etc.)
+          colcon test --packages-select my_bot --test-types ament_lint_auto
+          colcon test-result --verbose
+
+      - name: Build Workspace
+        run: |
+          . /opt/ros/humble/setup.sh
+          # Standard colcon build as requested
+          colcon build --symlink-install
+
+      - name: Run Unit Tests
+        run: |
+          . /opt/ros/humble/setup.sh
+          . install/setup.sh
+          # Run package tests using colcon test
+          colcon test --packages-select my_bot --return-code-on-test-failure
+          colcon test-result --verbose
+
+      - name: Code Coverage
+        run: |
+          . /opt/ros/humble/setup.sh
+          . install/setup.sh
+          # Generate coverage report for Python scripts
+          pytest --cov=src/my_bot/scripts --cov-report=xml src/my_bot/test/
+        continue-on-error: true
+
+      - name: Upload Coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
