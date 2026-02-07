@@ -23,6 +23,8 @@ install(
 install(PROGRAMS
   scripts/patrol.py
   scripts/camera_test.py
+  scripts/ball_chaser.py
+  scripts/security_guard.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

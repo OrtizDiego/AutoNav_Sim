@@ -17,13 +17,18 @@ def generate_launch_description():
 
     # 2. Start Gazebo (MODIFIED)
     # Define the path to your world file
-    world_path = os.path.join(get_package_share_directory(pkg_name), 'worlds', 'room.world')
+    world_path = os.path.join(get_package_share_directory(pkg_name), 'worlds', 'intruder.world')
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
             get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py'
         )]),
         launch_arguments={'world': world_path}.items() # Load your custom world
+        # launch_arguments={
+        #     'world': world_path,
+        #     'gui': 'false',       # <--- Headless mode (No Gazebo GUI)
+        #     'server_required': 'true' 
+        # }.items()
     )
 
     # 3. Spawn Entity
