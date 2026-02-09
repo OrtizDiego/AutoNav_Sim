@@ -57,10 +57,18 @@ clean:
 	$(EXEC) "cd $(WS_PATH) && rm -rf build/ install/ log/"
 
 lint:
-	$(EXEC) "cd $(WS_PATH) && $(SOURCE) && colcon test --packages-select $(PACKAGE_NAME) --test-types ament_lint_auto && colcon test-result --verbose"
+	$(EXEC) "cd $(WS_PATH) && \
+		source /opt/ros/humble/setup.bash && \
+		colcon build --packages-select $(PACKAGE_NAME) --cmake-args -DBUILD_TESTING=ON && \
+		source install/setup.bash && \
+		colcon test --packages-select $(PACKAGE_NAME) --ctest-args -R lint && \
+		colcon test-result --verbose"
 
 test:
-	$(EXEC) "cd $(WS_PATH) && $(SOURCE) && colcon test --packages-select $(PACKAGE_NAME) --return-code-on-test-failure && colcon test-result --verbose"
+	$(EXEC) "cd $(WS_PATH) && \
+		$(SOURCE) && \
+		colcon test --packages-select $(PACKAGE_NAME) --return-code-on-test-failure && \
+		colcon test-result --verbose"
 
 # --- ROS 2 WORKFLOWS ---
 
@@ -77,7 +85,7 @@ teleop:
 	$(EXEC) "$(SOURCE) && ros2 run teleop_twist_keyboard teleop_twist_keyboard"
 
 save-map:
-	@MAP_NAME=$(or $(NAME),my_map); 
+	@MAP_NAME=$(or $(NAME),my_map); \
 	$(EXEC) "$(SOURCE) && ./src/save_map.sh $$MAP_NAME"
 
 # --- INTELLIGENT SCRIPTS ---
