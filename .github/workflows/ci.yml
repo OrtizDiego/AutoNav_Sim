@@ -24,6 +24,7 @@ jobs:
           rosdep install --from-paths src --ignore-src -y
 
       - name: Linting (ament_lint)
+        shell: bash
         run: |
           source /opt/ros/humble/setup.bash
 
