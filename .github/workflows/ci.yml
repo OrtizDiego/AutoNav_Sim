@@ -25,12 +25,19 @@ jobs:
 
       - name: Linting (ament_lint)
         run: |
-          . /opt/ros/humble/setup.sh
-          # Build only the package we want to test to save time
-          colcon build --packages-select my_bot --cmake-args -DBUILD_TESTING=ON
-          # Run linting tests (cppcheck, flake8, pep8, etc.)
-          colcon test --packages-select my_bot --test-types ament_lint_auto
+          source /opt/ros/humble/setup.bash
+
+          # Build with tests enabled
+          colcon build \
+            --packages-select my_bot \
+            --cmake-args -DBUILD_TESTING=ON
+
+          # Run tests (ament_lint_auto runs here)
+          colcon test --packages-select my_bot
+
+          # Show detailed results
           colcon test-result --verbose
+
 
       - name: Build Workspace
         run: |
@@ -55,7 +62,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           file: ./coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
