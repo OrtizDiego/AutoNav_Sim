@@ -27,10 +27,12 @@ from sensor_msgs.msg import Image
 
 # --- CONFIGURATION ---
 WAYPOINTS = [
-    [1.5, 0.0],  # Point A
-    [1.5, 1.5],  # Point B
-    [0.0, 1.5],  # Point C
-    [0.0, 0.0]   # Back Home
+    [3.28, 6.85],   # Point 1
+    [-0.92, 6.85],  # Point 2
+    [5.13, -2.45],  # Point 3
+    [0.23, -2.55],  # Point 4
+    [-4.52, 8.60],  # Point 5
+    [0.0, 0.0]      # Back Home
 ]
 
 
