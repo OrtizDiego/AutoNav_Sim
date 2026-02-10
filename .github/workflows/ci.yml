@@ -57,11 +57,15 @@ jobs:
           colcon test-result --verbose
 
       - name: Code Coverage
+        shell: bash
         run: |
-          . /opt/ros/humble/setup.sh
-          . install/setup.sh
-          # Generate coverage report for Python scripts
-          pytest --cov=src/my_bot/scripts --cov-report=xml src/my_bot/test/
+          source /opt/ros/humble/setup.bash
+          source install/setup.bash
+
+          python3 -m pytest \
+            --cov=src/my_bot/scripts \
+            --cov-report=xml \
+            src/my_bot/test/
         continue-on-error: true
 
       - name: Upload Coverage
