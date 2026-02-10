@@ -19,12 +19,12 @@ import stat
 
 
 def test_scripts_executable():
-    """Verify scripts in the scripts directory are executable and valid."""
+    """Verify scripts in the package directory are valid."""
     scripts_path = os.environ.get('SCRIPTS_DIR')
     if not scripts_path:
         test_dir = os.path.dirname(os.path.abspath(__file__))
         pkg_path = os.path.dirname(test_dir)
-        scripts_path = os.path.join(pkg_path, 'scripts')
+        scripts_path = os.path.join(pkg_path, 'my_bot')
 
     scripts = [
         'ball_chaser.py',
@@ -35,11 +35,7 @@ def test_scripts_executable():
 
     for script in scripts:
         script_full_path = os.path.join(scripts_path, script)
-        assert os.path.exists(script_full_path), f"{script} not found"
-
-        # Check if executable
-        st_info = os.stat(script_full_path)
-        assert bool(st_info.st_mode & stat.S_IXUSR), f"{script} is not executable"
+        assert os.path.exists(script_full_path), f"{script} not found in {scripts_path}"
 
         # Check shebang
         with open(script_full_path, 'r') as file:

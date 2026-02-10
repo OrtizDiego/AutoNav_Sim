@@ -17,6 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
+        shell: bash
         run: |
           apt-get update
           apt-get install -y python3-colcon-common-extensions python3-pip python3-pytest-cov
@@ -28,31 +29,12 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
 
-          # Build with tests enabled and symlink-install to resolve path issues
+          # Build with tests enabled
           colcon build \
-            --symlink-install \
             --packages-select my_bot \
             --cmake-args -DBUILD_TESTING=ON
 
           # Run tests (ament_lint_auto runs here)
-          source install/setup.bash
-          colcon test --packages-select my_bot
-
-          # Show detailed results
-          colcon test-result --verbose
-
-
-      - name: Build Workspace
-        run: |
-          . /opt/ros/humble/setup.sh
-          # Standard colcon build as requested
-          colcon build --symlink-install
-
-      - name: Run Unit Tests
-        run: |
-          . /opt/ros/humble/setup.sh
-          . install/setup.sh
-          # Run package tests using colcon test
           colcon test --packages-select my_bot --return-code-on-test-failure
           colcon test-result --verbose
 
@@ -63,7 +45,7 @@ jobs:
           source install/setup.bash
 
           python3 -m pytest \
-            --cov=src/my_bot/scripts \
+            --cov=src/my_bot/my_bot \
             --cov-report=xml \
             src/my_bot/test/
         continue-on-error: true

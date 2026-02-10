@@ -163,7 +163,7 @@ src/my_bot/
 ├── config/         # Params for Nav2, SLAM, and RViz
 ├── launch/         # Python launch files for Sim, SLAM, and Nav
 ├── maps/           # Saved occupancy grids
-├── scripts/        # Python nodes (CV logic, Behavior Trees)
+├── my_bot/         # Python nodes (CV logic, Behavior Trees)
 ├── urdf/           # Robot physical description (Xacro)
 └── worlds/         # Gazebo simulation environments
 ```

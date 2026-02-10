@@ -95,7 +95,7 @@ save-map:
 # --- INTELLIGENT SCRIPTS ---
 
 ball-chaser:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) ball_chaser.py"
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) ball_chaser"
 
 security-guard:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) security_guard.py"
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) security_guard"
