@@ -28,12 +28,14 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
 
-          # Build with tests enabled
+          # Build with tests enabled and symlink-install to resolve path issues
           colcon build \
+            --symlink-install \
             --packages-select my_bot \
             --cmake-args -DBUILD_TESTING=ON
 
           # Run tests (ament_lint_auto runs here)
+          source install/setup.bash
           colcon test --packages-select my_bot
 
           # Show detailed results
