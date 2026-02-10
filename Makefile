@@ -31,6 +31,7 @@ help:
 	@echo "  slam            - Start SLAM for mapping"
 	@echo "  nav             - Start Autonomous Navigation"
 	@echo "  teleop          - Control the robot with arrow keys"
+	@echo "  teleop-target   - Control the Intruder/Ball with arrow keys"
 	@echo "  save-map NAME=x - Save the current map (default: my_map)"
 	@echo ""
 	@echo "Scripts:"
@@ -83,6 +84,9 @@ nav:
 
 teleop:
 	$(EXEC) "$(SOURCE) && ros2 run teleop_twist_keyboard teleop_twist_keyboard"
+
+teleop-target:
+	$(EXEC) "$(SOURCE) && ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/target_cmd_vel"
 
 save-map:
 	@MAP_NAME=$(or $(NAME),my_map); \
