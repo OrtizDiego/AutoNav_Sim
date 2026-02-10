@@ -62,13 +62,49 @@ Custom Python nodes extend the robot's capabilities beyond simple point-to-point
 
 ## 🏗️ System Architecture
 
-*(Space for a diagram)*
-> **[Recommended Visual 3]:** A system diagram showing the nodes.
->
-> * `Hardware Interface` (Gazebo) -> `/scan`, `/odom`, `/camera`
-> * `SLAM Toolbox` <- `/scan`, `/odom` -> `/map`
-> * `Nav2 Stack` <- `/map`, `/scan` -> `/cmd_vel`
-> * `Security Guard Node` <- `/camera`, `Nav2 API` -> `/cmd_vel`
+```mermaid
+graph LR
+    %% Hardware/Simulation Layer
+    subgraph Hardware_Interface [Gazebo Simulation]
+        GZ_Scan[/scan/]
+        GZ_Odom[/odom/]
+        GZ_Cam[/camera/]
+    end
+
+    %% Mapping Layer
+    subgraph SLAM_Layer [SLAM Toolbox]
+        STB[Mapping Node]
+    end
+
+    %% Navigation Layer
+    subgraph Nav_Layer [Nav2 Stack]
+        N2[Navigation Node]
+    end
+
+    %% Logic Layer
+    subgraph Logic_Layer [Security Guard Node]
+        SGN[Logic & Vision Processing]
+    end
+
+    %% Data Flow Connections
+    GZ_Scan --> STB
+    GZ_Odom --> STB
+    STB -->|/map| N2
+    
+    GZ_Scan --> N2
+    GZ_Odom --> N2
+    
+    GZ_Cam --> SGN
+    N2 -.->|Nav2 API| SGN
+    
+    %% Output to Actuators
+    N2 -->|/cmd_vel| GZ_Drive[Robot Drive]
+    SGN -->|/cmd_vel override| GZ_Drive
+
+    %% Styling
+    style Hardware_Interface fill:#f9f,stroke:#333,stroke-width:2px
+    style Logic_Layer fill:#bbf,stroke:#333,stroke-width:2px
+```
 
 The system is built on a distributed node architecture:
 
