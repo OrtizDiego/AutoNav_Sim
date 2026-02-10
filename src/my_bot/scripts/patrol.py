@@ -61,8 +61,7 @@ def main():
 
         while not navigator.isTaskComplete():
             # Print feedback while moving
-            feedback = navigator.getFeedback()
-            # print(f"Distance remaining: {feedback.distance_remaining:.2f} meters")
+            pass
 
         # Check result
         result = navigator.getResult()
@@ -89,6 +88,7 @@ def main():
 
     # Shut down cleanly
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

@@ -59,7 +59,7 @@ clean:
 lint:
 	$(EXEC) "cd $(WS_PATH) && \
 		source /opt/ros/humble/setup.bash && \
-		colcon build --packages-select $(PACKAGE_NAME) --cmake-args -DBUILD_TESTING=ON && \
+		colcon build --symlink-install --packages-select $(PACKAGE_NAME) --cmake-args -DBUILD_TESTING=ON && \
 		source install/setup.bash && \
 		colcon test --packages-select $(PACKAGE_NAME) --ctest-args -R lint && \
 		colcon test-result --verbose"

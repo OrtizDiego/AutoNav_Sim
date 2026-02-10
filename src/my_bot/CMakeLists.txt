@@ -48,7 +48,10 @@ if(BUILD_TESTING)
 
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_urdf test/test_urdf.py)
+  set_tests_properties(test_urdf PROPERTIES ENVIRONMENT "URDF_DIR=${CMAKE_CURRENT_SOURCE_DIR}/urdf")
+
   ament_add_pytest_test(test_scripts test/test_scripts.py)
+  set_tests_properties(test_scripts PROPERTIES ENVIRONMENT "SCRIPTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/scripts")
 endif()
 
 ament_package()

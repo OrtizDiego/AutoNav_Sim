@@ -20,8 +20,11 @@ import stat
 
 def test_scripts_executable():
     """Verify scripts in the scripts directory are executable and valid."""
-    pkg_path = os.path.join(os.getcwd(), 'src', 'my_bot')
-    scripts_path = os.path.join(pkg_path, 'scripts')
+    scripts_path = os.environ.get('SCRIPTS_DIR')
+    if not scripts_path:
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        pkg_path = os.path.dirname(test_dir)
+        scripts_path = os.path.join(pkg_path, 'scripts')
 
     scripts = [
         'ball_chaser.py',
@@ -43,4 +46,3 @@ def test_scripts_executable():
             first_line = file.readline()
             assert first_line.startswith('#!'), f"{script} missing shebang"
             assert 'python3' in first_line, f"{script} shebang should use python3"
-

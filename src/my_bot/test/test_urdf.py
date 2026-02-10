@@ -21,8 +21,14 @@ import subprocess
 def test_xacro_parsing():
     """Verify the main robot xacro file can be processed without errors."""
     # Get the path to the xacro file
-    pkg_path = os.path.join(os.getcwd(), 'src', 'my_bot')
-    xacro_file = os.path.join(pkg_path, 'urdf', 'robot.urdf.xacro')
+    urdf_dir = os.environ.get('URDF_DIR')
+    if urdf_dir:
+        xacro_file = os.path.join(urdf_dir, 'robot.urdf.xacro')
+    else:
+        # Fallback logic
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        pkg_path = os.path.dirname(test_dir)
+        xacro_file = os.path.join(pkg_path, 'urdf', 'robot.urdf.xacro')
 
     assert os.path.exists(xacro_file), f"Xacro file not found at {xacro_file}"
 
@@ -36,4 +42,3 @@ def test_xacro_parsing():
     except FileNotFoundError:
         # xacro command not found
         assert False, "xacro command not found"
-
