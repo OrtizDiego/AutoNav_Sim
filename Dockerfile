@@ -18,12 +18,16 @@ RUN apt-get update && apt-get install -y \
     ros-humble-robot-localization \
     ros-humble-behaviortree-cpp-v3 \
     ros-humble-joint-state-publisher-gui \
+    ros-humble-py-trees-ros \
+    mesa-utils \
+    wget \
     git \
     nano \
+    && pip3 install onnxruntime-gpu \
+    && mkdir -p /root/models \
+    && wget -q "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx" \
+         -O /root/models/yolov8n.onnx 2>/dev/null || true \
     && rm -rf /var/lib/apt/lists/*
-
-# Install glxinfo diagnostic tool 
-RUN apt-get update && apt-get install -y mesa-utils
 
 # 4. Create the Workspace
 WORKDIR /root/dev_ws

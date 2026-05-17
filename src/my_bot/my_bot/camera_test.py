@@ -14,7 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Script to test the robot's camera feed by displaying it with a circle overlay."""
+"""Debug camera feed node — displays live image with center crosshair overlay."""
+
+import threading
+import time
 
 import cv2
 from cv_bridge import CvBridge
@@ -24,44 +27,46 @@ from sensor_msgs.msg import Image
 
 
 class CameraSubscriber(Node):
-    """Node that subscribes to camera images and displays them."""
+    """Node that subscribes to camera images and displays them in a background thread."""
 
     def __init__(self):
         """Initialize the node and subscriber."""
         super().__init__('camera_subscriber')
 
-        # Create the Subscriber
-        self.subscription = self.create_subscription(
-            Image,
-            '/camera/image_raw',
-            self.listener_callback,
-            10)
+        self._subscription = self.create_subscription(
+            Image, '/camera/image_raw', self._callback, 10)
+        self._bridge = CvBridge()
 
-        # The Bridge object converts ROS messages to OpenCV images
-        self.bridge = CvBridge()
+        # Display in dedicated thread so imshow never blocks ROS callbacks
+        self._display_frame = None
+        self._display_lock = threading.Lock()
+        self._display_thread = threading.Thread(
+            target=self._display_loop, daemon=True)
+        self._display_thread.start()
 
-    def listener_callback(self, msg):
-        """Display the received image with a visual overlay."""
+    def _callback(self, msg: Image):
+        """Convert and annotate image; hand it to the display thread."""
         try:
-            # 1. Convert ROS Image to OpenCV Image
-            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-
-            # 2. Process the Image (Draw a Green Circle in the center)
-            height, width, _ = cv_image.shape
-            center_x = int(width / 2)
-            center_y = int(height / 2)
-
-            # Draw: (Image, Center, Radius, Color(BGR), Thickness)
-            cv2.circle(cv_image, (center_x, center_y), 50, (0, 255, 0), 3)
-            cv2.putText(cv_image, "I CAN SEE!", (center_x - 60, center_y - 60),
+            cv_image = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
+            h, w, _ = cv_image.shape
+            cx, cy = w // 2, h // 2
+            cv2.circle(cv_image, (cx, cy), 50, (0, 255, 0), 3)
+            cv2.putText(cv_image, 'I CAN SEE!', (cx - 60, cy - 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-            # 3. Display the Image
-            cv2.imshow("Robot Camera View", cv_image)
-            cv2.waitKey(1)  # Refresh the window
-
+            with self._display_lock:
+                self._display_frame = cv_image
         except Exception as e:
-            self.get_logger().error(f'Error processing image: {str(e)}')
+            self.get_logger().error(f'Error processing image: {e}')
+
+    def _display_loop(self):
+        """Render latest frame at ~30 fps without blocking ROS spin."""
+        while True:
+            with self._display_lock:
+                frame = self._display_frame
+            if frame is not None:
+                cv2.imshow('Robot Camera View', frame)
+                cv2.waitKey(1)
+            time.sleep(0.033)
 
 
 def main(args=None):
