@@ -17,14 +17,29 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
+        timeout-minutes: 10
         shell: bash
         run: |
           apt-get update
-          apt-get install -y python3-colcon-common-extensions python3-pip python3-pytest-cov
+          apt-get install -y \
+            python3-colcon-common-extensions \
+            python3-pip \
+            python3-pytest-cov \
+            ros-humble-py-trees-ros
+          pip3 install onnxruntime py_trees
           rosdep update
           rosdep install --from-paths src --ignore-src -y
 
+      - name: Python syntax check
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          python3 -m py_compile src/my_bot/my_bot/*.py
+          python3 -m py_compile src/my_bot/launch/*.py
+          echo "All Python files compile successfully"
+
       - name: Linting (ament_lint)
+        timeout-minutes: 8
         shell: bash
         run: |
           source /opt/ros/humble/setup.bash
@@ -39,6 +54,7 @@ jobs:
           colcon test-result --verbose
 
       - name: Code Coverage
+        timeout-minutes: 5
         shell: bash
         run: |
           source /opt/ros/humble/setup.bash
@@ -48,7 +64,6 @@ jobs:
             --cov=src/my_bot/my_bot \
             --cov-report=xml \
             src/my_bot/test/
-        continue-on-error: true
 
       - name: Upload Coverage
         uses: codecov/codecov-action@v5
@@ -56,3 +71,10 @@ jobs:
           file: ./coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: log/

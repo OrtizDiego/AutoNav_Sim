@@ -60,6 +60,10 @@
                     <min>0.3</min>
                     <max>12</max>
                 </range>
+                <noise type="gaussian">
+                    <mean>0.0</mean>
+                    <stddev>0.01</stddev>
+                </noise>
             </ray>
             <plugin name="laser_controller" filename="libgazebo_ros_ray_sensor.so">
                 <ros>

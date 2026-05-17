@@ -94,9 +94,15 @@ make security-guard
 - Configuration: `src/my_bot/config/nav2_params.yaml`
 
 **Custom Behavior Nodes (Python)**
-- **ball_chaser.py**: Subscribes to `/camera/image_raw`, uses OpenCV HSV thresholding to detect red objects, publishes velocity commands to `/cmd_vel` (proportional steering)
-- **security_guard.py**: State machine combining Nav2 waypoint patrol with camera-based intruder tracking. Interrupts patrol when red object detected.
-- **patrol.py**: Simple waypoint navigation (unused in current setup; superseded by security_guard)
+- **ball_chaser.py**: Subscribes to `/camera/image_raw`, uses OpenCV HSV thresholding to detect red objects, publishes velocity commands to `/cmd_vel` (proportional steering). Search-rotate behavior when no target visible.
+- **security_guard.py**: ROS 2 LifecycleNode — patrol + intruder detection. Lifecycle transitions: configure → activate → deactivate → cleanup. Uses `/target_range` from sensor_fusion for accurate distance.
+- **security_guard_bt.py**: py_trees BehaviorTree version of security_guard. Selector → [IntruderProtocol, PatrolProtocol]. Supports HSV + YOLO dual detection via blackboard. Publishes mission metrics to `/security_guard/metrics` and sighting markers to `/intruder_sightings`.
+- **sensor_fusion.py**: Fuses LiDAR bearing lookup with camera contour detection. Publishes `/target_range` (Float32) and `/target_position` (PointStamped).
+- **system_monitor.py**: Watchdog — monitors /scan and /camera heartbeats, publishes `/system_health` (DiagnosticArray), provides `/trigger_estop` service.
+- **object_detector.py**: YOLOv8-nano ONNX inference node. GPU auto-select (CUDA → CPU fallback). Publishes `/detections` (MarkerArray), `/person_detected`, `/target_detected`.
+- **intruder_bot.py**: Autonomous random-walk node driving the intruder sphere via `/target_cmd_vel`.
+- **obstacle_controller.py**: Drives dynamic world obstacles (moving_box_1, moving_cylinder_1) with timed random walk.
+- **patrol.py**: Simple waypoint navigation (superseded by security_guard)
 
 **RViz Visualization**
 - Displays map, costmaps, Lidar scans, planned path, and camera feed
@@ -107,35 +113,50 @@ make security-guard
 ```
 src/my_bot/
 ├── my_bot/                    # Python nodes (behavior logic)
-│   ├── ball_chaser.py         # Red ball detection & following
-│   ├── security_guard.py       # Patrol + intruder detection state machine
+│   ├── ball_chaser.py         # Red ball detection & following (threaded display)
+│   ├── security_guard.py      # LifecycleNode — patrol + intruder detection
+│   ├── security_guard_bt.py   # py_trees BT version of security_guard
+│   ├── sensor_fusion.py       # LiDAR-camera fusion → /target_range
+│   ├── system_monitor.py      # Watchdog — heartbeats + /trigger_estop
+│   ├── object_detector.py     # YOLOv8-nano ONNX detector (GPU/CPU)
+│   ├── intruder_bot.py        # Autonomous random-walk intruder node
+│   ├── obstacle_controller.py # Dynamic obstacle random-walk driver
 │   ├── patrol.py              # Basic waypoint navigation
 │   └── camera_test.py         # Debug camera feed
 ├── launch/                    # Python launch files
 │   ├── sim.launch.py          # Gazebo + RViz
 │   ├── slam.launch.py         # SLAM mapping
 │   ├── navigation.launch.py   # Nav2 stack
-│   └── rsp.launch.py          # Robot State Publisher (Xacro)
+│   ├── rsp.launch.py          # Robot State Publisher (Xacro)
+│   ├── sensor_fusion.launch.py        # sensor_fusion node only
+│   ├── security_guard_full.launch.py  # sensor_fusion + security_guard + monitor
+│   └── dynamic_sim.launch.py          # Gazebo with dynamic world + obstacles
 ├── config/                    # Parameters & visualization configs
 │   ├── nav2_params.yaml       # Navigation stack tuning
 │   ├── mapper_params_online_async.yaml  # SLAM tuning
+│   ├── behavior_params.yaml   # Centralized behavior node parameters
 │   ├── navigation.rviz        # RViz layout
 │   └── view_robot.rviz        # Alternative RViz layout
 ├── urdf/                      # Robot description (Xacro)
 │   ├── robot.urdf.xacro       # Main robot description
 │   ├── robot_core.xacro       # Body + differential drive
-│   ├── gazebo_control.xacro   # Gazebo plugins for drive & joints
-│   ├── lidar.xacro            # 2D Lidar sensor
-│   └── camera.xacro           # RGB camera sensor
+│   ├── gazebo_control.xacro   # Gazebo plugins; wheel friction mu1/mu2=1.0
+│   ├── lidar.xacro            # 2D Lidar + Gaussian noise (stddev=0.01m)
+│   └── camera.xacro           # RGB camera 30Hz + Gaussian noise (stddev=0.007)
 ├── worlds/                    # Gazebo environment files
 │   ├── room.world             # Simple room environment
 │   ├── obstacles.world        # Complex environment with obstacles
-│   └── intruder.world         # Room with target/intruder object
+│   ├── intruder.world         # Room with target/intruder sphere
+│   └── dynamic.world          # intruder.world + 2 moving obstacles
 ├── maps/                      # Saved occupancy grids
 │   └── my_map.yaml / my_map.pgm
-├── test/                      # Unit tests
-│   ├── test_urdf.py           # Xacro parsing validation
-│   └── test_scripts.py        # Script shebang & executable checks
+├── test/                      # Unit tests (69/70 pass without ROS runtime)
+│   ├── test_urdf.py           # Xacro XML validation + noise/friction checks
+│   ├── test_scripts.py        # Script shebang & py_compile checks
+│   ├── test_behavior_params.py  # behavior_params.yaml structure validation
+│   ├── test_sensor_fusion.py  # Pure-Python math tests (18 tests)
+│   ├── test_behavior_tree.py  # BT leaf + tree structure tests (28 tests)
+│   └── test_object_detector.py  # preprocess/postprocess tests (15 tests)
 └── package.xml                # ROS 2 package manifest
 ```
 
@@ -203,9 +224,28 @@ Defined in `setup.py`:
 - `patrol` → `my_bot.patrol:main`
 - `ball_chaser` → `my_bot.ball_chaser:main`
 - `security_guard` → `my_bot.security_guard:main`
+- `security_guard_bt` → `my_bot.security_guard_bt:main`
+- `sensor_fusion` → `my_bot.sensor_fusion:main`
+- `system_monitor` → `my_bot.system_monitor:main`
+- `object_detector` → `my_bot.object_detector:main`
+- `intruder_bot` → `my_bot.intruder_bot:main`
+- `obstacle_controller` → `my_bot.obstacle_controller:main`
 - `camera_test` → `my_bot.camera_test:main`
 
 Run with `ros2 run my_bot <script_name>` or via Make targets.
+
+### Key Make Targets
+| Target | Description |
+|--------|-------------|
+| `make sim` | Full Gazebo + RViz simulation |
+| `make security-guard` | LifecycleNode patrol + intruder detection |
+| `make security-guard-bt` | py_trees BT version |
+| `make sensor-fusion` | LiDAR-camera sensor fusion node |
+| `make system-monitor` | Watchdog + e-stop service |
+| `make object-detector` | YOLOv8-nano ONNX inference |
+| `make intruder-bot` | Autonomous random-walk intruder |
+| `make dynamic-sim` | Simulation with moving obstacles |
+| `make up-gpu` | Start GPU container (autonav_gpu) |
 
 ## Dependencies
 
@@ -214,8 +254,15 @@ Key ROS 2 packages (installed in Dockerfile):
 - `slam_toolbox`: SLAM mapping
 - `gazebo_ros_pkgs`: Gazebo integration
 - `robot_localization`: AMCL
+- `py_trees_ros`: Behavior Tree support
 - `cv_bridge`: OpenCV ↔ ROS image conversion
-- Standard: `geometry_msgs`, `sensor_msgs`, `tf2_ros`, etc.
+- Standard: `geometry_msgs`, `sensor_msgs`, `diagnostic_msgs`, `visualization_msgs`, `tf2_ros`, etc.
 
-Python: `cv2` (OpenCV), `numpy`, ROS 2 Python client library (rclpy)
+Python: `cv2` (OpenCV), `numpy`, `onnxruntime-gpu` (CPU fallback), ROS 2 Python client library (rclpy)
+
+### GPU Notes
+- Container: `docker compose --profile gpu up -d` → starts `autonav_gpu`
+- `object_detector.py` auto-selects `CUDAExecutionProvider` if NVIDIA GPU available
+- YOLOv8n model downloaded to `/root/models/yolov8n.onnx` during image build
+- Override container: `make build CONTAINER=autonav_gpu`
 

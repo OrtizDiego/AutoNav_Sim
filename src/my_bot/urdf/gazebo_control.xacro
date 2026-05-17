@@ -55,10 +55,20 @@
 
     <gazebo reference="left_wheel">
         <material>Gazebo/Blue</material>
+        <mu1 value="1.0"/>
+        <mu2 value="1.0"/>
+        <kp value="10000000.0"/>
+        <kd value="1.0"/>
+        <fdir1>1 0 0</fdir1>
     </gazebo>
 
     <gazebo reference="right_wheel">
         <material>Gazebo/Blue</material>
+        <mu1 value="1.0"/>
+        <mu2 value="1.0"/>
+        <kp value="10000000.0"/>
+        <kd value="1.0"/>
+        <fdir1>1 0 0</fdir1>
     </gazebo>
 
     <gazebo reference="caster_wheel">

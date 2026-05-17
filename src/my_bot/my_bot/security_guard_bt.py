@@ -44,6 +44,18 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float32
 
+# Optional ROS message types for metrics/markers — imported here for static
+# analysis and ROS runtime; the test harness stubs these inside __init__ via
+# local imports so the module-level import is guarded.
+try:
+    from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+    from nav_msgs.msg import Odometry
+    from visualization_msgs.msg import Marker, MarkerArray
+except ImportError:  # pragma: no cover — only missing outside a ROS install
+    DiagnosticArray = DiagnosticStatus = KeyValue = None
+    Odometry = None
+    Marker = MarkerArray = None
+
 
 # ---------------------------------------------------------------------------
 # Blackboard key constants
@@ -292,6 +304,10 @@ class SecurityGuardBTNode(Node):
             self._yolo_cb, 10)
 
         self._vel_pub_bt = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._diag_pub = self.create_publisher(DiagnosticArray, '/security_guard/metrics', 10)
+        self._sighting_pub = self.create_publisher(MarkerArray, '/intruder_sightings', 10)
+        self._odom_sub = self.create_subscription(
+            Odometry, '/odom', self._odom_cb, 10)
 
         # Navigator and behaviour tree
         self._navigator = BasicNavigator()
@@ -306,11 +322,26 @@ class SecurityGuardBTNode(Node):
         bb.set(BB_TARGET_RANGE, -1.0)
         bb.set(BB_TARGET_BEARING, 0.0)
 
+        # Metrics state
+        self._metrics = {
+            'waypoints_visited': 0,
+            'intruder_detections': 0,
+            'time_in_chase_sec': 0.0,
+            'distance_traveled_m': 0.0,
+        }
+        self._session_start = self.get_clock().now()
+        self._last_odom_pos = None
+        self._prev_intruder_detected = False
+        self._sighting_markers = MarkerArray()
+        self._sighting_id = 0
+        self._prev_wp_idx = 0
+
         self._bt = build_security_guard_tree(
             self._navigator, self, stop_dist, dwell)
         self._bt.setup()
 
         self._tick_timer = self.create_timer(0.1, self._tick)
+        self._metrics_timer = self.create_timer(5.0, self._publish_metrics)
 
         # Display thread
         self._display_frame = None
@@ -357,6 +388,98 @@ class SecurityGuardBTNode(Node):
     def _tick(self):
         """Tick the behaviour tree once."""
         self._bt.tick()
+
+        bb = py_trees.blackboard.Blackboard()
+        # Track chase time (0.1s per tick when intruder detected)
+        intruder_now = (
+            (bb.get('hsv_target_detected') if bb.exists('hsv_target_detected') else False)
+            or (bb.get('yolo_target_detected') if bb.exists('yolo_target_detected') else False)
+        )
+        if intruder_now:
+            self._metrics['time_in_chase_sec'] += 0.1
+            if not self._prev_intruder_detected:
+                self._metrics['intruder_detections'] += 1
+                self._add_sighting_marker()
+        self._prev_intruder_detected = intruder_now
+
+        wp_now = bb.get('waypoint_index') if bb.exists('waypoint_index') else 0
+        if wp_now != self._prev_wp_idx:
+            self._metrics['waypoints_visited'] += 1
+            self._prev_wp_idx = wp_now
+
+    def _odom_cb(self, msg: Odometry):
+        pos = msg.pose.pose.position
+        if self._last_odom_pos is not None:
+            dx = pos.x - self._last_odom_pos.x
+            dy = pos.y - self._last_odom_pos.y
+            self._metrics['distance_traveled_m'] += (dx * dx + dy * dy) ** 0.5
+        self._last_odom_pos = pos
+
+    def _publish_metrics(self):
+        elapsed = (self.get_clock().now() - self._session_start).nanoseconds / 1e9
+        diag = DiagnosticArray()
+        diag.header.stamp = self.get_clock().now().to_msg()
+        status = DiagnosticStatus()
+        status.name = 'SecurityGuardBT'
+        status.hardware_id = 'autonav_sim'
+        status.level = DiagnosticStatus.OK
+        status.message = f'Session: {elapsed:.0f}s'
+        status.values = [
+            KeyValue(key='waypoints_visited',
+                     value=str(self._metrics['waypoints_visited'])),
+            KeyValue(key='intruder_detections',
+                     value=str(self._metrics['intruder_detections'])),
+            KeyValue(key='time_in_chase_sec',
+                     value=f"{self._metrics['time_in_chase_sec']:.1f}"),
+            KeyValue(key='distance_traveled_m',
+                     value=f"{self._metrics['distance_traveled_m']:.2f}"),
+            KeyValue(key='session_elapsed_sec', value=f'{elapsed:.1f}'),
+        ]
+        diag.status = [status]
+        self._diag_pub.publish(diag)
+
+    def _add_sighting_marker(self):
+        if self._last_odom_pos is None:
+            return
+        now_stamp = self.get_clock().now().to_msg()
+        elapsed = (self.get_clock().now() - self._session_start).nanoseconds / 1e9
+
+        sphere = Marker()
+        sphere.header.frame_id = 'odom'
+        sphere.header.stamp = now_stamp
+        sphere.ns = 'sightings'
+        sphere.id = self._sighting_id
+        sphere.type = Marker.SPHERE
+        sphere.action = Marker.ADD
+        sphere.pose.position.x = self._last_odom_pos.x
+        sphere.pose.position.y = self._last_odom_pos.y
+        sphere.pose.position.z = 0.5
+        sphere.pose.orientation.w = 1.0
+        sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.3
+        sphere.color.r = 1.0
+        sphere.color.g = 0.0
+        sphere.color.b = 0.0
+        sphere.color.a = 0.8
+        self._sighting_markers.markers.append(sphere)
+
+        label = Marker()
+        label.header.frame_id = 'odom'
+        label.header.stamp = now_stamp
+        label.ns = 'sighting_labels'
+        label.id = self._sighting_id
+        label.type = Marker.TEXT_VIEW_FACING
+        label.action = Marker.ADD
+        label.pose.position.x = self._last_odom_pos.x
+        label.pose.position.y = self._last_odom_pos.y
+        label.pose.position.z = 0.9
+        label.pose.orientation.w = 1.0
+        label.scale.z = 0.25
+        label.color.r = label.color.g = label.color.b = label.color.a = 1.0
+        label.text = f'T={elapsed:.0f}s'
+        self._sighting_markers.markers.append(label)
+
+        self._sighting_id += 1
+        self._sighting_pub.publish(self._sighting_markers)
 
     def _display_loop(self):
         while True:
