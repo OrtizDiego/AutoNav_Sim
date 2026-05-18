@@ -102,6 +102,9 @@ make security-guard
 - **object_detector.py**: YOLOv8-nano ONNX inference node. GPU auto-select (CUDA → CPU fallback). Publishes `/detections` (MarkerArray), `/person_detected`, `/target_detected`.
 - **intruder_bot.py**: Autonomous random-walk node driving the intruder sphere via `/target_cmd_vel`.
 - **obstacle_controller.py**: Drives dynamic world obstacles (moving_box_1, moving_cylinder_1) with timed random walk.
+- **person_controller.py**: Two-mode pedestrian FSM (WALK / RUN). Drives the Gazebo `<actor>` in `person.world` via `/gazebo/set_entity_state`. Subscribes to `/person_detected` — when seen, switches to RUN and flees from the robot's odom pose; returns to WALK after `calm_down_secs`.
+- **person_tracker.py**: Hybrid YOLO + OpenCV-CSRT object tracker. Runs YOLOv8n every `redetect_every` frames to seed/correct an OpenCV CSRT tracker that propagates the box every frame. Publishes `/person_bbox` (Float32MultiArray [x,y,w,h]), `/person_track` (PointStamped centroid), `/person_detected` (Bool).
+- **person_follower.py**: Stand-off follower. Reads `/person_bbox` + `/scan`, projects the bbox centroid into a lidar bearing, fetches the metric range, then runs a P-controller on (range − desired_distance) and bearing. Stops on track loss.
 - **patrol.py**: Simple waypoint navigation (superseded by security_guard)
 
 **RViz Visualization**
@@ -121,6 +124,9 @@ src/my_bot/
 │   ├── object_detector.py     # YOLOv8-nano ONNX detector (GPU/CPU)
 │   ├── intruder_bot.py        # Autonomous random-walk intruder node
 │   ├── obstacle_controller.py # Dynamic obstacle random-walk driver
+│   ├── person_controller.py   # WALK/RUN pedestrian FSM driving the actor pose
+│   ├── person_tracker.py      # YOLO + OpenCV CSRT person tracker
+│   ├── person_follower.py     # Stand-off follower (proportional control)
 │   ├── patrol.py              # Basic waypoint navigation
 │   └── camera_test.py         # Debug camera feed
 ├── launch/                    # Python launch files
@@ -130,7 +136,8 @@ src/my_bot/
 │   ├── rsp.launch.py          # Robot State Publisher (Xacro)
 │   ├── sensor_fusion.launch.py        # sensor_fusion node only
 │   ├── security_guard_full.launch.py  # sensor_fusion + security_guard + monitor
-│   └── dynamic_sim.launch.py          # Gazebo with dynamic world + obstacles
+│   ├── dynamic_sim.launch.py          # Gazebo with dynamic world + obstacles
+│   └── person_sim.launch.py           # person.world + tracker + controller + follower
 ├── config/                    # Parameters & visualization configs
 │   ├── nav2_params.yaml       # Navigation stack tuning
 │   ├── mapper_params_online_async.yaml  # SLAM tuning
@@ -147,7 +154,8 @@ src/my_bot/
 │   ├── room.world             # Simple room environment
 │   ├── obstacles.world        # Complex environment with obstacles
 │   ├── intruder.world         # Room with target/intruder sphere
-│   └── dynamic.world          # intruder.world + 2 moving obstacles
+│   ├── dynamic.world          # intruder.world + 2 moving obstacles
+│   └── person.world           # Walking/running pedestrian actor (walk.dae)
 ├── maps/                      # Saved occupancy grids
 │   └── my_map.yaml / my_map.pgm
 ├── test/                      # Unit tests (69/70 pass without ROS runtime)
@@ -230,6 +238,9 @@ Defined in `setup.py`:
 - `object_detector` → `my_bot.object_detector:main`
 - `intruder_bot` → `my_bot.intruder_bot:main`
 - `obstacle_controller` → `my_bot.obstacle_controller:main`
+- `person_controller` → `my_bot.person_controller:main`
+- `person_tracker` → `my_bot.person_tracker:main`
+- `person_follower` → `my_bot.person_follower:main`
 - `camera_test` → `my_bot.camera_test:main`
 
 Run with `ros2 run my_bot <script_name>` or via Make targets.
@@ -245,6 +256,10 @@ Run with `ros2 run my_bot <script_name>` or via Make targets.
 | `make object-detector` | YOLOv8-nano ONNX inference |
 | `make intruder-bot` | Autonomous random-walk intruder |
 | `make dynamic-sim` | Simulation with moving obstacles |
+| `make person-sim` | Full person-intruder sim (walking/running actor + YOLO tracker + follower) |
+| `make person-controller` | WALK/RUN pedestrian FSM (drives the Gazebo actor) |
+| `make person-tracker` | YOLO + CSRT person tracker only |
+| `make person-follower` | Stand-off follower only |
 | `make up-gpu` | Start GPU container (autonav_gpu) |
 
 ## Dependencies

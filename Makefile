@@ -16,6 +16,7 @@ SOURCE := source /opt/ros/humble/setup.bash && source install/setup.bash
         ball-chaser security-guard security-guard-bt \
         sensor-fusion system-monitor object-detector \
         intruder-bot obstacle-controller dynamic-sim \
+        person-sim person-controller person-tracker person-follower \
         up up-gpu down
 
 help:
@@ -52,6 +53,10 @@ help:
 	@echo "  object-detector    - Run YOLOv8-nano ONNX object detector"
 	@echo "  intruder-bot       - Run autonomous intruder random walk"
 	@echo "  obstacle-controller- Run dynamic obstacle controller"
+	@echo "  person-sim         - Full person-intruder sim (actor + tracker + follower)"
+	@echo "  person-controller  - Run WALK/RUN pedestrian FSM (actor pose driver)"
+	@echo "  person-tracker     - YOLO + CSRT person tracker"
+	@echo "  person-follower    - Stand-off follower for the tracked person"
 
 # --- DOCKER MANAGEMENT ---
 
@@ -138,3 +143,15 @@ obstacle-controller:
 
 dynamic-sim:
 	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) dynamic_sim.launch.py"
+
+person-sim:
+	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
+
+person-controller:
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) person_controller"
+
+person-tracker:
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) person_tracker"
+
+person-follower:
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) person_follower"

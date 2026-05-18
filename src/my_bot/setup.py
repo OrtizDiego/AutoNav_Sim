@@ -38,6 +38,9 @@ setup(
             'object_detector = my_bot.object_detector:main',
             'intruder_bot = my_bot.intruder_bot:main',
             'obstacle_controller = my_bot.obstacle_controller:main',
+            'person_controller = my_bot.person_controller:main',
+            'person_tracker = my_bot.person_tracker:main',
+            'person_follower = my_bot.person_follower:main',
         ],
     },
 )

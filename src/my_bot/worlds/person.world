@@ -1,0 +1,59 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="default">
+    <include>
+      <uri>model://sun</uri>
+    </include>
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Gazebo state service plugin: enables /set_entity_state for the actor -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/gazebo</namespace>
+      </ros>
+      <update_rate>30.0</update_rate>
+    </plugin>
+
+    <!--
+      Realistic walking person.
+
+      Uses Gazebo's built-in walk.dae skeleton mesh (ships with gazebo-common).
+      The actor has its own scripted patrol trajectory so it walks on its own
+      until person_controller takes over via /set_entity_state.
+
+      interpolate_x=true ties the animation playback rate to forward velocity:
+      when the controller moves the actor faster (RUN mode), the limbs step
+      faster too, producing a realistic running gait without needing a
+      separate run.dae file.
+    -->
+    <actor name="person_intruder">
+      <pose>3 0 0 0 0 0</pose>
+      <skin>
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+      <animation name="walking">
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>true</interpolate_x>
+      </animation>
+      <script>
+        <loop>true</loop>
+        <delay_start>0.0</delay_start>
+        <auto_start>true</auto_start>
+        <trajectory id="0" type="walking">
+          <waypoint><time>0</time><pose>3 0 0 0 0 1.57</pose></waypoint>
+          <waypoint><time>6</time><pose>3 3 0 0 0 1.57</pose></waypoint>
+          <waypoint><time>7</time><pose>3 3 0 0 0 3.14</pose></waypoint>
+          <waypoint><time>13</time><pose>-1 3 0 0 0 3.14</pose></waypoint>
+          <waypoint><time>14</time><pose>-1 3 0 0 0 -1.57</pose></waypoint>
+          <waypoint><time>20</time><pose>-1 0 0 0 0 -1.57</pose></waypoint>
+          <waypoint><time>21</time><pose>-1 0 0 0 0 0</pose></waypoint>
+          <waypoint><time>27</time><pose>3 0 0 0 0 0</pose></waypoint>
+        </trajectory>
+      </script>
+    </actor>
+  </world>
+</sdf>
