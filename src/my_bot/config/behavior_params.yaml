@@ -27,3 +27,31 @@ security_guard:
     - [-4.52, 8.60]
     - [0.0, 0.0]
   waypoint_dwell_secs: 2.0
+
+person_controller:
+  actor_name: person_intruder
+  walk_speed: 0.8
+  run_speed: 2.0
+  update_rate_hz: 20.0
+  calm_down_secs: 4.0
+  bounds: 8.0
+  waypoints: [3.0, 0.0, 3.0, 3.0, -1.0, 3.0, -1.0, 0.0]
+
+person_tracker:
+  model_path: /root/models/yolov8n.onnx
+  confidence_threshold: 0.4
+  nms_iou_threshold: 0.45
+  redetect_every: 10
+  reseed_iou_threshold: 0.3
+
+person_follower:
+  desired_distance: 1.5
+  deadband: 0.15
+  k_lin: 0.6
+  k_yaw: 1.2
+  max_linear_speed: 0.4
+  max_back_speed: 0.2
+  max_angular_speed: 1.2
+  track_timeout: 1.5
+  range_min: 0.3
+  range_max: 12.0
