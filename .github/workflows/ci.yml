@@ -26,7 +26,7 @@ jobs:
             python3-pip \
             python3-pytest-cov \
             ros-humble-py-trees-ros
-          pip3 install onnxruntime py_trees
+          pip3 install "numpy<2.0" onnxruntime py_trees
           rosdep update
           rosdep install --from-paths src --ignore-src -y
 
