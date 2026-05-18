@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Script to patrol a sequence of waypoints using Nav2."""
+"""Simple two-waypoint patrol using Nav2 BasicNavigator."""
 
 import time
 
@@ -24,69 +24,45 @@ import rclpy
 
 
 def main():
-    """Start the patrol loop."""
-    # 1. Start the ROS 2 Python Client
+    """Navigate between two waypoints in a loop until shutdown."""
     rclpy.init()
-
-    # 2. Create the Navigator Object
     navigator = BasicNavigator()
 
-    # 3. Wait for Nav2 to fully wake up
-    # (The robot must be localized in RViz before running this script!)
-    print("Waiting for Nav2 to activate...")
+    navigator.get_logger().info('Waiting for Nav2 to activate...')
     navigator.waitUntilNav2Active()
 
-    # 4. Define our Patrol Points (Relative to the Map Frame)
-    # POINT A (x=1.5, y=0.0)
-    goal_pose1 = PoseStamped()
-    goal_pose1.header.frame_id = 'map'
-    goal_pose1.header.stamp = navigator.get_clock().now().to_msg()
-    goal_pose1.pose.position.x = 1.5
-    goal_pose1.pose.position.y = 0.0
-    goal_pose1.pose.orientation.w = 1.0
+    goal_a = PoseStamped()
+    goal_a.header.frame_id = 'map'
+    goal_a.pose.position.x = 1.5
+    goal_a.pose.position.y = 0.0
+    goal_a.pose.orientation.w = 1.0
 
-    # POINT B (x=0.0, y=0.0) - Back to Start
-    goal_pose2 = PoseStamped()
-    goal_pose2.header.frame_id = 'map'
-    goal_pose2.header.stamp = navigator.get_clock().now().to_msg()
-    goal_pose2.pose.position.x = 0.0
-    goal_pose2.pose.position.y = 0.0
-    goal_pose2.pose.orientation.w = 1.0
+    goal_b = PoseStamped()
+    goal_b.header.frame_id = 'map'
+    goal_b.pose.position.x = 0.0
+    goal_b.pose.position.y = 0.0
+    goal_b.pose.orientation.w = 1.0
 
-    # 5. The Patrol Loop
-    while True:
-        # --- GO TO POINT A ---
-        print("Going to Point A...")
-        navigator.goToPose(goal_pose1)
+    while rclpy.ok():
+        for label, goal in [('A', goal_a), ('B', goal_b)]:
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            navigator.get_logger().info(f'Going to Point {label}...')
+            navigator.goToPose(goal)
 
-        while not navigator.isTaskComplete():
-            # Print feedback while moving
-            pass
+            while not navigator.isTaskComplete():
+                if not rclpy.ok():
+                    break
+                time.sleep(0.1)
 
-        # Check result
-        result = navigator.getResult()
-        if result == TaskResult.SUCCEEDED:
-            print("Reached Point A! Waiting 3 seconds...")
-            time.sleep(3)
-        else:
-            print("Failed to reach Point A!")
-            break
+            result = navigator.getResult()
+            if result == TaskResult.SUCCEEDED:
+                navigator.get_logger().info(
+                    f'Reached Point {label}! Waiting 3 seconds...')
+                time.sleep(3)
+            else:
+                navigator.get_logger().warn(f'Failed to reach Point {label}!')
+                break
 
-        # --- GO TO POINT B ---
-        print("Going to Point B...")
-        navigator.goToPose(goal_pose2)
-
-        while not navigator.isTaskComplete():
-            pass  # Just wait
-
-        if navigator.getResult() == TaskResult.SUCCEEDED:
-            print("Reached Point B! Waiting 3 seconds...")
-            time.sleep(3)
-        else:
-            print("Failed to reach Point B!")
-            break
-
-    # Shut down cleanly
     rclpy.shutdown()
 
 

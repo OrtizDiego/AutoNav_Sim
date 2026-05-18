@@ -14,7 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Script to detect and follow a red ball using OpenCV and ROS 2."""
+"""Detect and follow a red object using OpenCV HSV thresholding and ROS 2."""
+
+import threading
+import time
 
 import cv2
 from cv_bridge import CvBridge
@@ -26,96 +29,129 @@ from sensor_msgs.msg import Image
 
 
 class BallChaser(Node):
-    """Node that detects a red ball and publishes velocity commands to follow it."""
+    """Node that detects a red object and publishes velocity commands to follow it."""
 
     def __init__(self):
-        """Initialize the node, subscriber and publisher."""
+        """Initialize the node, declare parameters, and set up pub/sub."""
         super().__init__('ball_chaser')
 
-        # Subscriber (The Eyes)
-        self.subscription = self.create_subscription(
-            Image, '/camera/image_raw', self.camera_callback, 10)
+        # --- Parameters (tunable at runtime via ros2 param set) ---
+        self.declare_parameter('hsv_red_lower1', [0, 100, 100])
+        self.declare_parameter('hsv_red_upper1', [10, 255, 255])
+        self.declare_parameter('hsv_red_lower2', [160, 100, 100])
+        self.declare_parameter('hsv_red_upper2', [180, 255, 255])
+        self.declare_parameter('angular_gain', 100.0)
+        self.declare_parameter('linear_speed', 0.2)
+        self.declare_parameter('min_contour_area', 300.0)
+        self.declare_parameter('search_angular_speed', 0.3)
+        self.declare_parameter('search_timeout_sec', 3.0)
 
-        # Publisher (The Feet)
-        self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._load_params()
 
-        self.bridge = CvBridge()
+        self._subscription = self.create_subscription(
+            Image, '/camera/image_raw', self._camera_callback, 10)
+        self._publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._bridge = CvBridge()
 
-    def camera_callback(self, msg):
-        """Process camera images and detect the red ball."""
+        # State for search-rotate behavior
+        self._last_seen_time: float = 0.0
+
+        # Display in a background thread so cv2.imshow never blocks ROS spin
+        self._display_frame = None
+        self._display_lock = threading.Lock()
+        self._display_thread = threading.Thread(
+            target=self._display_loop, daemon=True)
+        self._display_thread.start()
+
+    def _load_params(self):
+        """Cache parameter values as instance attributes."""
+        self._lower1 = np.array(
+            self.get_parameter('hsv_red_lower1').value, dtype=np.uint8)
+        self._upper1 = np.array(
+            self.get_parameter('hsv_red_upper1').value, dtype=np.uint8)
+        self._lower2 = np.array(
+            self.get_parameter('hsv_red_lower2').value, dtype=np.uint8)
+        self._upper2 = np.array(
+            self.get_parameter('hsv_red_upper2').value, dtype=np.uint8)
+        self._angular_gain = float(
+            self.get_parameter('angular_gain').value)
+        self._linear_speed = float(
+            self.get_parameter('linear_speed').value)
+        self._min_area = float(
+            self.get_parameter('min_contour_area').value)
+        self._search_speed = float(
+            self.get_parameter('search_angular_speed').value)
+        self._search_timeout = float(
+            self.get_parameter('search_timeout_sec').value)
+
+    def _camera_callback(self, msg: Image):
+        """Process a camera frame: detect target and publish velocity."""
         try:
-            # 1. Convert ROS Image to OpenCV
-            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-
-            # 2. Convert BGR to HSV (Better for color detection)
+            cv_image = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
             hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
 
-            # 3. Define the Range of "Red" Color
-            # Red wraps around 180 in HSV, so we need two ranges
-            lower_red1 = np.array([0, 100, 100])
-            upper_red1 = np.array([10, 255, 255])
-            lower_red2 = np.array([160, 100, 100])
-            upper_red2 = np.array([180, 255, 255])
+            mask = (cv2.inRange(hsv, self._lower1, self._upper1) +
+                    cv2.inRange(hsv, self._lower2, self._upper2))
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            mask = mask1 + mask2  # Combine
-
-            # 4. Find Contours (Blobs of red)
-            contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-            # Command to send to the robot
             cmd = Twist()
+            now = time.monotonic()
 
-            if len(contours) > 0:
-                # Find the biggest red blob
-                c = max(contours, key=cv2.contourArea)
-                m_moments = cv2.moments(c)
-
-                if m_moments['m00'] > 0:
-                    # Find the Center (cx, cy) of the blob
-                    cx = int(m_moments['m10'] / m_moments['m00'])
-                    # cy = int(m_moments['m01'] / m_moments['m00'])
-
-                    # Draw a circle on the image for debugging
-                    # cv2.circle(cv_image, (cx, cy), 10, (0, 255, 0), 3)
-
-                    # --- CONTROL LOGIC ---
+            valid = [c for c in contours
+                     if cv2.contourArea(c) >= self._min_area]
+            if valid:
+                c = max(valid, key=cv2.contourArea)
+                m = cv2.moments(c)
+                if m['m00'] > 0:
+                    cx = int(m['m10'] / m['m00'])
                     _, width, _ = cv_image.shape
-                    error_x = cx - (width / 2)  # How far from center?
-
-                    # Turn towards the object (Proportional Controller)
-                    # Divide by 100 to scale it down
-                    cmd.angular.z = -float(error_x) / 100.0
-
-                    # If we see it, drive forward slowly
-                    cmd.linear.x = 0.2
-
-                    print(f"Tracking! Error: {error_x}")
+                    error_x = cx - (width / 2)
+                    cmd.angular.z = -float(error_x) / self._angular_gain
+                    cmd.linear.x = self._linear_speed
+                    self._last_seen_time = now
+                    self.get_logger().debug(f'Tracking — error_x={error_x:.1f}')
+                    # Draw tracking indicator on display frame
+                    cy = int(m['m01'] / m['m00'])
+                    cv2.circle(cv_image, (cx, cy), 10, (0, 255, 0), 3)
             else:
-                # If no red detected, stop (or spin to search)
-                cmd.linear.x = 0.0
-                cmd.angular.z = 0.0
+                # Search: rotate slowly until timeout, then stop
+                elapsed = now - self._last_seen_time
+                if self._last_seen_time > 0 and elapsed < self._search_timeout:
+                    cmd.angular.z = self._search_speed
+                else:
+                    cmd.linear.x = 0.0
+                    cmd.angular.z = 0.0
 
-            # 5. Move the Robot
-            self.publisher.publish(cmd)
+            self._publisher.publish(cmd)
 
-            # 6. Show the view
-            cv2.imshow("Ball Chaser View", cv_image)
-            cv2.waitKey(1)
+            with self._display_lock:
+                self._display_frame = cv_image
 
         except Exception as e:
-            self.get_logger().error(f"Error: {e}")
+            self.get_logger().error(f'Camera callback error: {e}')
+
+    def _display_loop(self):
+        """Render latest frame at ~30 fps in a dedicated thread."""
+        while True:
+            with self._display_lock:
+                frame = self._display_frame
+            if frame is not None:
+                cv2.imshow('Ball Chaser View', frame)
+                cv2.waitKey(1)
+            time.sleep(0.033)
 
 
 def main(args=None):
     """Initialize and spin the BallChaser node."""
     rclpy.init(args=args)
     node = BallChaser()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
-    cv2.destroyAllWindows()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':

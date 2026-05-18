@@ -1,0 +1,29 @@
+ball_chaser:
+  hsv_red_lower1: [0, 100, 100]
+  hsv_red_upper1: [10, 255, 255]
+  hsv_red_lower2: [160, 100, 100]
+  hsv_red_upper2: [180, 255, 255]
+  angular_gain: 100.0
+  linear_speed: 0.2
+  min_contour_area: 300.0
+  search_angular_speed: 0.3
+  search_timeout_sec: 3.0
+
+security_guard:
+  hsv_red_lower1: [0, 100, 100]
+  hsv_red_upper1: [10, 255, 255]
+  hsv_red_lower2: [160, 100, 100]
+  hsv_red_upper2: [180, 255, 255]
+  angular_gain: 0.01
+  linear_speed: 0.2
+  max_angular_speed: 0.5
+  min_contour_area: 500.0
+  stop_distance_area: 35000.0
+  waypoints:
+    - [3.28, 6.85]
+    - [-0.92, 6.85]
+    - [5.13, -2.45]
+    - [0.23, -2.55]
+    - [-4.52, 8.60]
+    - [0.0, 0.0]
+  waypoint_dwell_secs: 2.0
