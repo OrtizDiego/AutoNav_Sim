@@ -23,7 +23,7 @@ A comprehensive simulation environment for developing and testing autonomous nav
 
 ## 🚀 Project Overview
 
-**AutoNav Sim** is a modular robotics framework for simulating a differential drive robot in complex environments. Built on **ROS 2 Humble**, it serves as a testbed for verifying navigation stacks and perception algorithms before deployment on physical hardware.
+**AutoNav Sim** is a modular robotics framework for simulating a differential drive robot (modelled on the TurtleBot3 Waffle Pi) in complex environments. Built on **ROS 2 Humble**, it serves as a testbed for verifying navigation stacks and perception algorithms before deployment on physical hardware.
 
 This project demonstrates expertise in:
 
@@ -306,7 +306,7 @@ make test
 ```
 
 The test suite (69/70 tests) runs without a ROS runtime and covers:
-* URDF noise values and wheel friction (`test_urdf.py`)
+* URDF noise values, wheel friction, mesh files and wheel geometry (`test_urdf.py`)
 * Sensor fusion math — bearing, scan index, range validation (`test_sensor_fusion.py`)
 * BT leaf logic and tree structure (`test_behavior_tree.py`)
 * YOLO preprocess/postprocess functions (`test_object_detector.py`)
@@ -343,10 +343,11 @@ src/my_bot/
 │   ├── ball_chaser.py                   # Reactive red-ball follower
 │   └── patrol.py                        # Simple waypoint navigation
 ├── test/                                # 69 unit tests (no ROS runtime needed)
+├── meshes/                              # TurtleBot3 Waffle Pi STL meshes (Apache-2.0)
 ├── urdf/
 │   ├── lidar.xacro                      # 2D LiDAR + Gaussian noise (σ=0.01m)
 │   ├── camera.xacro                     # RGB camera 30Hz + Gaussian noise (σ=0.007)
-│   ├── robot_core.xacro                 # Body + differential drive
+│   ├── robot_core.xacro                 # Waffle Pi body, wheels, rear casters
 │   └── gazebo_control.xacro             # Gazebo plugins; wheel friction μ=1.0
 └── worlds/
     ├── room.world                        # Simple room

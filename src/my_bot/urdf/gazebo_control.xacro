@@ -23,8 +23,8 @@
             <!-- Wheel Configuration -->
             <left_joint>left_wheel_joint</left_joint>
             <right_joint>right_wheel_joint</right_joint>
-            <wheel_separation>0.35</wheel_separation>
-            <wheel_diameter>0.1</wheel_diameter>
+            <wheel_separation>0.288</wheel_separation>
+            <wheel_diameter>0.066</wheel_diameter>
 
             <!-- Wheel Dynamics -->
             <max_wheel_torque>20</max_wheel_torque>
@@ -50,31 +50,29 @@
     </gazebo>
 
     <gazebo reference="chassis">
-        <material>Gazebo/White</material>
+        <material>Gazebo/DarkGrey</material>
     </gazebo>
 
     <gazebo reference="left_wheel">
-        <material>Gazebo/Blue</material>
+        <material>Gazebo/FlatBlack</material>
         <mu1 value="1.0"/>
         <mu2 value="1.0"/>
-        <kp value="10000000.0"/>
-        <kd value="1.0"/>
+        <kp value="500000.0"/>
+        <kd value="10.0"/>
+        <minDepth>0.001</minDepth>
+        <maxVel>0.1</maxVel>
         <fdir1>1 0 0</fdir1>
     </gazebo>
 
     <gazebo reference="right_wheel">
-        <material>Gazebo/Blue</material>
+        <material>Gazebo/FlatBlack</material>
         <mu1 value="1.0"/>
         <mu2 value="1.0"/>
-        <kp value="10000000.0"/>
-        <kd value="1.0"/>
+        <kp value="500000.0"/>
+        <kd value="10.0"/>
+        <minDepth>0.001</minDepth>
+        <maxVel>0.1</maxVel>
         <fdir1>1 0 0</fdir1>
-    </gazebo>
-
-    <gazebo reference="caster_wheel">
-        <material>Gazebo/Orange</material>
-        <mu1 value="0.001"/>
-        <mu2 value="0.001"/>
     </gazebo>
 
 </robot>

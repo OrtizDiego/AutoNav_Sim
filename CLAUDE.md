@@ -77,7 +77,7 @@ make security-guard
 ### System Layers
 
 **Hardware Interface (Gazebo)**
-- Simulates differential drive robot with 2D Lidar and RGB camera
+- Simulates a differential drive robot (TurtleBot3 Waffle Pi meshes/dimensions) with 2D Lidar and RGB camera
 - Publishes: `/scan` (Lidar), `/odom` (odometry), `/camera/image_raw` (camera)
 - Subscribes to: `/cmd_vel` (velocity commands)
 - Multiple world files: `room.world`, `obstacles.world`, `intruder.world`
@@ -137,9 +137,10 @@ src/my_bot/
 │   ├── behavior_params.yaml   # Centralized behavior node parameters
 │   ├── navigation.rviz        # RViz layout
 │   └── view_robot.rviz        # Alternative RViz layout
+├── meshes/                    # TurtleBot3 Waffle Pi STL meshes (Apache-2.0, see meshes/README.md)
 ├── urdf/                      # Robot description (Xacro)
 │   ├── robot.urdf.xacro       # Main robot description
-│   ├── robot_core.xacro       # Body + differential drive
+│   ├── robot_core.xacro       # Waffle Pi body, wheels, rear casters
 │   ├── gazebo_control.xacro   # Gazebo plugins; wheel friction mu1/mu2=1.0
 │   ├── lidar.xacro            # 2D Lidar + Gaussian noise (stddev=0.01m)
 │   └── camera.xacro           # RGB camera 30Hz + Gaussian noise (stddev=0.007)
@@ -151,7 +152,7 @@ src/my_bot/
 ├── maps/                      # Saved occupancy grids
 │   └── my_map.yaml / my_map.pgm
 ├── test/                      # Unit tests (69/70 pass without ROS runtime)
-│   ├── test_urdf.py           # Xacro XML validation + noise/friction checks
+│   ├── test_urdf.py           # Xacro validation, noise/friction, meshes, wheel geometry
 │   ├── test_scripts.py        # Script shebang & py_compile checks
 │   ├── test_behavior_params.py  # behavior_params.yaml structure validation
 │   ├── test_sensor_fusion.py  # Pure-Python math tests (18 tests)

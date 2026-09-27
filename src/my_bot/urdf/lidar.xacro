@@ -20,29 +20,30 @@
     <joint name="laser_joint" type="fixed">
         <parent link="chassis"/>
         <child link="laser_frame"/>
-        <origin xyz="0.1 0 0.175" rpy="0 0 0"/>
+        <origin xyz="0 0 0.122" rpy="0 0 0"/>
     </joint>
 
     <link name="laser_frame">
         <visual>
             <geometry>
-                <cylinder radius="0.05" length="0.04"/>
+                <mesh filename="package://my_bot/meshes/lds.stl" scale="0.001 0.001 0.001"/>
             </geometry>
-            <material name="orange"/>
+            <material name="black"/>
         </visual>
         <collision>
+            <origin xyz="0.015 0 -0.0065"/>
             <geometry>
-                <cylinder radius="0.05" length="0.04"/>
+                <cylinder radius="0.055" length="0.0315"/>
             </geometry>
         </collision>
         <inertial>
-            <mass value="0.1"/>
+            <mass value="0.114"/>
             <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
         </inertial>
     </link>
 
     <gazebo reference="laser_frame">
-        <material>Gazebo/Orange</material>
+        <material>Gazebo/FlatBlack</material>
 
         <sensor name="laser" type="ray">
             <pose> 0 0 0 0 0 0 </pose>

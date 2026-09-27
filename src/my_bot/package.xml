@@ -36,5 +36,7 @@
 
   <export>
     <build_type>ament_python</build_type>
+    <!-- Lets Gazebo resolve package://my_bot/meshes/... (model://my_bot/...) -->
+    <gazebo_ros gazebo_model_path="${prefix}/.."/>
   </export>
 </package>
