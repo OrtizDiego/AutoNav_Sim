@@ -99,3 +99,39 @@ def test_gazebo_control_xacro_has_wheel_friction():
         content = f.read()
     assert content.count('<mu1 value="1.0"/>') >= 2, (
         "Expected mu1=1.0 on at least 2 wheel gazebo elements")
+
+
+def test_mesh_files_exist():
+    """Every package://my_bot mesh referenced by the xacro files must exist."""
+    urdf_dir = _urdf_dir()
+    pkg_dir = os.path.dirname(urdf_dir)
+    prefix = 'package://my_bot/'
+    found = 0
+    for name in os.listdir(urdf_dir):
+        if not name.endswith('.xacro'):
+            continue
+        root = ET.parse(os.path.join(urdf_dir, name)).getroot()
+        for mesh in root.iter('mesh'):
+            filename = mesh.get('filename')
+            assert filename.startswith(prefix), f"Unexpected mesh URI {filename} in {name}"
+            path = os.path.join(pkg_dir, filename[len(prefix):])
+            assert os.path.isfile(path), f"Mesh {filename} referenced in {name} not found"
+            found += 1
+    assert found > 0, "Expected the robot model to use meshes"
+
+
+def test_diff_drive_matches_wheel_joints():
+    """diff_drive wheel_separation must match the distance between wheel joints."""
+    urdf_dir = _urdf_dir()
+    core = ET.parse(os.path.join(urdf_dir, 'robot_core.xacro')).getroot()
+    wheel_y = {}
+    for joint in core.findall('joint'):
+        if joint.get('name') in ('left_wheel_joint', 'right_wheel_joint'):
+            wheel_y[joint.get('name')] = float(joint.find('origin').get('xyz').split()[1])
+    assert len(wheel_y) == 2, "Both wheel joints must be defined"
+
+    control = ET.parse(os.path.join(urdf_dir, 'gazebo_control.xacro')).getroot()
+    separation = float(control.find('.//wheel_separation').text)
+    expected = wheel_y['left_wheel_joint'] - wheel_y['right_wheel_joint']
+    assert abs(separation - expected) < 1e-6, (
+        f"wheel_separation={separation} but wheel joints are {expected} m apart")
