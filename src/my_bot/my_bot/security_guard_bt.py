@@ -16,92 +16,164 @@
 
 """Security guard implemented as a py_trees Behavior Tree.
 
-Tree structure:
-    Selector("SecurityGuardRoot")
+Tree structure (highest priority first):
+
+    Selector("SecurityGuard")
+    ├── Sequence("EmergencyStop")
+    │   ├── Condition("EStopActive")        /estop latched by system_monitor
+    │   └── Action("HaltRobot")             cancel Nav2, publish zero cmd_vel
     ├── Sequence("IntruderProtocol")
-    │   ├── Condition("IntruderVisible")   reads bb.intruder_visible
-    │   ├── Action("CancelPatrol")         cancels active Nav2 goal
-    │   └── Selector("ApproachControl")
-    │       ├── Condition("TooClose")      checks bb.target_range < stop_dist
-    │       └── Action("ChaseIntruder")    publishes proportional cmd_vel
+    │   ├── Condition("IntruderVisible")    fused target seen < target_timeout ago
+    │   ├── Action("CancelPatrol")          cancel the active Nav2 goal
+    │   └── Action("FollowIntruder")        stand-off follow on range + bearing
+    ├── Sequence("SearchProtocol")
+    │   ├── Condition("IntruderRecentlyLost")  lost < search_secs ago
+    │   ├── Action("CancelPatrol")
+    │   └── Action("SearchLastSeen")        turn toward the last-seen side
     └── Sequence("PatrolProtocol")
-        ├── Action("NavigateToWaypoint")   sends goToPose, returns RUNNING
-        ├── Action("WaitAtWaypoint")       timer-based dwell
-        └── Action("IncrementWaypoint")   advances bb.waypoint_index
+        ├── Action("NavigateToWaypoint")    Nav2 goToPose, RUNNING until done
+        ├── Action("WaitAtWaypoint")        timed dwell
+        └── Action("IncrementWaypoint")     advance bb.waypoint_index
+
+The intruder comes from sensor_fusion (/target_bearing, /target_range), so
+the tree is detector-agnostic: in person-sim that is the YOLO person
+tracker. The follow law is the same one ball_chaser uses (follow_control).
+
+Publishes /cmd_vel (follow, search, halt), /security_guard/state (the active
+protocol), /security_guard/metrics and /intruder_sightings markers.
 """
 
-import threading
+from dataclasses import dataclass
+import math
 import time
+from typing import Callable
 
-import cv2
-from cv_bridge import CvBridge
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_simple_commander.robot_navigator import BasicNavigator
-import numpy as np
 import py_trees
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
-from std_msgs.msg import Float32
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool, Float32, String
 
-# Optional ROS message types for metrics/markers — imported here for static
-# analysis and ROS runtime; the test harness stubs these inside __init__ via
-# local imports so the module-level import is guarded.
+from my_bot.follow_control import compute_command, front_clearance, search_command
+
+# Message types only needed by the running node (metrics, markers). Guarded
+# so the unit tests can import the leaves with stubbed ROS packages.
 try:
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+    from geometry_msgs.msg import PointStamped
     from nav_msgs.msg import Odometry
     from visualization_msgs.msg import Marker, MarkerArray
 except ImportError:  # pragma: no cover — only missing outside a ROS install
     DiagnosticArray = DiagnosticStatus = KeyValue = None
-    Odometry = None
-    Marker = MarkerArray = None
+    PointStamped = Odometry = Marker = MarkerArray = None
 
 
 # ---------------------------------------------------------------------------
 # Blackboard key constants
 # ---------------------------------------------------------------------------
-BB_INTRUDER_VISIBLE = 'intruder_visible'
-BB_HSV_DETECTED = 'hsv_target_detected'
-BB_YOLO_DETECTED = 'yolo_target_detected'
-BB_TARGET_RANGE = 'target_range'
-BB_TARGET_BEARING = 'target_bearing'
+BB_ESTOP = 'estop'
+BB_LAST_SEEN = 'target_last_seen'      # time.monotonic() of last sighting
+BB_TARGET_RANGE = 'target_range'       # metres, -1.0 if unknown
+BB_TARGET_BEARING = 'target_bearing'   # rad, positive left
+BB_FRONT_CLEAR = 'front_clear'         # closest lidar return ahead (m)
 BB_WP_INDEX = 'waypoint_index'
 BB_NAV_GOAL_SENT = 'nav_goal_sent'
 BB_DWELL_START = 'dwell_start_time'
+
+Status = py_trees.common.Status
+Publish = Callable[[Twist], None]
+
+
+def _bb_get(key, default):
+    bb = py_trees.blackboard.Blackboard()
+    return bb.get(key) if bb.exists(key) else default
+
+
+def _twist(linear: float = 0.0, angular: float = 0.0) -> Twist:
+    cmd = Twist()
+    cmd.linear.x = linear
+    cmd.angular.z = angular
+    return cmd
+
+
+@dataclass
+class FollowGains:
+    """Stand-off follow parameters (see follow_control.compute_command)."""
+
+    desired_distance: float = 2.5
+    deadband: float = 0.15
+    k_lin: float = 0.8
+    k_yaw: float = 1.5
+    max_linear_speed: float = 1.0
+    max_back_speed: float = 0.2
+    max_angular_speed: float = 1.5
+    safety_distance: float = 0.6
 
 
 # ---------------------------------------------------------------------------
 # Behavior Tree leaves
 # ---------------------------------------------------------------------------
 
+class EStopActive(py_trees.behaviour.Behaviour):
+    """SUCCESS while the emergency stop is latched."""
+
+    def __init__(self, name: str = 'EStopActive'):
+        super().__init__(name)
+
+    def update(self) -> Status:
+        return Status.SUCCESS if _bb_get(BB_ESTOP, False) else Status.FAILURE
+
+
+class HaltRobot(py_trees.behaviour.Behaviour):
+    """Cancel navigation and hold the robot still (RUNNING)."""
+
+    def __init__(self, navigator: BasicNavigator, publish: Publish,
+                 name: str = 'HaltRobot'):
+        super().__init__(name)
+        self._nav = navigator
+        self._publish = publish
+
+    def update(self) -> Status:
+        if not self._nav.isTaskComplete():
+            self._nav.cancelTask()
+        py_trees.blackboard.Blackboard().set(BB_NAV_GOAL_SENT, False)
+        self._publish(_twist())
+        return Status.RUNNING
+
+
 class IntruderVisible(py_trees.behaviour.Behaviour):
-    """SUCCESS if intruder is currently visible (HSV or YOLO)."""
+    """SUCCESS if the fused target was seen within ``timeout`` seconds."""
 
-    def __init__(self, name: str = 'IntruderVisible'):
+    def __init__(self, timeout: float = 0.5, clock=time.monotonic,
+                 name: str = 'IntruderVisible'):
         super().__init__(name)
+        self._timeout = timeout
+        self._clock = clock
 
-    def update(self) -> py_trees.common.Status:
-        bb = py_trees.blackboard.Blackboard()
-        hsv = bb.get(BB_HSV_DETECTED) if bb.exists(BB_HSV_DETECTED) else False
-        yolo = bb.get(BB_YOLO_DETECTED) if bb.exists(BB_YOLO_DETECTED) else False
-        if hsv or yolo:
-            return py_trees.common.Status.SUCCESS
-        return py_trees.common.Status.FAILURE
+    def update(self) -> Status:
+        age = self._clock() - _bb_get(BB_LAST_SEEN, -math.inf)
+        return Status.SUCCESS if age <= self._timeout else Status.FAILURE
 
 
-class TooClose(py_trees.behaviour.Behaviour):
-    """SUCCESS if the target is within stop_distance metres."""
+class IntruderRecentlyLost(py_trees.behaviour.Behaviour):
+    """SUCCESS for ``search_secs`` after the target drops out of view."""
 
-    def __init__(self, name: str = 'TooClose', stop_distance: float = 0.8):
+    def __init__(self, timeout: float = 0.5, search_secs: float = 6.0,
+                 clock=time.monotonic, name: str = 'IntruderRecentlyLost'):
         super().__init__(name)
-        self._stop_dist = stop_distance
+        self._timeout = timeout
+        self._search_secs = search_secs
+        self._clock = clock
 
-    def update(self) -> py_trees.common.Status:
-        bb = py_trees.blackboard.Blackboard()
-        r = bb.get(BB_TARGET_RANGE) if bb.exists(BB_TARGET_RANGE) else -1.0
-        if r > 0 and r < self._stop_dist:
-            return py_trees.common.Status.SUCCESS
-        return py_trees.common.Status.FAILURE
+    def update(self) -> Status:
+        age = self._clock() - _bb_get(BB_LAST_SEEN, -math.inf)
+        if self._timeout < age <= self._timeout + self._search_secs:
+            return Status.SUCCESS
+        return Status.FAILURE
 
 
 class CancelPatrol(py_trees.behaviour.Behaviour):
@@ -111,66 +183,78 @@ class CancelPatrol(py_trees.behaviour.Behaviour):
         super().__init__(name)
         self._nav = navigator
 
-    def update(self) -> py_trees.common.Status:
+    def update(self) -> Status:
         if not self._nav.isTaskComplete():
             self._nav.cancelTask()
-        bb = py_trees.blackboard.Blackboard()
-        bb.set(BB_NAV_GOAL_SENT, False)
-        return py_trees.common.Status.SUCCESS
+        py_trees.blackboard.Blackboard().set(BB_NAV_GOAL_SENT, False)
+        return Status.SUCCESS
 
 
-class ChaseIntruder(py_trees.behaviour.Behaviour):
-    """Publish proportional cmd_vel to approach the detected intruder."""
+class FollowIntruder(py_trees.behaviour.Behaviour):
+    """Keep ``desired_distance`` from the intruder (RUNNING)."""
 
-    def __init__(self, node: Node, name: str = 'ChaseIntruder'):
+    def __init__(self, publish: Publish, gains: FollowGains,
+                 name: str = 'FollowIntruder'):
         super().__init__(name)
-        self._node = node
+        self._publish = publish
+        self._g = gains
 
-    def update(self) -> py_trees.common.Status:
-        bb = py_trees.blackboard.Blackboard()
-        bearing = bb.get(BB_TARGET_BEARING) if bb.exists(BB_TARGET_BEARING) else 0.0
-        range_ = bb.get(BB_TARGET_RANGE) if bb.exists(BB_TARGET_RANGE) else 5.0
+    def update(self) -> Status:
+        g = self._g
+        rng = _bb_get(BB_TARGET_RANGE, -1.0)
+        v, w = compute_command(
+            _bb_get(BB_TARGET_BEARING, 0.0), rng if rng > 0 else None,
+            g.desired_distance, g.k_lin, g.k_yaw, g.max_linear_speed,
+            g.max_back_speed, g.max_angular_speed, g.deadband,
+            _bb_get(BB_FRONT_CLEAR, math.inf), g.safety_distance)
+        self._publish(_twist(v, w))
+        return Status.RUNNING
 
-        cmd = Twist()
-        turn = -(bearing * self._node._angular_gain_bt)
-        max_ang = self._node._max_ang_bt
-        cmd.angular.z = max(-max_ang, min(max_ang, turn))
-        cmd.linear.x = self._node._linear_speed_bt if range_ > 0.8 else 0.0
-        self._node._vel_pub_bt.publish(cmd)
-        return py_trees.common.Status.RUNNING
+
+class SearchLastSeen(py_trees.behaviour.Behaviour):
+    """Rotate toward the side where the intruder was last seen (RUNNING)."""
+
+    def __init__(self, publish: Publish, speed: float = 0.6,
+                 name: str = 'SearchLastSeen'):
+        super().__init__(name)
+        self._publish = publish
+        self._speed = speed
+
+    def update(self) -> Status:
+        bearing = _bb_get(BB_TARGET_BEARING, 0.0)
+        self._publish(_twist(0.0, search_command(bearing, self._speed)))
+        return Status.RUNNING
 
 
 class NavigateToWaypoint(py_trees.behaviour.Behaviour):
     """Send a Nav2 goal on first tick; poll completion on subsequent ticks."""
 
-    def __init__(self, navigator: BasicNavigator, node: Node,
-                 name: str = 'NavigateToWaypoint'):
+    def __init__(self, navigator: BasicNavigator, waypoints,
+                 log=None, name: str = 'NavigateToWaypoint'):
         super().__init__(name)
         self._nav = navigator
-        self._node = node
+        self._waypoints = waypoints
+        self._log = log or (lambda _msg: None)
 
-    def update(self) -> py_trees.common.Status:
+    def update(self) -> Status:
         bb = py_trees.blackboard.Blackboard()
-        goal_sent = bb.get(BB_NAV_GOAL_SENT) if bb.exists(BB_NAV_GOAL_SENT) else False
-
-        if not goal_sent:
-            wp_idx = bb.get(BB_WP_INDEX) if bb.exists(BB_WP_INDEX) else 0
-            waypoints = self._node._waypoints_bt
-            wp = waypoints[wp_idx % len(waypoints)]
+        if not _bb_get(BB_NAV_GOAL_SENT, False):
+            wp_idx = _bb_get(BB_WP_INDEX, 0)
+            wp = self._waypoints[wp_idx % len(self._waypoints)]
             goal = PoseStamped()
             goal.header.frame_id = 'map'
-            goal.header.stamp = self._nav.get_clock().now().to_msg()
+            goal.header.stamp = Time()  # zero stamp: use the latest transform
             goal.pose.position.x = wp[0]
             goal.pose.position.y = wp[1]
             goal.pose.orientation.w = 1.0
             self._nav.goToPose(goal)
             bb.set(BB_NAV_GOAL_SENT, True)
-            self._node.get_logger().info(f'BT: navigating to waypoint {wp_idx}')
+            self._log(f'patrol: heading to waypoint {wp_idx} {tuple(wp)}')
 
         if self._nav.isTaskComplete():
             bb.set(BB_NAV_GOAL_SENT, False)
-            return py_trees.common.Status.SUCCESS
-        return py_trees.common.Status.RUNNING
+            return Status.SUCCESS
+        return Status.RUNNING
 
 
 class WaitAtWaypoint(py_trees.behaviour.Behaviour):
@@ -180,17 +264,17 @@ class WaitAtWaypoint(py_trees.behaviour.Behaviour):
         super().__init__(name)
         self._dwell = dwell_secs
 
-    def update(self) -> py_trees.common.Status:
+    def update(self) -> Status:
         bb = py_trees.blackboard.Blackboard()
-        start = bb.get(BB_DWELL_START) if bb.exists(BB_DWELL_START) else None
+        start = _bb_get(BB_DWELL_START, None)
         now = time.monotonic()
         if start is None:
             bb.set(BB_DWELL_START, now)
-            return py_trees.common.Status.RUNNING
+            return Status.RUNNING
         if (now - start) >= self._dwell:
             bb.set(BB_DWELL_START, None)
-            return py_trees.common.Status.SUCCESS
-        return py_trees.common.Status.RUNNING
+            return Status.SUCCESS
+        return Status.RUNNING
 
 
 class IncrementWaypoint(py_trees.behaviour.Behaviour):
@@ -200,11 +284,10 @@ class IncrementWaypoint(py_trees.behaviour.Behaviour):
         super().__init__(name)
         self._n = n_waypoints
 
-    def update(self) -> py_trees.common.Status:
+    def update(self) -> Status:
         bb = py_trees.blackboard.Blackboard()
-        idx = bb.get(BB_WP_INDEX) if bb.exists(BB_WP_INDEX) else 0
-        bb.set(BB_WP_INDEX, (idx + 1) % self._n)
-        return py_trees.common.Status.SUCCESS
+        bb.set(BB_WP_INDEX, (_bb_get(BB_WP_INDEX, 0) + 1) % self._n)
+        return Status.SUCCESS
 
 
 # ---------------------------------------------------------------------------
@@ -213,39 +296,51 @@ class IncrementWaypoint(py_trees.behaviour.Behaviour):
 
 def build_security_guard_tree(
         navigator: BasicNavigator,
-        node: Node,
-        stop_distance: float = 0.8,
+        publish: Publish,
+        waypoints,
+        gains: FollowGains = FollowGains(),
+        target_timeout: float = 0.5,
+        search_secs: float = 6.0,
+        search_speed: float = 0.6,
         dwell_secs: float = 2.0,
+        log=None,
 ) -> py_trees.trees.BehaviourTree:
     """Construct and return the security guard behaviour tree."""
-    n_wp = len(node._waypoints_bt)
+    estop = py_trees.composites.Sequence('EmergencyStop', memory=False)
+    estop.add_children([EStopActive(), HaltRobot(navigator, publish)])
 
-    root = py_trees.composites.Selector('SecurityGuardRoot', memory=False)
-
-    intruder_seq = py_trees.composites.Sequence(
-        'IntruderProtocol', memory=False)
-    approach_sel = py_trees.composites.Selector(
-        'ApproachControl', memory=False)
-    approach_sel.add_children([
-        TooClose(stop_distance=stop_distance),
-        ChaseIntruder(node),
-    ])
-    intruder_seq.add_children([
-        IntruderVisible(),
+    intruder = py_trees.composites.Sequence('IntruderProtocol', memory=False)
+    intruder.add_children([
+        IntruderVisible(target_timeout),
         CancelPatrol(navigator),
-        approach_sel,
+        FollowIntruder(publish, gains),
     ])
 
-    patrol_seq = py_trees.composites.Sequence(
-        'PatrolProtocol', memory=True)
-    patrol_seq.add_children([
-        NavigateToWaypoint(navigator, node),
+    search = py_trees.composites.Sequence('SearchProtocol', memory=False)
+    search.add_children([
+        IntruderRecentlyLost(target_timeout, search_secs),
+        CancelPatrol(navigator),
+        SearchLastSeen(publish, search_speed),
+    ])
+
+    patrol = py_trees.composites.Sequence('PatrolProtocol', memory=True)
+    patrol.add_children([
+        NavigateToWaypoint(navigator, waypoints, log),
         WaitAtWaypoint(dwell_secs),
-        IncrementWaypoint(n_wp),
+        IncrementWaypoint(len(waypoints)),
     ])
 
-    root.add_children([intruder_seq, patrol_seq])
+    root = py_trees.composites.Selector('SecurityGuard', memory=False)
+    root.add_children([estop, intruder, search, patrol])
     return py_trees.trees.BehaviourTree(root)
+
+
+def active_protocol(tree: py_trees.trees.BehaviourTree) -> str:
+    """Name of the root child that ran last tick, e.g. 'PatrolProtocol'."""
+    for child in tree.root.children:
+        if child.status in (Status.RUNNING, Status.SUCCESS):
+            return child.name
+    return 'Idle'
 
 
 # ---------------------------------------------------------------------------
@@ -253,167 +348,148 @@ def build_security_guard_tree(
 # ---------------------------------------------------------------------------
 
 class SecurityGuardBTNode(Node):
-    """ROS 2 node that ticks a py_trees BehaviourTree at 10 Hz."""
+    """ROS 2 node that ticks the security guard tree at 10 Hz."""
 
     def __init__(self):
         super().__init__('security_guard_bt')
 
-        self.declare_parameter('hsv_red_lower1', [0, 100, 100])
-        self.declare_parameter('hsv_red_upper1', [10, 255, 255])
-        self.declare_parameter('hsv_red_lower2', [160, 100, 100])
-        self.declare_parameter('hsv_red_upper2', [180, 255, 255])
-        self.declare_parameter('angular_gain', 0.01)
-        self.declare_parameter('linear_speed', 0.2)
-        self.declare_parameter('max_angular_speed', 0.5)
-        self.declare_parameter('min_contour_area', 500.0)
         self.declare_parameter('waypoints', [
             3.28, 6.85, -0.92, 6.85, 5.13, -2.45,
             0.23, -2.55, -4.52, 8.60, 0.0, 0.0,
         ])
         self.declare_parameter('waypoint_dwell_secs', 2.0)
-        self.declare_parameter('stop_distance', 0.8)
+        self.declare_parameter('target_timeout', 0.5)
+        self.declare_parameter('search_secs', 6.0)
+        self.declare_parameter('search_angular_speed', 0.6)
+        self.declare_parameter('desired_distance', 2.5)
+        self.declare_parameter('deadband', 0.15)
+        self.declare_parameter('k_lin', 0.8)
+        self.declare_parameter('k_yaw', 1.5)
+        self.declare_parameter('max_linear_speed', 1.0)
+        self.declare_parameter('max_back_speed', 0.2)
+        self.declare_parameter('max_angular_speed', 1.5)
+        self.declare_parameter('safety_distance', 0.6)
 
-        flat = self.get_parameter('waypoints').value
-        self._waypoints_bt = [
-            [flat[i], flat[i + 1]] for i in range(0, len(flat) - 1, 2)]
-        self._angular_gain_bt = float(self.get_parameter('angular_gain').value)
-        self._linear_speed_bt = float(self.get_parameter('linear_speed').value)
-        self._max_ang_bt = float(self.get_parameter('max_angular_speed').value)
-        self._min_area_bt = float(self.get_parameter('min_contour_area').value)
-        dwell = float(self.get_parameter('waypoint_dwell_secs').value)
-        stop_dist = float(self.get_parameter('stop_distance').value)
+        gp = self.get_parameter
+        flat = gp('waypoints').value
+        waypoints = [[flat[i], flat[i + 1]] for i in range(0, len(flat) - 1, 2)]
+        gains = FollowGains(**{
+            name: float(gp(name).value) for name in vars(FollowGains())})
 
-        self._lower1 = np.array(
-            self.get_parameter('hsv_red_lower1').value, dtype=np.uint8)
-        self._upper1 = np.array(
-            self.get_parameter('hsv_red_upper1').value, dtype=np.uint8)
-        self._lower2 = np.array(
-            self.get_parameter('hsv_red_lower2').value, dtype=np.uint8)
-        self._upper2 = np.array(
-            self.get_parameter('hsv_red_upper2').value, dtype=np.uint8)
+        self._vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._state_pub = self.create_publisher(String, '/security_guard/state', 10)
+        self._diag_pub = self.create_publisher(
+            DiagnosticArray, '/security_guard/metrics', 10)
+        self._sighting_pub = self.create_publisher(
+            MarkerArray, '/intruder_sightings', 10)
 
-        self._bridge = CvBridge()
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(Bool, '/estop', self._estop_cb, latched)
+        self.create_subscription(Float32, '/target_bearing', self._bearing_cb, 10)
+        self.create_subscription(Float32, '/target_range', self._range_cb, 10)
+        self.create_subscription(
+            PointStamped, '/target_position', self._position_cb, 10)
+        self.create_subscription(
+            LaserScan, '/scan', self._scan_cb, qos_profile_sensor_data)
+        self.create_subscription(Odometry, '/odom', self._odom_cb, 10)
 
-        # Subscriptions
-        self._cam_sub = self.create_subscription(
-            Image, '/camera/image_raw', self._cam_cb, 10)
-        self._range_sub = self.create_subscription(
-            Float32, '/target_range', self._range_cb, 10)
-        self._yolo_sub = self.create_subscription(
-            Float32, '/person_detected',   # Bool remapped to Float32 topic stub
-            self._yolo_cb, 10)
-
-        self._vel_pub_bt = self.create_publisher(Twist, '/cmd_vel', 10)
-        self._diag_pub = self.create_publisher(DiagnosticArray, '/security_guard/metrics', 10)
-        self._sighting_pub = self.create_publisher(MarkerArray, '/intruder_sightings', 10)
-        self._odom_sub = self.create_subscription(
-            Odometry, '/odom', self._odom_cb, 10)
-
-        # Navigator and behaviour tree
-        self._navigator = BasicNavigator()
-        self._navigator.waitUntilNav2Active()
-
-        # Initialise blackboard
         bb = py_trees.blackboard.Blackboard()
+        bb.set(BB_ESTOP, False)
         bb.set(BB_WP_INDEX, 0)
         bb.set(BB_NAV_GOAL_SENT, False)
-        bb.set(BB_HSV_DETECTED, False)
-        bb.set(BB_YOLO_DETECTED, False)
+        bb.set(BB_LAST_SEEN, -math.inf)
         bb.set(BB_TARGET_RANGE, -1.0)
         bb.set(BB_TARGET_BEARING, 0.0)
+        bb.set(BB_FRONT_CLEAR, math.inf)
 
-        # Metrics state
+        # Blocks until AMCL and bt_navigator are active (AMCL gets its
+        # initial pose from nav2_params.yaml, so no RViz click is needed).
+        self._navigator = BasicNavigator()
+        self.get_logger().info('waiting for Nav2...')
+        self._navigator.waitUntilNav2Active()
+
+        self._bt = build_security_guard_tree(
+            self._navigator, self._vel_pub.publish, waypoints, gains,
+            target_timeout=float(gp('target_timeout').value),
+            search_secs=float(gp('search_secs').value),
+            search_speed=float(gp('search_angular_speed').value),
+            dwell_secs=float(gp('waypoint_dwell_secs').value),
+            log=self.get_logger().info)
+        self._bt.setup()
+        self.get_logger().info(
+            'behaviour tree:\n' + py_trees.display.unicode_tree(self._bt.root))
+
         self._metrics = {
             'waypoints_visited': 0,
             'intruder_detections': 0,
-            'time_in_chase_sec': 0.0,
+            'time_following_sec': 0.0,
             'distance_traveled_m': 0.0,
         }
         self._session_start = self.get_clock().now()
-        self._last_odom_pos = None
-        self._prev_intruder_detected = False
-        self._sighting_markers = MarkerArray()
-        self._sighting_id = 0
+        self._robot_pose = None  # (x, y, yaw) in odom
+        self._target_xy = None   # intruder position in odom
+        self._sightings = MarkerArray()
+        self._state = ''
         self._prev_wp_idx = 0
 
-        self._bt = build_security_guard_tree(
-            self._navigator, self, stop_dist, dwell)
-        self._bt.setup()
+        self.create_timer(0.1, self._tick)
+        self.create_timer(5.0, self._publish_metrics)
 
-        self._tick_timer = self.create_timer(0.1, self._tick)
-        self._metrics_timer = self.create_timer(5.0, self._publish_metrics)
+    # ------------------------------------------------------------------
 
-        # Display thread
-        self._display_frame = None
-        self._display_lock = threading.Lock()
-        self._display_thread = threading.Thread(
-            target=self._display_loop, daemon=True)
-        self._display_thread.start()
+    def _estop_cb(self, msg: Bool):
+        py_trees.blackboard.Blackboard().set(BB_ESTOP, bool(msg.data))
 
-    def _cam_cb(self, msg: Image):
-        try:
-            cv_image = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
-            hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
-            mask = (cv2.inRange(hsv, self._lower1, self._upper1) +
-                    cv2.inRange(hsv, self._lower2, self._upper2))
-            contours, _ = cv2.findContours(
-                mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            valid = [c for c in contours
-                     if cv2.contourArea(c) >= self._min_area_bt]
+    def _bearing_cb(self, msg: Float32):
+        if math.isfinite(msg.data):
             bb = py_trees.blackboard.Blackboard()
-            if valid:
-                c = max(valid, key=cv2.contourArea)
-                m = cv2.moments(c)
-                if m['m00'] > 0:
-                    cx = int(m['m10'] / m['m00'])
-                    _, width, _ = cv_image.shape
-                    bearing = float(cx - (width / 2))
-                    bb.set(BB_HSV_DETECTED, True)
-                    bb.set(BB_TARGET_BEARING, bearing)
-                    return
-            bb.set(BB_HSV_DETECTED, False)
-            with self._display_lock:
-                self._display_frame = cv_image
-        except Exception as e:
-            self.get_logger().debug(f'Camera error: {e}')
+            bb.set(BB_TARGET_BEARING, float(msg.data))
+            bb.set(BB_LAST_SEEN, time.monotonic())
 
     def _range_cb(self, msg: Float32):
-        bb = py_trees.blackboard.Blackboard()
-        bb.set(BB_TARGET_RANGE, msg.data)
+        py_trees.blackboard.Blackboard().set(BB_TARGET_RANGE, float(msg.data))
 
-    def _yolo_cb(self, msg):
-        bb = py_trees.blackboard.Blackboard()
-        bb.set(BB_YOLO_DETECTED, bool(msg.data))
+    def _position_cb(self, msg):
+        if self._robot_pose is None:
+            return
+        x, y, yaw = self._robot_pose
+        px, py = msg.point.x, msg.point.y
+        self._target_xy = (x + px * math.cos(yaw) - py * math.sin(yaw),
+                           y + px * math.sin(yaw) + py * math.cos(yaw))
+
+    def _scan_cb(self, msg: LaserScan):
+        py_trees.blackboard.Blackboard().set(
+            BB_FRONT_CLEAR,
+            front_clearance(msg.ranges, msg.angle_min, msg.angle_increment))
+
+    def _odom_cb(self, msg):
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        if self._robot_pose is not None:
+            self._metrics['distance_traveled_m'] += math.hypot(
+                p.x - self._robot_pose[0], p.y - self._robot_pose[1])
+        self._robot_pose = (p.x, p.y, yaw)
+
+    # ------------------------------------------------------------------
 
     def _tick(self):
-        """Tick the behaviour tree once."""
         self._bt.tick()
-
-        bb = py_trees.blackboard.Blackboard()
-        # Track chase time (0.1s per tick when intruder detected)
-        intruder_now = (
-            (bb.get('hsv_target_detected') if bb.exists('hsv_target_detected') else False)
-            or (bb.get('yolo_target_detected') if bb.exists('yolo_target_detected') else False)
-        )
-        if intruder_now:
-            self._metrics['time_in_chase_sec'] += 0.1
-            if not self._prev_intruder_detected:
+        state = active_protocol(self._bt)
+        if state != self._state:
+            self.get_logger().info(f'{self._state or "start"} -> {state}')
+            if state == 'IntruderProtocol':
                 self._metrics['intruder_detections'] += 1
                 self._add_sighting_marker()
-        self._prev_intruder_detected = intruder_now
+            self._state = state
+        self._state_pub.publish(String(data=state))
 
-        wp_now = bb.get('waypoint_index') if bb.exists('waypoint_index') else 0
+        if state == 'IntruderProtocol':
+            self._metrics['time_following_sec'] += 0.1
+        wp_now = _bb_get(BB_WP_INDEX, 0)
         if wp_now != self._prev_wp_idx:
             self._metrics['waypoints_visited'] += 1
             self._prev_wp_idx = wp_now
-
-    def _odom_cb(self, msg: Odometry):
-        pos = msg.pose.pose.position
-        if self._last_odom_pos is not None:
-            dx = pos.x - self._last_odom_pos.x
-            dy = pos.y - self._last_odom_pos.y
-            self._metrics['distance_traveled_m'] += (dx * dx + dy * dy) ** 0.5
-        self._last_odom_pos = pos
 
     def _publish_metrics(self):
         elapsed = (self.get_clock().now() - self._session_start).nanoseconds / 1e9
@@ -423,14 +499,15 @@ class SecurityGuardBTNode(Node):
         status.name = 'SecurityGuardBT'
         status.hardware_id = 'autonav_sim'
         status.level = DiagnosticStatus.OK
-        status.message = f'Session: {elapsed:.0f}s'
+        status.message = f'{self._state} | session {elapsed:.0f}s'
         status.values = [
+            KeyValue(key='state', value=self._state),
             KeyValue(key='waypoints_visited',
                      value=str(self._metrics['waypoints_visited'])),
             KeyValue(key='intruder_detections',
                      value=str(self._metrics['intruder_detections'])),
-            KeyValue(key='time_in_chase_sec',
-                     value=f"{self._metrics['time_in_chase_sec']:.1f}"),
+            KeyValue(key='time_following_sec',
+                     value=f"{self._metrics['time_following_sec']:.1f}"),
             KeyValue(key='distance_traveled_m',
                      value=f"{self._metrics['distance_traveled_m']:.2f}"),
             KeyValue(key='session_elapsed_sec', value=f'{elapsed:.1f}'),
@@ -439,56 +516,42 @@ class SecurityGuardBTNode(Node):
         self._diag_pub.publish(diag)
 
     def _add_sighting_marker(self):
-        if self._last_odom_pos is None:
+        """Mark where the intruder was seen (or the robot, if not ranged)."""
+        where = self._target_xy or (self._robot_pose[:2] if self._robot_pose else None)
+        if where is None:
             return
-        now_stamp = self.get_clock().now().to_msg()
+        stamp = self.get_clock().now().to_msg()
         elapsed = (self.get_clock().now() - self._session_start).nanoseconds / 1e9
+        n = len(self._sightings.markers) // 2
 
         sphere = Marker()
         sphere.header.frame_id = 'odom'
-        sphere.header.stamp = now_stamp
+        sphere.header.stamp = stamp
         sphere.ns = 'sightings'
-        sphere.id = self._sighting_id
+        sphere.id = n
         sphere.type = Marker.SPHERE
         sphere.action = Marker.ADD
-        sphere.pose.position.x = self._last_odom_pos.x
-        sphere.pose.position.y = self._last_odom_pos.y
+        sphere.pose.position.x, sphere.pose.position.y = where
         sphere.pose.position.z = 0.5
         sphere.pose.orientation.w = 1.0
         sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.3
-        sphere.color.r = 1.0
-        sphere.color.g = 0.0
-        sphere.color.b = 0.0
-        sphere.color.a = 0.8
-        self._sighting_markers.markers.append(sphere)
+        sphere.color.r, sphere.color.a = 1.0, 0.8
 
         label = Marker()
-        label.header.frame_id = 'odom'
-        label.header.stamp = now_stamp
+        label.header = sphere.header
         label.ns = 'sighting_labels'
-        label.id = self._sighting_id
+        label.id = n
         label.type = Marker.TEXT_VIEW_FACING
         label.action = Marker.ADD
-        label.pose.position.x = self._last_odom_pos.x
-        label.pose.position.y = self._last_odom_pos.y
+        label.pose.position.x, label.pose.position.y = where
         label.pose.position.z = 0.9
         label.pose.orientation.w = 1.0
         label.scale.z = 0.25
         label.color.r = label.color.g = label.color.b = label.color.a = 1.0
-        label.text = f'T={elapsed:.0f}s'
-        self._sighting_markers.markers.append(label)
+        label.text = f'#{n + 1} T={elapsed:.0f}s'
 
-        self._sighting_id += 1
-        self._sighting_pub.publish(self._sighting_markers)
-
-    def _display_loop(self):
-        while True:
-            with self._display_lock:
-                frame = self._display_frame
-            if frame is not None:
-                cv2.imshow('Security Guard BT', frame)
-                cv2.waitKey(1)
-            time.sleep(0.033)
+        self._sightings.markers += [sphere, label]
+        self._sighting_pub.publish(self._sightings)
 
 
 def main(args=None):
@@ -500,7 +563,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':

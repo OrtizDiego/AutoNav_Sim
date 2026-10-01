@@ -14,132 +14,107 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Detect and follow a red object using OpenCV HSV thresholding and ROS 2."""
+"""Chase the red ball using sensor_fusion's range and bearing.
 
+sensor_fusion (mode=hsv) finds the ball in the camera and ranges it with the
+lidar. This node keeps the robot ``desired_distance`` metres from the ball's
+surface with the shared stand-off controller, and when the ball is lost it
+turns toward where it was last seen for ``search_secs``.
+
+Subscribes: /target_bearing, /target_range (std_msgs/Float32), /scan
+Publishes:  /cmd_vel
+"""
+
+import math
 import threading
-import time
+from typing import Optional
 
-import cv2
-from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
-import numpy as np
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Float32
+
+from my_bot.follow_control import compute_command, front_clearance, search_command
 
 
 class BallChaser(Node):
-    """Node that detects a red object and publishes velocity commands to follow it."""
+    """Stand-off follower for the fused ball target."""
 
     def __init__(self):
         """Initialize the node, declare parameters, and set up pub/sub."""
         super().__init__('ball_chaser')
 
-        # --- Parameters (tunable at runtime via ros2 param set) ---
-        self.declare_parameter('hsv_red_lower1', [0, 100, 100])
-        self.declare_parameter('hsv_red_upper1', [10, 255, 255])
-        self.declare_parameter('hsv_red_lower2', [160, 100, 100])
-        self.declare_parameter('hsv_red_upper2', [180, 255, 255])
-        self.declare_parameter('angular_gain', 100.0)
-        self.declare_parameter('linear_speed', 0.2)
-        self.declare_parameter('min_contour_area', 300.0)
-        self.declare_parameter('search_angular_speed', 0.3)
-        self.declare_parameter('search_timeout_sec', 3.0)
+        self.declare_parameter('desired_distance', 1.0)
+        self.declare_parameter('deadband', 0.1)
+        self.declare_parameter('k_lin', 0.6)
+        self.declare_parameter('k_yaw', 1.8)
+        self.declare_parameter('max_linear_speed', 0.6)
+        self.declare_parameter('max_back_speed', 0.15)
+        self.declare_parameter('max_angular_speed', 1.5)
+        self.declare_parameter('safety_distance', 0.35)
+        self.declare_parameter('target_timeout', 0.5)
+        self.declare_parameter('search_secs', 20.0)
+        self.declare_parameter('search_angular_speed', 0.6)
 
-        self._load_params()
+        gp = self.get_parameter
+        self._desired = float(gp('desired_distance').value)
+        self._deadband = float(gp('deadband').value)
+        self._k_lin = float(gp('k_lin').value)
+        self._k_yaw = float(gp('k_yaw').value)
+        self._max_lin = float(gp('max_linear_speed').value)
+        self._max_back = float(gp('max_back_speed').value)
+        self._max_yaw = float(gp('max_angular_speed').value)
+        self._safety = float(gp('safety_distance').value)
+        self._timeout = float(gp('target_timeout').value)
+        self._search_secs = float(gp('search_secs').value)
+        self._search_speed = float(gp('search_angular_speed').value)
 
-        self._subscription = self.create_subscription(
-            Image, '/camera/image_raw', self._camera_callback, 10)
-        self._publisher = self.create_publisher(Twist, '/cmd_vel', 10)
-        self._bridge = CvBridge()
+        self._lock = threading.Lock()
+        self._bearing = 0.0
+        self._range: Optional[float] = None
+        self._last_seen = -1.0e9
+        self._front_clear = float('inf')
 
-        # State for search-rotate behavior
-        self._last_seen_time: float = 0.0
+        self.create_subscription(Float32, '/target_bearing', self._on_bearing, 10)
+        self.create_subscription(Float32, '/target_range', self._on_range, 10)
+        self.create_subscription(
+            LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
+        self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.create_timer(0.05, self._tick)
 
-        # Display in a background thread so cv2.imshow never blocks ROS spin
-        self._display_frame = None
-        self._display_lock = threading.Lock()
-        self._display_thread = threading.Thread(
-            target=self._display_loop, daemon=True)
-        self._display_thread.start()
+    def _on_bearing(self, msg: Float32):
+        if math.isfinite(msg.data):
+            with self._lock:
+                self._bearing = float(msg.data)
+                self._last_seen = self._now()
 
-    def _load_params(self):
-        """Cache parameter values as instance attributes."""
-        self._lower1 = np.array(
-            self.get_parameter('hsv_red_lower1').value, dtype=np.uint8)
-        self._upper1 = np.array(
-            self.get_parameter('hsv_red_upper1').value, dtype=np.uint8)
-        self._lower2 = np.array(
-            self.get_parameter('hsv_red_lower2').value, dtype=np.uint8)
-        self._upper2 = np.array(
-            self.get_parameter('hsv_red_upper2').value, dtype=np.uint8)
-        self._angular_gain = float(
-            self.get_parameter('angular_gain').value)
-        self._linear_speed = float(
-            self.get_parameter('linear_speed').value)
-        self._min_area = float(
-            self.get_parameter('min_contour_area').value)
-        self._search_speed = float(
-            self.get_parameter('search_angular_speed').value)
-        self._search_timeout = float(
-            self.get_parameter('search_timeout_sec').value)
+    def _on_range(self, msg: Float32):
+        with self._lock:
+            self._range = float(msg.data) if msg.data > 0.0 else None
 
-    def _camera_callback(self, msg: Image):
-        """Process a camera frame: detect target and publish velocity."""
-        try:
-            cv_image = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
-            hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+    def _on_scan(self, msg: LaserScan):
+        clear = front_clearance(msg.ranges, msg.angle_min, msg.angle_increment)
+        with self._lock:
+            self._front_clear = clear
 
-            mask = (cv2.inRange(hsv, self._lower1, self._upper1) +
-                    cv2.inRange(hsv, self._lower2, self._upper2))
-            contours, _ = cv2.findContours(
-                mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    def _tick(self):
+        with self._lock:
+            lost_for = self._now() - self._last_seen
+            bearing, rng, front = self._bearing, self._range, self._front_clear
+        cmd = Twist()
+        if lost_for <= self._timeout:
+            cmd.linear.x, cmd.angular.z = compute_command(
+                bearing, rng, self._desired, self._k_lin, self._k_yaw,
+                self._max_lin, self._max_back, self._max_yaw,
+                self._deadband, front, self._safety)
+        elif lost_for <= self._timeout + self._search_secs:
+            cmd.angular.z = search_command(bearing, self._search_speed)
+        self._cmd_pub.publish(cmd)
 
-            cmd = Twist()
-            now = time.monotonic()
-
-            valid = [c for c in contours
-                     if cv2.contourArea(c) >= self._min_area]
-            if valid:
-                c = max(valid, key=cv2.contourArea)
-                m = cv2.moments(c)
-                if m['m00'] > 0:
-                    cx = int(m['m10'] / m['m00'])
-                    _, width, _ = cv_image.shape
-                    error_x = cx - (width / 2)
-                    cmd.angular.z = -float(error_x) / self._angular_gain
-                    cmd.linear.x = self._linear_speed
-                    self._last_seen_time = now
-                    self.get_logger().debug(f'Tracking — error_x={error_x:.1f}')
-                    # Draw tracking indicator on display frame
-                    cy = int(m['m01'] / m['m00'])
-                    cv2.circle(cv_image, (cx, cy), 10, (0, 255, 0), 3)
-            else:
-                # Search: rotate slowly until timeout, then stop
-                elapsed = now - self._last_seen_time
-                if self._last_seen_time > 0 and elapsed < self._search_timeout:
-                    cmd.angular.z = self._search_speed
-                else:
-                    cmd.linear.x = 0.0
-                    cmd.angular.z = 0.0
-
-            self._publisher.publish(cmd)
-
-            with self._display_lock:
-                self._display_frame = cv_image
-
-        except Exception as e:
-            self.get_logger().error(f'Camera callback error: {e}')
-
-    def _display_loop(self):
-        """Render latest frame at ~30 fps in a dedicated thread."""
-        while True:
-            with self._display_lock:
-                frame = self._display_frame
-            if frame is not None:
-                cv2.imshow('Ball Chaser View', frame)
-                cv2.waitKey(1)
-            time.sleep(0.033)
+    def _now(self) -> float:
+        return self.get_clock().now().nanoseconds / 1e9
 
 
 def main(args=None):
@@ -151,7 +126,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':

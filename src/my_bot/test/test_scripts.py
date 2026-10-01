@@ -15,6 +15,7 @@
 """Tests for verifying that scripts are executable, have correct shebangs, and compile."""
 
 import os
+import re
 import subprocess
 import sys
 
@@ -30,21 +31,29 @@ def _scripts_path():
     return scripts_path
 
 
+# Executable nodes (setup.py console_scripts)
 SCRIPTS = [
+    'ball_controller.py',
+    'ball_teleop.py',
     'ball_chaser.py',
-    'camera_test.py',
-    'patrol.py',
-    'security_guard.py',
     'sensor_fusion.py',
-    'system_monitor.py',
-    'security_guard_bt.py',
-    'object_detector.py',
-    'intruder_bot.py',
-    'obstacle_controller.py',
     'person_controller.py',
     'person_tracker.py',
-    'person_follower.py',
+    'security_guard_bt.py',
+    'system_monitor.py',
 ]
+
+PKG_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(PKG_PATH))
+
+# make target -> (launch file, world, rviz config)
+SCENARIOS = {
+    'sim': ('sim.launch.py', 'room.world', 'sim.rviz'),
+    'nav-sim': ('nav_sim.launch.py', 'room.world', 'navigation.rviz'),
+    'ball-sim': ('ball_sim.launch.py', 'ball.world', 'perception.rviz'),
+    'person-sim': ('person_sim.launch.py', 'person.world', 'person.rviz'),
+    'yolo-sim': ('yolo_sim.launch.py', 'yolo.world', 'perception.rviz'),
+}
 
 
 def test_scripts_have_shebang():
@@ -52,8 +61,6 @@ def test_scripts_have_shebang():
     scripts_path = _scripts_path()
     for script in SCRIPTS:
         full_path = os.path.join(scripts_path, script)
-        if not os.path.exists(full_path):
-            continue  # script added in later phase — skip gracefully
         with open(full_path) as f:
             first_line = f.readline()
         assert first_line.startswith('#!'), f'{script} missing shebang'
@@ -65,8 +72,6 @@ def test_scripts_compile():
     scripts_path = _scripts_path()
     for script in SCRIPTS:
         full_path = os.path.join(scripts_path, script)
-        if not os.path.exists(full_path):
-            continue  # script added in later phase — skip gracefully
         result = subprocess.run(
             [sys.executable, '-m', 'py_compile', full_path],
             capture_output=True, text=True)
@@ -74,30 +79,57 @@ def test_scripts_compile():
             f'{script} has syntax error:\n{result.stderr}')
 
 
-def test_security_guard_launch_drives_lifecycle():
-    """security_guard_full.launch.py must configure, then activate, security_guard."""
-    pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
-    with open(launch_file) as f:
+def test_setup_entry_points_match_scripts():
+    """Every console_script points at an existing module with a main()."""
+    with open(os.path.join(PKG_PATH, 'setup.py')) as f:
+        setup_src = f.read()
+    entries = re.findall(r"'(\w+) = my_bot\.(\w+):main'", setup_src)
+    assert sorted(f'{mod}.py' for _, mod in entries) == sorted(SCRIPTS)
+    for _, mod in entries:
+        with open(os.path.join(_scripts_path(), f'{mod}.py')) as f:
+            assert 'def main(' in f.read(), mod
+
+
+def _make_targets():
+    makefile = os.path.join(REPO_ROOT, 'Makefile')
+    if not os.path.exists(makefile):
+        # Inside the Docker container only src/ is mounted.
+        pytest.skip('Makefile not available (only src/ is mounted)')
+    with open(makefile) as f:
+        return dict(re.findall(r'^([a-z-]+):\n\t(.*)$', f.read(), re.M))
+
+
+@pytest.mark.parametrize('target', sorted(SCENARIOS))
+def test_scenario_wiring(target):
+    """make <scenario> launches the right file, world and RViz layout."""
+    launch, world, rviz = SCENARIOS[target]
+    with open(os.path.join(PKG_PATH, 'launch', launch)) as f:
         src = f.read()
-    assert 'Transition.TRANSITION_CONFIGURE' in src
-    assert 'Transition.TRANSITION_ACTIVATE' in src
-    assert "start_state='configuring'" in src
-    assert "goal_state='inactive'" in src
-    assert 'configure_security_guard' in src.split('LaunchDescription([')[-1]
-    assert 'activate_on_inactive' in src.split('LaunchDescription([')[-1]
+    if world != 'room.world':  # room.world is sim.launch.py's default
+        assert f"'{world}'" in src
+    assert f"'{rviz}'" in src
+    assert os.path.exists(os.path.join(PKG_PATH, 'worlds', world))
+    assert os.path.exists(os.path.join(PKG_PATH, 'config', rviz))
+    assert f'ros2 launch $(PACKAGE_NAME) {launch}' in _make_targets()[target]
 
 
-def test_security_guard_launch_description_builds():
-    """Import and build security_guard_full.launch.py (needs a ROS environment)."""
+def test_makefile_runs_only_existing_nodes():
+    for target, cmd in _make_targets().items():
+        for node in re.findall(r'ros2 run \$\(PACKAGE_NAME\) (\w+)', cmd):
+            assert f'{node}.py' in SCRIPTS, f'make {target} runs unknown {node}'
+
+
+@pytest.mark.parametrize('launch_file', sorted(
+    f for f in os.listdir(os.path.join(PKG_PATH, 'launch')) if f.endswith('.launch.py')))
+def test_launch_description_builds(launch_file):
+    """Import and build each launch file (needs a ROS environment)."""
     # Skip only without a sourced ROS environment; in CI a broken import
     # must fail here, not be skipped.
     if not os.environ.get('ROS_DISTRO'):
         pytest.skip('ROS environment not sourced')
-    pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
-    # Run in a fresh interpreter: other test modules replace rclpy and other
-    # ROS modules with stubs in sys.modules, which breaks importing launch_ros.
+    path = os.path.join(PKG_PATH, 'launch', launch_file)
+    # Run in a fresh interpreter: conftest.py replaces rclpy and the message
+    # packages with stubs in sys.modules, which breaks importing launch_ros.
     # colcon test does not put my_bot itself on the ament index, so resolve
     # its share directory to the source package instead.
     script = (
@@ -110,7 +142,7 @@ def test_security_guard_launch_description_builds():
         'assert module.generate_launch_description().entities\n'
     )
     result = subprocess.run(
-        [sys.executable, '-c', script, pkg_path, launch_file],
+        [sys.executable, '-c', script, PKG_PATH, path],
         capture_output=True, text=True)
     assert result.returncode == 0, (
-        f'security_guard_full.launch.py failed to build:\n{result.stderr}')
+        f'{launch_file} failed to build:\n{result.stderr}')

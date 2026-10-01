@@ -1,0 +1,81 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <!--
+    yolo-sim: the smallest scene that proves the perception chain.
+    A person stands in front of the robot; a box and a cylinder sit to
+    either side so you can see that YOLO boxes only the person, and that
+    sensor_fusion ranges the person (not the other objects) with the lidar.
+  -->
+  <world name="default">
+    <include>
+      <uri>model://sun</uri>
+    </include>
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <model name="crate">
+      <static>true</static>
+      <pose>4.0 -1.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.8 0.8 0.8</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.8 0.8 0.8</size></box></geometry>
+          <material><ambient>0.55 0.35 0.15 1</ambient><diffuse>0.55 0.35 0.15 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="barrel">
+      <static>true</static>
+      <pose>4.0 1.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><cylinder><radius>0.35</radius><length>0.8</length></cylinder></geometry></collision>
+        <visual name="v"><geometry><cylinder><radius>0.35</radius><length>0.8</length></cylinder></geometry>
+          <material><ambient>0.1 0.3 0.7 1</ambient><diffuse>0.1 0.3 0.7 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!--
+      Static person for yolo-sim: 3 m straight ahead of the robot, facing
+      it. Its feet are at x = 3.0 and the body is ~0.3 m deep, so
+      /target_range should read about 2.8-3.0 m.
+
+      Skin and both clips come from Gazebo's bundled media (walk.dae and
+      run.dae share the same CMU skeleton). There is deliberately no
+      <script>: a scripted trajectory would overwrite the pose every frame.
+      Motion comes from PersonActorPlugin, which reads /person/cmd_vel and
+      plays the run clip above run_threshold. With nobody publishing
+      /person/cmd_vel the actor stands still at its <pose>.
+
+      <pose> yaw is the initial heading.
+    -->
+    <actor name="person_intruder">
+      <pose>3.0 0.0 0 0 0 3.14159</pose>
+      <skin>
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+      <animation name="walking">
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>false</interpolate_x>
+      </animation>
+      <animation name="running">
+        <filename>run.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>false</interpolate_x>
+      </animation>
+      <plugin name="person_actor" filename="libperson_actor_plugin.so">
+        <ros>
+          <namespace>/person</namespace>
+        </ros>
+        <walking_animation>walking</walking_animation>
+        <running_animation>running</running_animation>
+        <run_threshold>1.6</run_threshold>
+        <walk_animation_factor>4.15</walk_animation_factor>
+        <run_animation_factor>1.71</run_animation_factor>
+        <height>1.2138</height>
+        <cmd_timeout>0.5</cmd_timeout>
+      </plugin>
+    </actor>
+  </world>
+</sdf>

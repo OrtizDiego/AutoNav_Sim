@@ -42,12 +42,13 @@ def _load_params():
 
 # YAML section (node name) -> source file that declares its parameters.
 NODE_SOURCES = {
+    'ball_controller': 'ball_controller.py',
     'ball_chaser': 'ball_chaser.py',
-    'security_guard': 'security_guard.py',
     'sensor_fusion': 'sensor_fusion.py',
     'person_controller': 'person_controller.py',
     'person_tracker': 'person_tracker.py',
-    'person_follower': 'person_follower.py',
+    'security_guard_bt': 'security_guard_bt.py',
+    'system_monitor': 'system_monitor.py',
 }
 
 
@@ -86,20 +87,17 @@ def _ros_type(value):
 
 
 BALL_CHASER_KEYS = [
-    'hsv_red_lower1', 'hsv_red_upper1',
-    'hsv_red_lower2', 'hsv_red_upper2',
-    'angular_gain', 'linear_speed',
-    'min_contour_area', 'search_angular_speed', 'search_timeout_sec',
+    'desired_distance', 'k_lin', 'k_yaw', 'max_linear_speed',
+    'safety_distance', 'target_timeout', 'search_secs',
 ]
 
-SECURITY_GUARD_KEYS = [
-    'hsv_red_lower1', 'hsv_red_upper1',
-    'hsv_red_lower2', 'hsv_red_upper2',
-    'angular_gain', 'linear_speed', 'max_angular_speed',
-    'min_contour_area', 'stop_distance_area', 'waypoints',
+SECURITY_GUARD_BT_KEYS = [
+    'waypoints', 'waypoint_dwell_secs', 'target_timeout', 'search_secs',
+    'desired_distance', 'k_lin', 'k_yaw', 'safety_distance',
 ]
 
 SENSOR_FUSION_KEYS = [
+    'mode',
     'hsv_red_lower1', 'hsv_red_upper1',
     'hsv_red_lower2', 'hsv_red_upper2',
     'min_contour_area', 'range_min', 'range_max',
@@ -140,11 +138,11 @@ def test_ball_chaser_keys():
         assert key in bc, f'ball_chaser missing key: {key}'
 
 
-def test_security_guard_keys():
-    """security_guard section must contain all required keys."""
-    sg = _load_params()['security_guard']
-    for key in SECURITY_GUARD_KEYS:
-        assert key in sg, f'security_guard missing key: {key}'
+def test_security_guard_bt_keys():
+    """security_guard_bt section must contain all required keys."""
+    sg = _load_params()['security_guard_bt']
+    for key in SECURITY_GUARD_BT_KEYS:
+        assert key in sg, f'security_guard_bt missing key: {key}'
 
 
 def test_sensor_fusion_keys():
@@ -173,7 +171,7 @@ def test_yaml_params_match_declared_types(section):
 def test_hsv_ranges_valid():
     """All HSV boundary values must be integers in [0, 255]."""
     params = _load_params()
-    for section in ('ball_chaser', 'security_guard', 'sensor_fusion'):
+    for section in ('sensor_fusion',):
         for key in ('hsv_red_lower1', 'hsv_red_upper1',
                     'hsv_red_lower2', 'hsv_red_upper2'):
             values = params[section][key]
@@ -185,9 +183,20 @@ def test_hsv_ranges_valid():
 
 def test_waypoints_format():
     """Waypoints must be a flat [x0, y0, x1, y1, ...] list of floats."""
-    waypoints = _load_params()['security_guard']['waypoints']
+    waypoints = _load_params()['security_guard_bt']['waypoints']
     assert isinstance(waypoints, list), 'waypoints must be a list'
     assert len(waypoints) > 0, 'waypoints must not be empty'
     assert len(waypoints) % 2 == 0, 'waypoints must contain x, y pairs'
     for v in waypoints:
         assert isinstance(v, float), f'Waypoint values must be floats: {v!r}'
+
+
+def test_waypoints_are_open_floor():
+    """Each patrol waypoint must be reachable floor on the museum map."""
+    from my_bot.clearance_map import ClearanceMap
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    cmap = ClearanceMap.from_yaml(
+        os.path.join(os.path.dirname(test_dir), 'maps', 'my_map.yaml'))
+    flat = _load_params()['security_guard_bt']['waypoints']
+    for x, y in zip(flat[0::2], flat[1::2]):
+        assert cmap.clearance(x, y) >= 0.5, f'waypoint ({x}, {y}) is too close to a wall'

@@ -12,25 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Launch person.world + tracker + controller + follower.
+"""The full security-guard demo: `make person-sim`.
 
-Starts the full pipeline:
+  1. Gazebo with person.world (museum + walking/running pedestrian) and RViz.
+  2. Nav2 (map_server + AMCL + planners) on maps/my_map, for the patrol.
+  3. person_controller: WALK / RUN / EXHAUSTED pedestrian that steers on the
+     museum map so it never walks into a wall, and sprints away once the
+     robot's tracker locks on.
+  4. person_tracker: YOLOv8n + OpenCV tracker + Kalman -> /person_bbox.
+  5. sensor_fusion (mode person): bbox + lidar -> range and bearing.
+  6. security_guard_bt: py_trees tree. Patrols Nav2 waypoints; when the
+     intruder is seen it cancels the patrol and follows at 2.5 m; when the
+     intruder is lost it searches toward the last-seen side, then resumes
+     the patrol. Latched e-stop from system_monitor overrides everything.
+  7. system_monitor: sensor watchdog, /trigger_estop and /clear_estop.
 
-  1. Gazebo with ``person.world`` (animated actor driven by
-     ``libperson_actor_plugin.so`` from the ``person_actor_plugin`` package).
-  2. ``person_tracker``: YOLO + OpenCV tracker + Kalman filter.
-  3. ``person_controller``: WALK/RUN/EXHAUSTED behaviour publishing
-     ``/person/cmd_vel``.
-  4. ``person_follower``: keeps the robot at the stand-off distance.
-
-All nodes use simulation time so the person's timing matches Gazebo.
+Watch /security_guard/state for PatrolProtocol / IntruderProtocol /
+SearchProtocol / EmergencyStop.
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
@@ -40,46 +45,33 @@ def generate_launch_description():
     pkg = get_package_share_directory('my_bot')
     # behavior_params.yaml is a standard params file; each node picks up its
     # own <node_name>: ros__parameters: section.
-    node_params = [
-        os.path.join(pkg, 'config', 'behavior_params.yaml'),
-        {'use_sim_time': True},
-    ]
+    params = [os.path.join(pkg, 'config', 'behavior_params.yaml'),
+              {'use_sim_time': True}]
 
-    sim_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg, 'launch', 'sim.launch.py')),
+    sim = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'sim.launch.py')),
         launch_arguments={
             'world': os.path.join(pkg, 'worlds', 'person.world'),
+            'rviz_config': os.path.join(pkg, 'config', 'person.rviz'),
         }.items(),
     )
+    # Give Gazebo a head start so /clock, /scan and odom TF exist when
+    # AMCL and the costmaps activate.
+    nav2 = TimerAction(period=5.0, actions=[IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg, 'launch', 'navigation.launch.py')))])
 
-    person_tracker = Node(
-        package='my_bot',
-        executable='person_tracker',
-        name='person_tracker',
-        output='screen',
-        parameters=node_params,
-    )
-
-    person_controller = Node(
-        package='my_bot',
-        executable='person_controller',
-        name='person_controller',
-        output='screen',
-        parameters=node_params,
-    )
-
-    person_follower = Node(
-        package='my_bot',
-        executable='person_follower',
-        name='person_follower',
-        output='screen',
-        parameters=node_params,
-    )
+    def node(executable, extra=None):
+        return Node(package='my_bot', executable=executable, name=executable,
+                    output='screen', parameters=params + ([extra] if extra else []))
 
     return LaunchDescription([
-        sim_launch,
-        person_tracker,
-        person_controller,
-        person_follower,
+        sim,
+        nav2,
+        node('person_controller', {
+            'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml')}),
+        node('person_tracker'),
+        node('sensor_fusion', {'mode': 'person'}),
+        node('security_guard_bt'),
+        node('system_monitor'),
     ])

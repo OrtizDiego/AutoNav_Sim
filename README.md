@@ -23,164 +23,91 @@ A comprehensive simulation environment for developing and testing autonomous nav
 
 ## 🚀 Project Overview
 
-**AutoNav Sim** is a modular robotics framework for simulating a differential drive robot (modelled on the TurtleBot3 Waffle Pi) in complex environments. Built on **ROS 2 Humble**, it serves as a testbed for verifying navigation stacks and perception algorithms before deployment on physical hardware.
+**AutoNav Sim** is a modular robotics framework for simulating a differential drive robot (modelled on the TurtleBot3 Waffle Pi) in a museum environment. Built on **ROS 2 Humble**, it serves as a testbed for verifying navigation stacks and perception algorithms before deployment on physical hardware.
 
 This project demonstrates expertise in:
 
 * **Full-Stack Robotics:** From URDF/Xacro modeling (with realistic sensor noise) to high-level behavior scripting.
-* **Autonomous Navigation:** The **Nav2** stack with A* global planner and DWB local planner.
-* **SLAM:** `slam_toolbox` for real-time occupancy grid generation.
-* **Sensor Fusion:** LiDAR-camera fusion node that projects camera pixel bearings onto LiDAR scan ranges for metric distance estimation.
-* **Behavior Trees:** `py_trees`-based security guard with dual-modal detection (HSV + YOLOv8).
-* **Deep Learning Inference:** YOLOv8-nano ONNX node with GPU auto-select (CUDA → CPU fallback).
+* **Autonomous Navigation:** The **Nav2** stack with A* global planner and DWB local planner, AMCL localization and `slam_toolbox` mapping.
+* **Deep Learning Perception:** YOLOv8-nano (ONNX, CUDA → CPU fallback) seeding an OpenCV tracker smoothed by a Kalman filter.
+* **Sensor Fusion:** Camera boxes ranged with the LiDAR, cross-checked against a monocular estimate.
+* **Behavior Trees:** A `py_trees` security guard that patrols, follows intruders, searches for them and obeys an e-stop.
 * **DevOps & Reproducibility:** Fully containerized development environment with CI/CD via GitHub Actions.
 
 ---
 
-## 🛠️ Key Features
+## 🎬 Scenarios
 
-### 1. Autonomous Navigation & Mapping
+Everything is grouped into four one-command scenarios. Each opens Gazebo and an RViz layout made for it. Run them from the host. The `make` targets `docker exec` into the container.
 
-* **Mapping:** Asynchronous SLAM using `slam_toolbox`.
-* **Localization:** AMCL (Adaptive Monte Carlo Localization) particle filter.
-* **Planning:** A* (Global Planner) and DWB (Local Planner) controllers.
+| Command | What you see |
+|---------|--------------|
+| `make sim` | The robot in the museum (`room.world`), nothing else. Drive it with `make teleop`. |
+| `make nav-sim` | `sim` + Nav2 in one go: map, costmaps and AMCL pose appear immediately. Send goals with RViz's **Nav2 Goal** tool. |
+| `make ball-sim` | The robot chases a red ball around the museum. |
+| `make person-sim` | **The full demo:** a security guard that patrols, spots a running person with YOLO, follows them, searches when they escape and resumes the patrol. |
+| `make yolo-sim` | A person standing in front of the robot: proof of YOLO detection + LiDAR fusion. |
 
-### 2. LiDAR-Camera Sensor Fusion
+> **Why does `make sim` show no map?** Nothing publishes `/map` (or the `map → odom` transform) until Nav2's map_server and AMCL run. `make sim` + `make nav` in two terminals works, but `make nav-sim` starts both. AMCL's initial pose is the spawn point (`nav2_params.yaml`), so no "2D Pose Estimate" click is needed.
 
-`sensor_fusion.py` fuses the camera and LiDAR in real time:
-
-1. Detects the red target via HSV thresholding → computes pixel centroid.
-2. Converts the pixel column to a bearing angle using camera intrinsics (FOV=1.089 rad, fx≈534.8 px).
-3. Maps the bearing to the nearest LiDAR scan index and reads the metric range.
-4. Publishes `/target_range` (Float32, metres) and `/target_position` (PointStamped in `base_link`).
-
-Both security guard nodes subscribe to `/target_range` for accurate, metric stop-distance decisions — replacing the fragile contour-area heuristic.
-
-### 3. Behavior Tree Security Guard
-
-`security_guard_bt.py` implements patrol + intruder interception as a `py_trees` BehaviourTree, ticked at 10 Hz:
+### `make ball-sim`: chase the ball
 
 ```
-Selector("SecurityGuardRoot")
-├── Sequence("IntruderProtocol")          ← HIGH PRIORITY
-│   ├── IntruderVisible                   ← HSV OR YOLO detection (blackboard)
-│   ├── CancelPatrol                      ← cancels active Nav2 goal
-│   └── Selector("ApproachControl")
-│       ├── TooClose                      ← range < 0.8 m → hold position
-│       └── ChaseIntruder                 ← proportional cmd_vel
-└── Sequence("PatrolProtocol", memory=True)  ← LOW PRIORITY
-    ├── NavigateToWaypoint                ← Nav2 goToPose
-    ├── WaitAtWaypoint                    ← configurable dwell timer
-    └── IncrementWaypoint                 ← wraps waypoint index
+ball.world ──▶ camera ──▶ sensor_fusion (mode hsv) ──▶ /target_range, /target_bearing ──▶ ball_chaser ──▶ /cmd_vel
+                  lidar ──┘                                                          ball_controller ──▶ /ball/cmd_vel
 ```
 
-Publishes mission metrics to `/security_guard/metrics` (DiagnosticArray, 5 s interval) and RViz sphere markers to `/intruder_sightings` for each new sighting event.
+* **ball_controller** drives the ball on a figure-eight through the U where the robot starts and the hall to its right. The path is checked against the map to keep the ball over 1 m from every wall. The ball plays with the robot: it runs when the robot gets close, waits when the robot falls behind, pauses now and then, and sometimes turns back.
+* **sensor_fusion** finds the red blob, converts its pixel span to bearings and takes a low percentile of the LiDAR beams inside it as the range.
+* **ball_chaser** keeps 1 m from the ball's surface; when the ball is lost it turns toward where it was last seen.
+* **`make teleop-ball`** (second terminal) takes the ball over by hand. Hold `w a s d` (or `q e z c` for diagonals) to move it and release to stop. By default the keys are relative to the robot's view: `w` = away from the robot, `a` = the robot's left. `m` switches to world axes and `+`/`-` change speed. Quit with Ctrl-C and the autopilot resumes.
+* Options: `ros2 launch my_bot ball_sim.launch.py chase:=false` (drive the robot yourself) or `autopilot:=false` (ball only moves when teleoperated).
 
-### 4. LifecycleNode Security Guard
-
-`security_guard.py` is the imperative version implemented as a **ROS 2 LifecycleNode** with the full `Unconfigured → Inactive → Active` state machine. It reads `/target_range` from sensor fusion for metric stopping and supports clean configure/activate/deactivate/cleanup cycles.
-
-### 5. YOLOv8-nano Object Detector
-
-`object_detector.py` runs YOLOv8-nano ONNX inference on `/camera/image_raw`:
-
-* Auto-selects `CUDAExecutionProvider` (GPU) with `CPUExecutionProvider` fallback.
-* Publishes `/detections` (MarkerArray), `/person_detected` (Bool), `/target_detected` (Bool).
-* If the model file is missing, logs a warning and falls back gracefully — HSV detection remains active.
-
-### 6. System Watchdog
-
-`system_monitor.py` monitors heartbeats from `/scan` and `/camera/image_raw`:
-
-* Publishes `/system_health` (DiagnosticArray) at 1 Hz.
-* Provides a `/trigger_estop` service that zeros `/cmd_vel` and requests lifecycle deactivation of `security_guard`.
-
-### 7. Dynamic Obstacle Environment
-
-`dynamic.world` adds two autonomously moving obstacles alongside the intruder sphere:
-
-* **`moving_box_1`** (blue, 0.5×0.5×1.0 m) and **`moving_cylinder_1`** (orange, r=0.3 m).
-* Each obstacle uses the `libgazebo_ros_planar_move.so` Gazebo plugin (defined in SDF), remapping `cmd_vel` to `obstacle1_cmd_vel` / `obstacle2_cmd_vel`.
-* `obstacle_controller.py` publishes random-walk `Twist` commands to those topics at 10 Hz, reversing direction near the boundary radius.
-
-### 8. Realistic Sensor Noise (URDF/Xacro)
-
-Gaussian noise is declared directly in the Xacro URDF files:
-
-| Sensor | Type | stddev |
-|--------|------|--------|
-| LiDAR (`lidar.xacro`) | Gaussian range noise | **0.01 m** |
-| Camera (`camera.xacro`) | Gaussian pixel intensity noise | **0.007** |
-
-### 9. CI/CD Pipeline
-
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push and PR to `main`:
-1. Ament linting (PEP 8, naming conventions)
-2. URDF/Xacro validation
-3. Script shebang and executability checks
-4. Pytest with Codecov coverage upload
-
----
-
-## 🏗️ System Architecture
+### `make person-sim`: security guard (the demo)
 
 ```mermaid
 graph LR
-    subgraph Gazebo [Gazebo Simulation]
-        GZ_Scan[/scan/]
-        GZ_Odom[/odom/]
-        GZ_Cam[/camera/image_raw/]
-    end
-
-    subgraph SLAM [SLAM Toolbox]
-        STB[Mapping Node]
-    end
-
-    subgraph Nav [Nav2 Stack]
-        N2[Navigation Node]
-    end
-
-    subgraph Perception [Perception Layer]
-        SF[sensor_fusion → /target_range]
-        OD[object_detector → /person_detected]
-    end
-
-    subgraph Guard [Security Guard BT]
-        BT[py_trees @ 10 Hz]
-    end
-
-    subgraph Monitor [System Monitor]
-        WD[Watchdog + /trigger_estop]
-    end
-
-    GZ_Scan --> STB
-    GZ_Odom --> STB
-    STB -->|/map| N2
-
-    GZ_Scan --> N2
-    GZ_Odom --> N2
-
-    GZ_Scan --> SF
-    GZ_Cam --> SF
-    GZ_Cam --> OD
-
-    SF -->|/target_range| BT
-    OD -->|/person_detected| BT
-    GZ_Cam --> BT
-
-    N2 -.->|Nav2 API| BT
-    BT -->|/cmd_vel| GZ_Drive[Robot Drive]
-    N2 -->|/cmd_vel| GZ_Drive
-
-    GZ_Scan --> WD
-    GZ_Cam --> WD
-    WD -->|/trigger_estop| BT
-
-    style Gazebo fill:#f9f,stroke:#333,stroke-width:2px
-    style Guard fill:#bbf,stroke:#333,stroke-width:2px
-    style Perception fill:#bfb,stroke:#333,stroke-width:2px
-    style Monitor fill:#fbb,stroke:#333,stroke-width:2px
+    CAM[/camera/image_raw/] --> PT[person_tracker<br/>YOLOv8n + CSRT + Kalman]
+    PT -->|/person_bbox| SF[sensor_fusion<br/>mode person]
+    SCAN[/scan/] --> SF
+    SF -->|/target_range<br/>/target_bearing| BT[security_guard_bt]
+    SCAN --> BT
+    NAV[Nav2 + AMCL] <-->|goToPose| BT
+    BT -->|/cmd_vel| ROBOT[Robot]
+    NAV -->|/cmd_vel| ROBOT
+    PT -->|/person_detected| PC[person_controller]
+    PC -->|/person/cmd_vel| ACTOR[Gazebo actor]
+    SM[system_monitor] -->|/estop| BT
 ```
+
+The behaviour tree, ticked at 10 Hz:
+
+```
+Selector("SecurityGuard")
+├── Sequence("EmergencyStop")      EStopActive → HaltRobot
+├── Sequence("IntruderProtocol")   IntruderVisible → CancelPatrol → FollowIntruder (2.5 m stand-off)
+├── Sequence("SearchProtocol")     IntruderRecentlyLost → CancelPatrol → SearchLastSeen
+└── Sequence("PatrolProtocol")     NavigateToWaypoint → WaitAtWaypoint → IncrementWaypoint
+```
+
+* **person_controller** animates the pedestrian: it **walks** between random spots, **runs** away once the robot's tracker locks on, and is **exhausted** after a sprint. Gazebo actors have no physics, so it steers on the saved museum map. It only picks targets in line of sight, takes the heading closest to its goal that has free floor ahead, and caps its speed so it can always stop before a wall. A test simulates minutes of walking and fleeing on the real map and checks the person never gets within 0.5 m of a wall.
+* **person_tracker**: YOLOv8n reseeds an OpenCV tracker every 10 frames; a Kalman filter smooths the box and coasts through short dropouts.
+* **sensor_fusion** (mode `person`) ranges the box with the LiDAR and falls back to a monocular estimate (person height / feet ground contact) when the beams miss the legs.
+* **security_guard_bt** publishes its active protocol on `/security_guard/state`, mission metrics on `/security_guard/metrics` and sighting markers on `/intruder_sightings`.
+* **E-stop:** `ros2 service call /trigger_estop std_srvs/srv/Trigger` latches it (the robot halts and Nav2 is cancelled). `ros2 service call /clear_estop std_srvs/srv/Trigger` releases it.
+
+### `make yolo-sim`: perception proof
+
+A person stands 3 m in front of the robot, with a crate and a barrel to either side. RViz shows the **Sensor fusion** image: the YOLO box around the person only, labelled with the fused range (≈2.8–3.0 m, with its source, lidar or camera) and bearing. Check it numerically with `ros2 topic echo /target_range`. Drive around with `make teleop` and watch range and bearing follow. Enable the **YOLO tracker** image display to see the raw tracker output.
+
+---
+
+## 🛠️ Other Features
+
+* **Mapping:** `make slam` (with `make sim` + `make teleop`), then `make save-map`.
+* **Realistic sensor noise** in the Xacro URDF: LiDAR range σ = 0.01 m, camera pixel σ = 0.007.
+* **System watchdog** (`make system-monitor`, built into `person-sim`): `/system_health` diagnostics from `/scan` and camera heartbeats, plus the e-stop services.
+* **CI/CD:** GitHub Actions builds the workspace, runs the tests (launch files are built against a real ROS install) and uploads coverage.
 
 ---
 
@@ -189,129 +116,35 @@ graph LR
 ### Prerequisites
 
 * Docker & Docker Compose
-* NVIDIA GPU (optional — required for YOLO GPU acceleration)
+* NVIDIA GPU (optional — speeds up YOLO)
 
-### 1. Build the Environment
-
-```bash
-docker compose build
-```
-
-### 2. Start the Container
+### Setup
 
 ```bash
-# CPU mode
-make up
-
-# GPU mode (for YOLO acceleration)
-make up-gpu
+docker compose build   # build the image
+make up                # start the container (CPU) — or: make up-gpu
+make build             # build the ROS 2 workspace (after every code change)
 ```
 
-### 3. Enter the Container
-
-```bash
-make shell
-```
-
-### 4. Build the ROS 2 Workspace
-
-```bash
-# Run once after first clone, and after any code changes
-make build
-```
-
----
-
-## 🎮 Running the Simulation
-
-All commands below are run **inside the container** (after `make shell`).
-
-### Core Simulation
-
-```bash
-# Gazebo + RViz (basic room world)
-make sim
-
-# Gazebo + RViz with moving obstacles and intruder sphere
-make dynamic-sim
-```
-
-### Mapping & Navigation
-
-```bash
-# SLAM mapping — drive with make teleop in a second terminal
-make slam
-
-# Autonomous navigation (requires a saved map)
-make nav
-
-# Keyboard control (robot)
-make teleop
-
-# Keyboard control (intruder sphere)
-make teleop-target
-```
-
-### Behavior Nodes
-
-```bash
-# Full security guard stack: sensor_fusion + LifecycleNode guard + watchdog
-ros2 launch my_bot security_guard_full.launch.py
-
-# Behavior Tree version of the security guard (recommended)
-make security-guard-bt
-
-# LifecycleNode version (imperative state machine)
-make security-guard
-
-# LiDAR-camera sensor fusion only
-make sensor-fusion
-
-# System watchdog + /trigger_estop service
-make system-monitor
-
-# YOLOv8-nano ONNX inference node
-make object-detector
-
-# Autonomous intruder random-walk bot
-make intruder-bot
-
-# Ball chaser (reactive follower)
-make ball-chaser
-```
-
-### Triggering the E-Stop
-
-```bash
-ros2 service call /trigger_estop std_srvs/srv/Trigger
-```
-
-### Saving a Map
-
-```bash
-# After running make slam and driving around:
-ros2 run nav2_map_server map_saver_cli -f /root/dev_ws/src/my_bot/maps/my_map
-```
+Then run any scenario from the table above. `make shell` opens a shell inside the container for `ros2 topic echo` and friends.
 
 ---
 
 ## 🧪 Testing & Linting
 
 ```bash
-# Run linting (ament_lint_auto + pytest with coverage)
-make lint
-
-# Run unit tests only
-make test
+make test   # unit tests
+make lint   # linters
 ```
 
-The test suite (69/70 tests) runs without a ROS runtime and covers:
-* URDF noise values, wheel friction, mesh files and wheel geometry (`test_urdf.py`)
-* Sensor fusion math — bearing, scan index, range validation (`test_sensor_fusion.py`)
-* BT leaf logic and tree structure (`test_behavior_tree.py`)
-* YOLO preprocess/postprocess functions (`test_object_detector.py`)
-* `behavior_params.yaml` schema (`test_behavior_params.py`)
-* Script shebangs and compile checks (`test_scripts.py`)
+The suite runs without a ROS runtime (ROS packages are stubbed in `test/conftest.py`) and covers:
+* Ball path clearance on the real map, autopilot behaviour, teleop keys (`test_ball.py`)
+* Person behaviour, wall avoidance simulated on the museum map, tracker and fusion helpers (`test_person.py`)
+* Behaviour-tree leaves and whole-tree protocol switching (`test_behavior_tree.py`)
+* Sensor fusion math (`test_sensor_fusion.py`) and YOLO pre/post-processing (`test_object_detector.py`)
+* `behavior_params.yaml` types and patrol waypoints on open floor (`test_behavior_params.py`)
+* Entry points, Makefile ↔ launch ↔ world ↔ RViz wiring, launch files build (`test_scripts.py`)
+* URDF noise values, wheel friction, meshes and geometry (`test_urdf.py`)
 
 ---
 
@@ -320,40 +153,44 @@ The test suite (69/70 tests) runs without a ROS runtime and covers:
 ```text
 src/my_bot/
 ├── config/
+│   ├── behavior_params.yaml             # Parameters of every behaviour node
 │   ├── nav2_params.yaml                 # Navigation stack tuning
 │   ├── mapper_params_online_async.yaml  # SLAM tuning
-│   ├── behavior_params.yaml             # Centralized HSV + behavior parameters
-│   └── navigation.rviz / view_robot.rviz
+│   ├── sim.rviz                         # sim: robot, lidar, camera (odom frame)
+│   ├── navigation.rviz                  # nav-sim / nav: map, costmap, plan
+│   ├── perception.rviz                  # ball-sim, yolo-sim: fused target + annotated image
+│   └── person.rviz                      # person-sim: navigation + perception + sightings
 ├── launch/
-│   ├── sim.launch.py                    # Gazebo + RViz (room world)
-│   ├── dynamic_sim.launch.py            # Gazebo with moving obstacles
-│   ├── slam.launch.py                   # SLAM mapping
-│   ├── navigation.launch.py             # Nav2 stack
-│   ├── sensor_fusion.launch.py          # Sensor fusion node only
-│   └── security_guard_full.launch.py    # sensor_fusion + security_guard + monitor
-├── maps/                                # Saved occupancy grids
+│   ├── sim.launch.py                    # make sim (base of every scenario)
+│   ├── nav_sim.launch.py                # make nav-sim
+│   ├── ball_sim.launch.py               # make ball-sim
+│   ├── person_sim.launch.py             # make person-sim
+│   ├── yolo_sim.launch.py               # make yolo-sim
+│   ├── navigation.launch.py             # make nav (Nav2 only)
+│   ├── slam.launch.py                   # make slam
+│   └── rsp.launch.py                    # robot_state_publisher
+├── maps/                                # Saved museum map (also used by the person & ball tests)
 ├── my_bot/
-│   ├── sensor_fusion.py                 # LiDAR-camera fusion → /target_range
-│   ├── security_guard_bt.py             # py_trees BT security guard
-│   ├── security_guard.py                # LifecycleNode security guard
-│   ├── object_detector.py               # YOLOv8-nano ONNX (GPU/CPU)
-│   ├── system_monitor.py                # Watchdog + /trigger_estop
-│   ├── intruder_bot.py                  # Autonomous intruder random walk
-│   ├── obstacle_controller.py           # Dynamic obstacle random-walk driver
-│   ├── ball_chaser.py                   # Reactive red-ball follower
-│   └── patrol.py                        # Simple waypoint navigation
-├── test/                                # 69 unit tests (no ROS runtime needed)
+│   ├── sensor_fusion.py                 # camera box + lidar → range / bearing (hsv | person)
+│   ├── follow_control.py                # stand-off follow law (ball_chaser + BT)
+│   ├── ball_chaser.py                   # ball-sim: follow the fused ball
+│   ├── ball_controller.py               # ball-sim: ball autopilot + teleop arbitration
+│   ├── ball_teleop.py                   # make teleop-ball
+│   ├── person_tracker.py                # YOLO + OpenCV tracker + Kalman
+│   ├── object_detector.py               # YOLOv8 pre/post-processing
+│   ├── person_controller.py             # pedestrian WALK / RUN / EXHAUSTED on the map
+│   ├── clearance_map.py                 # distance-to-wall lookups on the saved map
+│   ├── security_guard_bt.py             # py_trees security guard
+│   └── system_monitor.py                # watchdog + e-stop
+├── test/                                # unit tests (no ROS runtime needed)
 ├── meshes/                              # TurtleBot3 Waffle Pi STL meshes (Apache-2.0)
-├── urdf/
-│   ├── lidar.xacro                      # 2D LiDAR + Gaussian noise (σ=0.01m)
-│   ├── camera.xacro                     # RGB camera 30Hz + Gaussian noise (σ=0.007)
-│   ├── robot_core.xacro                 # Waffle Pi body, wheels, rear casters
-│   └── gazebo_control.xacro             # Gazebo plugins; wheel friction μ=1.0
+├── urdf/                                # Xacro robot description (lidar + camera noise)
 └── worlds/
-    ├── room.world                        # Simple room
-    ├── obstacles.world                   # Static obstacles
-    ├── intruder.world                    # Room + movable intruder sphere
-    └── dynamic.world                     # intruder.world + 2 moving obstacles
+    ├── room.world                       # the museum (sim, nav-sim)
+    ├── ball.world                       # museum + red ball
+    ├── person.world                     # museum + pedestrian actor
+    └── yolo.world                       # flat ground + standing person, crate, barrel
+src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walking/running actor
 ```
 
 ---
@@ -362,26 +199,20 @@ src/my_bot/
 
 | Target | Description |
 |--------|-------------|
-| `make up` | Start CPU container |
-| `make up-gpu` | Start GPU container (autonav_gpu) |
+| `make up` / `make up-gpu` / `make down` | Start (CPU / GPU) or stop the container |
 | `make shell` | Enter the running container |
-| `make build` | Build ROS 2 workspace with colcon |
-| `make clean` | Remove build artifacts |
-| `make lint` | ament_lint_auto + pytest with coverage |
-| `make test` | pytest only |
-| `make sim` | Gazebo + RViz (room world) |
-| `make dynamic-sim` | Gazebo with moving obstacles + intruder |
-| `make slam` | SLAM mapping |
-| `make nav` | Nav2 autonomous navigation |
-| `make teleop` | Keyboard control (robot) |
-| `make teleop-target` | Keyboard control (intruder sphere) |
-| `make security-guard-bt` | py_trees BT security guard |
-| `make security-guard` | LifecycleNode security guard |
-| `make sensor-fusion` | LiDAR-camera sensor fusion node |
-| `make system-monitor` | Watchdog + e-stop service |
-| `make object-detector` | YOLOv8-nano ONNX inference |
-| `make intruder-bot` | Autonomous random-walk intruder |
-| `make ball-chaser` | Reactive ball follower |
+| `make build` / `make clean` | Build the workspace / remove build artifacts |
+| `make test` / `make lint` | Unit tests / linters |
+| `make sim` | Robot in the museum, Gazebo + RViz |
+| `make nav-sim` | `sim` + Nav2 in one command |
+| `make ball-sim` | Ball chase (fusion + chaser + ball autopilot) |
+| `make person-sim` | Security guard demo (Nav2 + YOLO + fusion + BT + watchdog) |
+| `make yolo-sim` | Static person: YOLO + fusion proof |
+| `make teleop` | Keyboard control of the robot |
+| `make teleop-ball` | Keyboard control of the ball (ball-sim) |
+| `make slam` / `make save-map NAME=x` | SLAM mapping / save the map |
+| `make nav` | Nav2 only, next to an already running sim |
+| `make system-monitor` | Watchdog + e-stop services (already part of person-sim) |
 
 ---
 

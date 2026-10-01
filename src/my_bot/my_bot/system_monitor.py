@@ -14,16 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""System watchdog — monitors sensor heartbeats and publishes health diagnostics."""
+"""System watchdog — monitors sensor heartbeats and owns the emergency stop."""
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Twist
-from lifecycle_msgs.msg import Transition
-from lifecycle_msgs.srv import ChangeState
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
+from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 
@@ -31,8 +30,10 @@ class SystemMonitorNode(Node):
     """Watchdog that monitors /scan and /camera/image_raw heartbeats.
 
     Publishes health diagnostics to /system_health every second.
-    Provides a /trigger_estop service that deactivates the security_guard
-    lifecycle node and zeros /cmd_vel.
+
+    E-stop: /trigger_estop latches /estop (std_msgs/Bool, transient local)
+    to True and zeros /cmd_vel; security_guard_bt then cancels Nav2 and
+    holds the robot still. /clear_estop releases it.
 
     Parameters
     ----------
@@ -66,13 +67,14 @@ class SystemMonitorNode(Node):
             DiagnosticArray, '/system_health', 10)
         self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # Lifecycle change-state client for security_guard
-        self._lc_client = self.create_client(
-            ChangeState, '/security_guard/change_state')
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._estop_pub = self.create_publisher(Bool, '/estop', latched)
+        self._estop_pub.publish(Bool(data=False))
 
-        # E-stop service
         self._estop_srv = self.create_service(
             Trigger, '/trigger_estop', self._estop_cb)
+        self._clear_srv = self.create_service(
+            Trigger, '/clear_estop', self._clear_cb)
 
         self._watchdog_timer = self.create_timer(
             1.0 / rate_hz, self._watchdog_cb)
@@ -119,17 +121,21 @@ class SystemMonitorNode(Node):
         self._health_pub.publish(diag)
 
     def _estop_cb(self, _request, response):
-        """Zero velocity and request security_guard deactivation."""
-        self.get_logger().warn('E-STOP triggered!')
-        # Zero velocity immediately
+        """Latch the e-stop and zero velocity."""
+        self.get_logger().warn('E-STOP triggered! (ros2 service call /clear_estop '
+                               'std_srvs/srv/Trigger to release)')
+        self._estop_pub.publish(Bool(data=True))
         self._cmd_pub.publish(Twist())
-        # Request lifecycle deactivation (best-effort — node may not exist)
-        if self._lc_client.service_is_ready():
-            req = ChangeState.Request()
-            req.transition.id = Transition.TRANSITION_DEACTIVATE
-            self._lc_client.call_async(req)
         response.success = True
-        response.message = 'E-stop executed'
+        response.message = 'E-stop latched'
+        return response
+
+    def _clear_cb(self, _request, response):
+        """Release the e-stop."""
+        self.get_logger().info('E-stop cleared')
+        self._estop_pub.publish(Bool(data=False))
+        response.success = True
+        response.message = 'E-stop cleared'
         return response
 
     @staticmethod
