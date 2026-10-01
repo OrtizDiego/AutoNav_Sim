@@ -89,13 +89,18 @@ def test_security_guard_launch_drives_lifecycle():
     assert 'activate_on_inactive' in src.split('LaunchDescription([')[-1]
 
 
-def test_security_guard_launch_description_builds():
+def test_security_guard_launch_description_builds(monkeypatch):
     """Import and build security_guard_full.launch.py (needs a ROS environment)."""
     # Skip only without a sourced ROS environment; in CI a broken import
     # must fail here, not be skipped.
     if not os.environ.get('ROS_DISTRO'):
         pytest.skip('ROS environment not sourced')
     pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # colcon test does not put my_bot itself on the ament index, so resolve
+    # its share directory to the source package instead.
+    import ament_index_python.packages
+    monkeypatch.setattr(ament_index_python.packages,
+                        'get_package_share_directory', lambda _pkg: pkg_path)
     launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
     spec = importlib.util.spec_from_file_location('security_guard_full_launch', launch_file)
     module = importlib.util.module_from_spec(spec)
