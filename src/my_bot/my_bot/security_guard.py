@@ -25,6 +25,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav2_simple_commander.robot_navigator import BasicNavigator
 import numpy as np
 import rclpy
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
 from rclpy.lifecycle import State  # noqa: F401 — used in type hints
 from sensor_msgs.msg import Image
@@ -71,6 +72,10 @@ class SecurityGuard(LifecycleNode):
         self._display_frame = None
         self._display_lock = threading.Lock()
 
+        # Set once Nav2 is up; the control loop idles until then
+        self._nav2_ready = threading.Event()
+        self._nav2_wait_thread = None
+
     # ------------------------------------------------------------------
     # Lifecycle callbacks
     # ------------------------------------------------------------------
@@ -87,6 +92,8 @@ class SecurityGuard(LifecycleNode):
         self._vel_pub = self.create_lifecycle_publisher(Twist, '/cmd_vel', 10)
 
         self._navigator = BasicNavigator()
+        self._nav2_ready.clear()
+        self._nav2_wait_thread = None
 
         # Display thread — persists across activate/deactivate cycles
         if not hasattr(self, '_display_thread') or not self._display_thread.is_alive():
@@ -100,18 +107,31 @@ class SecurityGuard(LifecycleNode):
     def on_activate(self, state) -> TransitionCallbackReturn:
         """Activate publishers and start the 10 Hz control loop."""
         super().on_activate(state)
-        self.get_logger().info('Waiting for Nav2...')
-        self._navigator.waitUntilNav2Active()
+        # waitUntilNav2Active() blocks until Nav2 (incl. AMCL pose) is up.
+        # Run it off the executor so this transition returns and the node
+        # stays responsive (e.g. to `ros2 lifecycle get`) while waiting.
+        if not self._nav2_ready.is_set() and (
+                self._nav2_wait_thread is None
+                or not self._nav2_wait_thread.is_alive()):
+            self.get_logger().info('Waiting for Nav2...')
+            self._nav2_wait_thread = threading.Thread(
+                target=self._wait_for_nav2, daemon=True)
+            self._nav2_wait_thread.start()
         self._current_wp = 0
         self._control_timer = self.create_timer(0.1, self._control_loop)
-        self.get_logger().info('SecurityGuard active — patrolling.')
+        self.get_logger().info('SecurityGuard active.')
         return TransitionCallbackReturn.SUCCESS
+
+    def _wait_for_nav2(self):
+        self._navigator.waitUntilNav2Active()
+        self._nav2_ready.set()
+        self.get_logger().info('Nav2 active — patrolling.')
 
     def on_deactivate(self, state) -> TransitionCallbackReturn:
         """Stop control loop, cancel navigation, zero velocity."""
         self._control_timer.cancel()
         self.destroy_timer(self._control_timer)
-        if not self._navigator.isTaskComplete():
+        if self._nav2_ready.is_set() and not self._navigator.isTaskComplete():
             self._navigator.cancelTask()
         self._vel_pub.publish(Twist())  # zero velocity
         super().on_deactivate(state)
@@ -202,6 +222,10 @@ class SecurityGuard(LifecycleNode):
 
     def _control_loop(self):
         """Patrol/chase state machine — runs as timer callback."""
+        # The navigator is only used here once the wait thread is done with it
+        if not self._nav2_ready.is_set():
+            return
+
         if self._intruder_detected:
             self.get_logger().info('INTRUDER DETECTED! ENGAGING!')
 
@@ -259,8 +283,12 @@ def main(args=None):
     """Initialize and run SecurityGuard as a lifecycle node."""
     rclpy.init(args=args)
     node = SecurityGuard()
+    # Own executor, not the global one: BasicNavigator spins itself on the
+    # global executor (from the Nav2 wait thread), so keep the two apart.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
         node.destroy_node()
         rclpy.shutdown()

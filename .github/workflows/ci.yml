@@ -51,7 +51,8 @@ jobs:
             --cmake-args -DBUILD_TESTING=ON
 
           # Run tests (ament_lint_auto runs here)
-          colcon test --packages-select my_bot --return-code-on-test-failure
+          colcon test --packages-select my_bot --return-code-on-test-failure \
+            --event-handlers console_cohesion+
           colcon test-result --verbose
 
       - name: Code Coverage

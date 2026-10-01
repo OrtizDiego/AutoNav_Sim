@@ -19,10 +19,10 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import EmitEvent, RegisterEventHandler
+from launch.events import matches_action
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
-from launch_ros.events.lifecycle import matches_action
 from lifecycle_msgs.msg import Transition
 
 
