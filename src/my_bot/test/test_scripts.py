@@ -91,7 +91,10 @@ def test_security_guard_launch_drives_lifecycle():
 
 def test_security_guard_launch_description_builds():
     """Import and build security_guard_full.launch.py (needs a ROS environment)."""
-    pytest.importorskip('launch_ros')
+    # Skip only without a sourced ROS environment; in CI a broken import
+    # must fail here, not be skipped.
+    if not os.environ.get('ROS_DISTRO'):
+        pytest.skip('ROS environment not sourced')
     pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
     spec = importlib.util.spec_from_file_location('security_guard_full_launch', launch_file)
