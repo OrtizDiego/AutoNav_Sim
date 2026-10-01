@@ -14,7 +14,6 @@
 
 """Tests for verifying that scripts are executable, have correct shebangs, and compile."""
 
-import importlib.util
 import os
 import subprocess
 import sys
@@ -89,20 +88,29 @@ def test_security_guard_launch_drives_lifecycle():
     assert 'activate_on_inactive' in src.split('LaunchDescription([')[-1]
 
 
-def test_security_guard_launch_description_builds(monkeypatch):
+def test_security_guard_launch_description_builds():
     """Import and build security_guard_full.launch.py (needs a ROS environment)."""
     # Skip only without a sourced ROS environment; in CI a broken import
     # must fail here, not be skipped.
     if not os.environ.get('ROS_DISTRO'):
         pytest.skip('ROS environment not sourced')
     pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
+    # Run in a fresh interpreter: other test modules replace rclpy and other
+    # ROS modules with stubs in sys.modules, which breaks importing launch_ros.
     # colcon test does not put my_bot itself on the ament index, so resolve
     # its share directory to the source package instead.
-    import ament_index_python.packages
-    monkeypatch.setattr(ament_index_python.packages,
-                        'get_package_share_directory', lambda _pkg: pkg_path)
-    launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
-    spec = importlib.util.spec_from_file_location('security_guard_full_launch', launch_file)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert module.generate_launch_description().entities
+    script = (
+        'import importlib.util, sys\n'
+        'import ament_index_python.packages as pkgs\n'
+        'pkgs.get_package_share_directory = lambda _pkg: sys.argv[1]\n'
+        'spec = importlib.util.spec_from_file_location("launch_under_test", sys.argv[2])\n'
+        'module = importlib.util.module_from_spec(spec)\n'
+        'spec.loader.exec_module(module)\n'
+        'assert module.generate_launch_description().entities\n'
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script, pkg_path, launch_file],
+        capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f'security_guard_full.launch.py failed to build:\n{result.stderr}')
