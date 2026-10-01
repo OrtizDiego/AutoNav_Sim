@@ -14,23 +14,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hybrid YOLO-detector + OpenCV-tracker for the person intruder.
+"""Person tracker: YOLOv8 detection + OpenCV tracker + Kalman filter.
 
-YOLOv8-nano supplies a high-confidence person bounding box every
-``redetect_every`` frames (default 10).  In between, the OpenCV CSRT
-(or KCF fallback) tracker propagates the box frame-to-frame, giving:
-
-  * stable identity across frames,
-  * lower CPU than running YOLO every frame,
-  * graceful re-acquisition if the person re-enters the scene.
+Pipeline per camera frame
+-------------------------
+1. Every ``redetect_every`` frames (or whenever there is no track) YOLOv8n
+   looks for people. The highest-scoring person seeds the OpenCV tracker,
+   or reseeds it if the tracker drifted (IoU below ``reseed_iou_threshold``).
+   If YOLO misses the person ``max_yolo_misses`` times in a row, the track
+   is dropped, so a tracker stuck on the background cannot hold a lock.
+2. Between detections the OpenCV tracker (CSRT, then KCF, then MIL,
+   whichever this OpenCV build has) follows the box frame to frame.
+3. A constant-velocity Kalman filter smooths the box and predicts it
+   through short tracker failures (up to ``max_coast_frames``).
 
 Published topics
 ----------------
-/person_bbox      std_msgs/Float32MultiArray  [x, y, w, h] in pixels, or empty
-/person_track     geometry_msgs/PointStamped   bbox centroid (pixels)
-/person_detected  std_msgs/Bool                True iff tracker has a lock
+/person_bbox           std_msgs/Float32MultiArray  [x, y, w, h] px, or empty
+/person_track          geometry_msgs/PointStamped  bbox centre (px)
+/person_detected       std_msgs/Bool               True while a track exists
+/person_tracker/image  sensor_msgs/Image           annotated debug view
 """
 
+import os
 from typing import Optional, Tuple
 
 import cv2
@@ -45,56 +51,113 @@ from std_msgs.msg import Bool, Float32MultiArray
 
 from my_bot.object_detector import postprocess, preprocess
 
+Box = Tuple[int, int, int, int]
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
 
+def letterbox_shape(frame_shape: tuple) -> tuple:
+    """Shape to pass to ``postprocess`` so boxes map back correctly.
+
+    ``preprocess`` scales the frame uniformly by 640 / max(h, w) and pads
+    the bottom/right. Decoding against a square max(h, w) canvas therefore
+    undoes the scaling on both axes. Passing the real (h, w) would scale y
+    by h / 640 instead and squash every box vertically on a 640x480 camera.
+    """
+    side = max(frame_shape[0], frame_shape[1])
+    return (side, side)
+
+
+def clip_box(box: Box, width: int, height: int) -> Optional[Box]:
+    """Clip an (x, y, w, h) box to the image; None if nothing is left."""
+    x1 = max(0, min(width - 1, int(box[0])))
+    y1 = max(0, min(height - 1, int(box[1])))
+    x2 = max(0, min(width, int(box[0] + box[2])))
+    y2 = max(0, min(height, int(box[1] + box[3])))
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        return None
+    return (x1, y1, x2 - x1, y2 - y1)
+
+
 def select_person_box(detections: list,
-                      min_conf: float = 0.4) -> Optional[Tuple[int, int, int, int]]:
+                      min_conf: float = 0.4) -> Optional[Box]:
     """Return the highest-confidence person box (x, y, w, h), or None.
 
-    ``detections`` is the list of tuples produced by
-    ``object_detector.postprocess`` — each entry is
-    ``(x1, y1, x2, y2, class_id, score)``.  Only ``class_id == 0`` (person)
-    is considered.
+    ``detections`` holds ``(x1, y1, x2, y2, class_id, score)`` tuples from
+    ``object_detector.postprocess``. Only class 0 (person) is considered.
     """
-    people = [d for d in detections
-              if d[4] == 0 and d[5] >= min_conf]
+    people = [d for d in detections if d[4] == 0 and d[5] >= min_conf]
     if not people:
         return None
-    best = max(people, key=lambda d: d[5])
-    x1, y1, x2, y2, _, _ = best
+    x1, y1, x2, y2, _, _ = max(people, key=lambda d: d[5])
     return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
 
 
-def box_iou(a: Tuple[int, int, int, int],
-            b: Tuple[int, int, int, int]) -> float:
+def box_iou(a: Box, b: Box) -> float:
     """Intersection-over-union of two (x, y, w, h) boxes."""
-    ax2, ay2 = a[0] + a[2], a[1] + a[3]
-    bx2, by2 = b[0] + b[2], b[1] + b[3]
     ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-    inter = iw * ih
+    ix2 = min(a[0] + a[2], b[0] + b[2])
+    iy2 = min(a[1] + a[3], b[1] + b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
     union = a[2] * a[3] + b[2] * b[3] - inter
     return inter / union if union > 0 else 0.0
 
 
 def make_tracker():
-    """Construct an OpenCV tracker, preferring CSRT (more accurate).
+    """Create the best OpenCV single-object tracker available."""
+    legacy = getattr(cv2, 'legacy', None)
+    for name in ('TrackerCSRT_create', 'TrackerKCF_create', 'TrackerMIL_create'):
+        for mod in (cv2, legacy):
+            ctor = getattr(mod, name, None) if mod is not None else None
+            if ctor is not None:
+                return ctor()
+    raise RuntimeError('No OpenCV tracker available')
 
-    Falls back to KCF on builds where the contrib trackers are missing.
+
+class BoxKalman:
+    """Constant-velocity Kalman filter on a box centre and size.
+
+    State: [cx, cy, w, h, vcx, vcy, vw, vh] in pixels and pixels/frame.
     """
-    for ctor in (
-            getattr(cv2, 'TrackerCSRT_create', None),
-            getattr(getattr(cv2, 'legacy', None), 'TrackerCSRT_create', None),
-            getattr(cv2, 'TrackerKCF_create', None),
-            getattr(getattr(cv2, 'legacy', None), 'TrackerKCF_create', None)):
-        if ctor is not None:
-            return ctor()
-    raise RuntimeError(
-        'No OpenCV tracker available — install opencv-contrib-python')
+
+    def __init__(self, box: Box, meas_noise: float = 4.0,
+                 process_noise: float = 1.0):
+        x, y, w, h = (float(v) for v in box)
+        self.x = np.array([x + w / 2, y + h / 2, w, h, 0, 0, 0, 0], dtype=float)
+        self.P = np.diag([10, 10, 10, 10, 100, 100, 100, 100]).astype(float)
+        self.F = np.eye(8)
+        self.F[:4, 4:] = np.eye(4)
+        self.H = np.zeros((4, 8))
+        self.H[:4, :4] = np.eye(4)
+        self.Q = np.eye(8) * process_noise
+        self.Q[4:, 4:] *= 0.5
+        self.R = np.eye(4) * meas_noise ** 2
+
+    def predict(self) -> Box:
+        """Advance one frame and return the predicted box."""
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.box()
+
+    def update(self, box: Box) -> Box:
+        """Fuse a measured box and return the corrected box."""
+        x, y, w, h = (float(v) for v in box)
+        z = np.array([x + w / 2, y + h / 2, w, h])
+        innov = z - self.H @ self.x
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        self.x = self.x + K @ innov
+        self.P = (np.eye(8) - K @ self.H) @ self.P
+        return self.box()
+
+    def box(self) -> Box:
+        """Current estimate as an integer (x, y, w, h) box."""
+        cx, cy, w, h = self.x[:4]
+        w, h = max(w, 1.0), max(h, 1.0)
+        return (int(round(cx - w / 2)), int(round(cy - h / 2)),
+                int(round(w)), int(round(h)))
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +165,7 @@ def make_tracker():
 # ---------------------------------------------------------------------------
 
 class PersonTrackerNode(Node):
-    """YOLO-seeded CSRT tracker for the person class."""
+    """YOLO-seeded, Kalman-smoothed single-person tracker."""
 
     def __init__(self):
         super().__init__('person_tracker')
@@ -112,127 +175,169 @@ class PersonTrackerNode(Node):
         self.declare_parameter('nms_iou_threshold', 0.45)
         self.declare_parameter('redetect_every', 10)
         self.declare_parameter('reseed_iou_threshold', 0.3)
+        self.declare_parameter('max_yolo_misses', 2)
+        self.declare_parameter('max_coast_frames', 10)
+        self.declare_parameter('publish_debug_image', True)
 
-        self._conf = float(self.get_parameter('confidence_threshold').value)
-        self._iou = float(self.get_parameter('nms_iou_threshold').value)
-        self._redetect_every = int(self.get_parameter('redetect_every').value)
-        self._reseed_iou = float(
-            self.get_parameter('reseed_iou_threshold').value)
-        model_path = str(self.get_parameter('model_path').value)
+        gp = self.get_parameter
+        self._conf = float(gp('confidence_threshold').value)
+        self._iou = float(gp('nms_iou_threshold').value)
+        self._redetect_every = max(1, int(gp('redetect_every').value))
+        self._reseed_iou = float(gp('reseed_iou_threshold').value)
+        self._max_misses = int(gp('max_yolo_misses').value)
+        self._max_coast = int(gp('max_coast_frames').value)
+        self._debug = bool(gp('publish_debug_image').value)
 
         self._bridge = CvBridge()
         self._session = None
-        self._load_model(model_path)
+        self._load_model(str(gp('model_path').value))
 
         self._tracker = None
-        self._last_box: Optional[Tuple[int, int, int, int]] = None
-        self._frame_idx = 0
+        self._kf: Optional[BoxKalman] = None
+        self._box: Optional[Box] = None
+        self._frames_since_detect = 0
+        self._yolo_misses = 0
+        self._coast = 0
 
         self.create_subscription(
-            Image, '/camera/image_raw', self._on_image,
-            qos_profile_sensor_data)
-        self._bbox_pub = self.create_publisher(
-            Float32MultiArray, '/person_bbox', 10)
-        self._track_pub = self.create_publisher(
-            PointStamped, '/person_track', 10)
-        self._detected_pub = self.create_publisher(
-            Bool, '/person_detected', 10)
+            Image, '/camera/image_raw', self._on_image, qos_profile_sensor_data)
+        self._bbox_pub = self.create_publisher(Float32MultiArray, '/person_bbox', 10)
+        self._track_pub = self.create_publisher(PointStamped, '/person_track', 10)
+        self._detected_pub = self.create_publisher(Bool, '/person_detected', 10)
+        self._debug_pub = self.create_publisher(Image, '/person_tracker/image', 1)
 
     # ------------------------------------------------------------------
 
     def _load_model(self, model_path: str) -> None:
-        import os
         if not os.path.exists(model_path):
-            self.get_logger().warn(
-                f'YOLO model not found at {model_path} — tracker disabled')
+            self.get_logger().error(
+                f'YOLO model not found at {model_path}; nothing will be tracked')
             return
         try:
             import onnxruntime as ort
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            self._session = ort.InferenceSession(model_path, providers=providers)
+            self._session = ort.InferenceSession(
+                model_path,
+                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
             self.get_logger().info(
-                f'person_tracker: YOLO loaded ({self._session.get_providers()[0]})')
-        except Exception as e:
-            self.get_logger().warn(f'YOLO load failed: {e}')
+                f'YOLO loaded ({self._session.get_providers()[0]})')
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'YOLO load failed: {e}')
+
+    def _reset(self) -> None:
+        self._tracker = None
+        self._kf = None
+        self._box = None
+        self._coast = 0
+        self._yolo_misses = 0
 
     # ------------------------------------------------------------------
 
     def _on_image(self, msg: Image) -> None:
         try:
             frame = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f'cv_bridge: {e}')
             return
+        h, w = frame.shape[:2]
 
-        self._frame_idx += 1
-        need_detect = (
-            self._tracker is None
-            or self._frame_idx % self._redetect_every == 0)
+        self._frames_since_detect += 1
+        detected: Optional[Box] = None
+        if (self._tracker is None
+                or self._frames_since_detect >= self._redetect_every):
+            self._frames_since_detect = 0
+            detected = self._run_yolo(frame)
+            if detected is None and self._tracker is not None:
+                self._yolo_misses += 1
+                if self._yolo_misses >= self._max_misses:
+                    self.get_logger().info('YOLO lost the person; dropping track')
+                    self._reset()
+            elif detected is not None:
+                self._yolo_misses = 0
 
-        detected_box: Optional[Tuple[int, int, int, int]] = None
-        if need_detect:
-            detected_box = self._run_yolo(frame)
-
-        if detected_box is not None:
-            self._seed_or_correct_tracker(frame, detected_box)
-            self._last_box = detected_box
+        measured: Optional[Box] = None
+        if detected is not None:
+            measured = detected
+            self._reseed_if_needed(frame, detected)
         elif self._tracker is not None:
             ok, bb = self._tracker.update(frame)
             if ok:
-                x, y, w, h = (int(v) for v in bb)
-                self._last_box = (x, y, w, h)
+                measured = clip_box(tuple(int(v) for v in bb), w, h)
+
+        if measured is not None:
+            if self._kf is None:
+                self._kf = BoxKalman(measured)
             else:
-                self._tracker = None
-                self._last_box = None
+                self._kf.predict()
+            self._box = clip_box(self._kf.update(measured), w, h)
+            self._coast = 0
+        elif self._kf is not None:
+            # Tracker failed: coast on the motion model, ask YOLO next frame.
+            self._coast += 1
+            self._frames_since_detect = self._redetect_every
+            if self._coast > self._max_coast:
+                self._reset()
+            else:
+                self._box = clip_box(self._kf.predict(), w, h)
 
-        self._publish(msg, frame.shape)
+        self._publish(msg, frame)
 
-    def _run_yolo(self, frame: np.ndarray
-                  ) -> Optional[Tuple[int, int, int, int]]:
+    def _run_yolo(self, frame: np.ndarray) -> Optional[Box]:
         if self._session is None:
             return None
         try:
             blob = preprocess(frame)
             inp = self._session.get_inputs()[0].name
             raw = self._session.run(None, {inp: blob})[0]
-            dets = postprocess(raw, frame.shape, self._conf, self._iou)
-        except Exception as e:
+            dets = postprocess(
+                raw, letterbox_shape(frame.shape), self._conf, self._iou)
+        except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f'YOLO inference: {e}')
             return None
-        return select_person_box(dets, self._conf)
+        box = select_person_box(dets, self._conf)
+        if box is None:
+            return None
+        return clip_box(box, frame.shape[1], frame.shape[0])
 
-    def _seed_or_correct_tracker(self, frame, box) -> None:
-        """Re-initialise tracker if it drifted (low IoU) or wasn't running."""
-        if self._tracker is not None and self._last_box is not None:
-            if box_iou(self._last_box, box) >= self._reseed_iou:
-                # Track is consistent; no need to reseed.
-                return
+    def _reseed_if_needed(self, frame, box: Box) -> None:
+        """Start a tracker, or restart it if it drifted away from YOLO."""
+        if (self._tracker is not None and self._box is not None
+                and box_iou(self._box, box) >= self._reseed_iou):
+            return
         try:
             self._tracker = make_tracker()
             self._tracker.init(frame, tuple(box))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.get_logger().warn(f'tracker init failed: {e}')
             self._tracker = None
 
-    def _publish(self, header_msg, frame_shape) -> None:
-        has_lock = self._last_box is not None
-        self._detected_pub.publish(Bool(data=has_lock))
+    # ------------------------------------------------------------------
+
+    def _publish(self, img_msg: Image, frame) -> None:
+        box = self._box
+        self._detected_pub.publish(Bool(data=box is not None))
 
         bbox_msg = Float32MultiArray()
-        if has_lock:
-            x, y, w, h = self._last_box
-            bbox_msg.data = [float(x), float(y), float(w), float(h)]
+        if box is not None:
+            bbox_msg.data = [float(v) for v in box]
+            pt = PointStamped()
+            pt.header = img_msg.header
+            pt.point.x = float(box[0] + box[2] / 2.0)
+            pt.point.y = float(box[1] + box[3] / 2.0)
+            self._track_pub.publish(pt)
         self._bbox_pub.publish(bbox_msg)
 
-        if not has_lock:
-            return
-        x, y, w, h = self._last_box
-        point = PointStamped()
-        point.header = header_msg.header
-        point.point.x = float(x + w / 2.0)
-        point.point.y = float(y + h / 2.0)
-        point.point.z = 0.0
-        self._track_pub.publish(point)
+        if self._debug and self._debug_pub.get_subscription_count() > 0:
+            vis = frame.copy()
+            if box is not None:
+                color = (0, 200, 0) if self._coast == 0 else (0, 200, 255)
+                x, y, w, h = box
+                cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+                label = 'person' if self._coast == 0 else f'coast {self._coast}'
+                cv2.putText(vis, label, (x, max(0, y - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            out = self._bridge.cv2_to_imgmsg(vis, 'bgr8')
+            out.header = img_msg.header
+            self._debug_pub.publish(out)
 
 
 def main(args=None):

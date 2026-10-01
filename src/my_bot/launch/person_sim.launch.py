@@ -16,10 +16,14 @@
 
 Starts the full pipeline:
 
-  1. Gazebo with ``person.world`` (animated walking actor).
-  2. ``person_tracker`` — YOLO + OpenCV CSRT tracker.
-  3. ``person_controller`` — WALK/RUN FSM driving the actor pose.
-  4. ``person_follower`` — keeps the robot at the stand-off distance.
+  1. Gazebo with ``person.world`` (animated actor driven by
+     ``libperson_actor_plugin.so`` from the ``person_actor_plugin`` package).
+  2. ``person_tracker``: YOLO + OpenCV tracker + Kalman filter.
+  3. ``person_controller``: WALK/RUN/EXHAUSTED behaviour publishing
+     ``/person/cmd_vel``.
+  4. ``person_follower``: keeps the robot at the stand-off distance.
+
+All nodes use simulation time so the person's timing matches Gazebo.
 """
 
 import os
@@ -29,11 +33,19 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
+import yaml
 
 
 def generate_launch_description():
     """Compose the person-sim launch description."""
     pkg = get_package_share_directory('my_bot')
+    # behavior_params.yaml is flat (no ros__parameters key), so it can't be
+    # passed as a --params-file; load each node's section as a dict instead.
+    with open(os.path.join(pkg, 'config', 'behavior_params.yaml')) as f:
+        all_params = yaml.safe_load(f)
+
+    def params(node_name):
+        return [all_params.get(node_name, {}), {'use_sim_time': True}]
 
     sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -48,6 +60,7 @@ def generate_launch_description():
         executable='person_tracker',
         name='person_tracker',
         output='screen',
+        parameters=params('person_tracker'),
     )
 
     person_controller = Node(
@@ -55,6 +68,7 @@ def generate_launch_description():
         executable='person_controller',
         name='person_controller',
         output='screen',
+        parameters=params('person_controller'),
     )
 
     person_follower = Node(
@@ -62,6 +76,7 @@ def generate_launch_description():
         executable='person_follower',
         name='person_follower',
         output='screen',
+        parameters=params('person_follower'),
     )
 
     return LaunchDescription([

@@ -8,28 +8,51 @@
       <uri>model://ground_plane</uri>
     </include>
 
-    <!-- Gazebo state service plugin: enables /set_entity_state for the actor -->
-    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
-      <ros>
-        <namespace>/gazebo</namespace>
-      </ros>
-      <update_rate>30.0</update_rate>
-    </plugin>
+    <!-- 20 m x 20 m walled yard. person_controller keeps the pedestrian
+         inside +/-8 m, so the walls only bound the scene for the lidar. -->
+    <model name="yard_walls">
+      <static>true</static>
+      <link name="north">
+        <pose>0 10 0.5 0 0 0</pose>
+        <collision name="c"><geometry><box><size>20.2 0.2 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>20.2 0.2 1.0</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material></visual>
+      </link>
+      <link name="south">
+        <pose>0 -10 0.5 0 0 0</pose>
+        <collision name="c"><geometry><box><size>20.2 0.2 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>20.2 0.2 1.0</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material></visual>
+      </link>
+      <link name="east">
+        <pose>10 0 0.5 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.2 20.2 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 20.2 1.0</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material></visual>
+      </link>
+      <link name="west">
+        <pose>-10 0 0.5 0 0 0</pose>
+        <collision name="c"><geometry><box><size>0.2 20.2 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.2 20.2 1.0</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
 
     <!--
-      Realistic walking person.
+      Pedestrian intruder.
 
-      Uses Gazebo's built-in walk.dae skeleton mesh (ships with gazebo-common).
-      The actor has its own scripted patrol trajectory so it walks on its own
-      until person_controller takes over via /set_entity_state.
+      Skin and both clips come from Gazebo's bundled media (walk.dae and
+      run.dae share the same CMU skeleton). There is deliberately no
+      <script>: a scripted trajectory would overwrite the pose every frame.
+      Motion comes from PersonActorPlugin, which reads /person/cmd_vel
+      (published by person_controller) and plays the run clip above
+      run_threshold. Gazebo gives each actor bone a collision box, so the
+      robot's lidar sees the legs.
 
-      interpolate_x=true ties the animation playback rate to forward velocity:
-      when the controller moves the actor faster (RUN mode), the limbs step
-      faster too, producing a realistic running gait without needing a
-      separate run.dae file.
+      <pose> yaw is the initial walking heading (here: facing the robot).
     -->
     <actor name="person_intruder">
-      <pose>3 0 0 0 0 0</pose>
+      <pose>4.0 1.0 0 0 0 3.14159</pose>
       <skin>
         <filename>walk.dae</filename>
         <scale>1.0</scale>
@@ -37,23 +60,25 @@
       <animation name="walking">
         <filename>walk.dae</filename>
         <scale>1.0</scale>
-        <interpolate_x>true</interpolate_x>
+        <interpolate_x>false</interpolate_x>
       </animation>
-      <script>
-        <loop>true</loop>
-        <delay_start>0.0</delay_start>
-        <auto_start>true</auto_start>
-        <trajectory id="0" type="walking">
-          <waypoint><time>0</time><pose>3 0 0 0 0 1.57</pose></waypoint>
-          <waypoint><time>6</time><pose>3 3 0 0 0 1.57</pose></waypoint>
-          <waypoint><time>7</time><pose>3 3 0 0 0 3.14</pose></waypoint>
-          <waypoint><time>13</time><pose>-1 3 0 0 0 3.14</pose></waypoint>
-          <waypoint><time>14</time><pose>-1 3 0 0 0 -1.57</pose></waypoint>
-          <waypoint><time>20</time><pose>-1 0 0 0 0 -1.57</pose></waypoint>
-          <waypoint><time>21</time><pose>-1 0 0 0 0 0</pose></waypoint>
-          <waypoint><time>27</time><pose>3 0 0 0 0 0</pose></waypoint>
-        </trajectory>
-      </script>
+      <animation name="running">
+        <filename>run.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>false</interpolate_x>
+      </animation>
+      <plugin name="person_actor" filename="libperson_actor_plugin.so">
+        <ros>
+          <namespace>/person</namespace>
+        </ros>
+        <walking_animation>walking</walking_animation>
+        <running_animation>running</running_animation>
+        <run_threshold>1.6</run_threshold>
+        <walk_animation_factor>4.15</walk_animation_factor>
+        <run_animation_factor>1.71</run_animation_factor>
+        <height>1.2138</height>
+        <cmd_timeout>0.5</cmd_timeout>
+      </plugin>
     </actor>
   </world>
 </sdf>

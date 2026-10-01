@@ -29,6 +29,7 @@
   <depend>lifecycle_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>py_trees_ros</depend>
+  <exec_depend>person_actor_plugin</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

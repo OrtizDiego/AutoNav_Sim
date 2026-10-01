@@ -14,124 +14,159 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Two-mode pedestrian controller for the Gazebo actor in person.world.
+"""Behaviour model for the pedestrian intruder in person.world.
 
-States
-------
-WALK : low speed (~0.8 m/s), patrol-like wandering between waypoints.
-RUN  : high speed (~2.0 m/s), evasive — flees away from the robot's heading.
+This node decides where and how fast the person moves; the Gazebo-side
+``PersonActorPlugin`` (package ``person_actor_plugin``) turns the resulting
+``/person/cmd_vel`` into actor motion and switches between the walk and run
+animations.
 
-Transition: ``/person_detected`` (std_msgs/Bool) from object_detector flips
-the FSM to RUN; after ``calm_down_secs`` without further detection it
-returns to WALK.
+Modes
+-----
+WALK       Wanders between random points at a casual pace.
+RUN        Sprints away from the robot after being detected.
+EXHAUSTED  Out of breath after a sprint: keeps moving away, but slowly,
+           until stamina recovers.
 
-Position is driven via the Gazebo ``/gazebo/set_entity_state`` service
-(provided by ``libgazebo_ros_state.so`` in person.world).  Because the
-actor's ``<animation>`` uses ``interpolate_x=true``, faster commanded
-displacement automatically produces a faster stride — so the visual
-walking-vs-running distinction is emergent rather than a separate
-animation file (which gazebo-common does not ship by default).
+Realism details
+---------------
+* Speed changes are acceleration-limited and turning is yaw-rate limited,
+  so the person never teleports or spins on the spot.
+* The person slows down for sharp turns.
+* Sprints drain stamina; an empty tank forces EXHAUSTED until it refills.
+* Fleeing is steered away from the yard boundary so the person does not
+  run into a wall.
+* Walking speed has small random variation, as real gait does.
 
-The position-update math lives in module-level pure functions so unit
-tests can exercise it without a running ROS graph.
+Subscribes
+----------
+/person/odom       nav_msgs/Odometry   person ground truth (from the plugin)
+/odom              nav_msgs/Odometry   robot pose; the robot spawns at the
+                                       world origin, so odom ~= world
+/person_detected   std_msgs/Bool       robot's tracker has a lock
+
+Publishes
+---------
+/person/cmd_vel    geometry_msgs/Twist
+/person_mode       std_msgs/String     WALK | RUN | EXHAUSTED
 """
 
+from dataclasses import dataclass
 import math
 import random
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Tuple
 
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
 
+WALK = 'WALK'
+RUN = 'RUN'
+EXHAUSTED = 'EXHAUSTED'
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers (importable by tests without a ROS runtime)
 # ---------------------------------------------------------------------------
 
-WALK = 'WALK'
-RUN = 'RUN'
+def wrap_angle(a: float) -> float:
+    """Wrap an angle to [-pi, pi)."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def update_stamina(stamina: float, mode: str, dt: float,
+                   max_run_secs: float, recovery_secs: float) -> float:
+    """Drain stamina while running, refill otherwise; result in [0, 1]."""
+    if mode == RUN:
+        stamina -= dt / max_run_secs
+    else:
+        stamina += dt / recovery_secs
+    return max(0.0, min(1.0, stamina))
+
+
+def next_mode(mode: str, alarmed: bool, stamina: float,
+              resume_stamina: float) -> str:
+    """Return the next behaviour mode.
+
+    ``alarmed`` means the person knows it is being watched. A sprint ends
+    when stamina runs out; after that the person stays EXHAUSTED until
+    stamina is back above ``resume_stamina``.
+    """
+    if mode == RUN:
+        if stamina <= 0.0:
+            return EXHAUSTED
+        return RUN if alarmed else WALK
+    if mode == EXHAUSTED:
+        if stamina < resume_stamina:
+            return EXHAUSTED
+        return RUN if alarmed else WALK
+    return RUN if alarmed and stamina > 0.0 else WALK
+
+
+def flee_heading(person_xy: Tuple[float, float],
+                 robot_xy: Tuple[float, float],
+                 bounds: float,
+                 margin: float = 2.0) -> float:
+    """Heading (rad) that moves away from the robot without hitting walls.
+
+    The escape direction points from the robot to the person. Inside
+    ``margin`` of the boundary a repulsive term grows linearly and bends the
+    path along the wall.
+    """
+    dx = person_xy[0] - robot_xy[0]
+    dy = person_xy[1] - robot_xy[1]
+    norm = math.hypot(dx, dy)
+    if norm < 1e-6:
+        dx, dy, norm = 1.0, 0.0, 1.0
+    vx, vy = dx / norm, dy / norm
+
+    for axis in (0, 1):
+        p = person_xy[axis]
+        push = 0.0
+        if p > bounds - margin:
+            push = -(p - (bounds - margin)) / margin
+        elif p < -bounds + margin:
+            push = (-bounds + margin - p) / margin
+        if axis == 0:
+            vx += 2.0 * push
+        else:
+            vy += 2.0 * push
+    return math.atan2(vy, vx)
+
+
+def steer(heading: float, desired_heading: float, target_speed: float,
+          current_speed: float, dt: float, max_yaw_rate: float,
+          accel: float, decel: float, k_heading: float = 2.5
+          ) -> Tuple[float, float]:
+    """Return (speed, yaw_rate) honouring human turn and accel limits."""
+    err = wrap_angle(desired_heading - heading)
+    yaw_rate = max(-max_yaw_rate, min(max_yaw_rate, k_heading * err))
+    # People slow down to turn sharply.
+    target_speed *= max(0.25, math.cos(err)) if abs(err) < math.pi / 2 else 0.25
+    if target_speed > current_speed:
+        speed = min(target_speed, current_speed + accel * dt)
+    else:
+        speed = max(target_speed, current_speed - decel * dt)
+    return speed, yaw_rate
+
+
+def random_waypoint(bounds: float, margin: float = 2.0) -> Tuple[float, float]:
+    """Pick a random wander target well inside the yard."""
+    lim = bounds - margin
+    return random.uniform(-lim, lim), random.uniform(-lim, lim)
 
 
 @dataclass
-class PersonState:
-    """Mutable pose + heading of the simulated pedestrian."""
+class PersonPose:
+    """Planar pose and speed of the person."""
 
-    x: float = 3.0
+    x: float = 0.0
     y: float = 0.0
     yaw: float = 0.0
-
-
-def step_walk(state: PersonState,
-              waypoint: Tuple[float, float],
-              speed: float,
-              dt: float) -> PersonState:
-    """Advance ``state`` toward ``waypoint`` by ``speed * dt`` metres.
-
-    Heading is set so the pedestrian faces the direction of motion.  When
-    the waypoint is within one step, the actor snaps to it exactly to
-    avoid jitter.
-    """
-    dx = waypoint[0] - state.x
-    dy = waypoint[1] - state.y
-    dist = math.hypot(dx, dy)
-    if dist < 1e-6:
-        return state
-    step = speed * dt
-    if step >= dist:
-        return PersonState(waypoint[0], waypoint[1], math.atan2(dy, dx))
-    return PersonState(
-        state.x + step * dx / dist,
-        state.y + step * dy / dist,
-        math.atan2(dy, dx),
-    )
-
-
-def step_flee(state: PersonState,
-              robot_xy: Tuple[float, float],
-              speed: float,
-              dt: float,
-              bounds: float = 8.0) -> PersonState:
-    """Advance ``state`` directly away from ``robot_xy``.
-
-    Stays inside an axis-aligned square of half-extent ``bounds`` — when
-    the pedestrian would otherwise run out of the world it slides along
-    the wall instead.
-    """
-    dx = state.x - robot_xy[0]
-    dy = state.y - robot_xy[1]
-    norm = math.hypot(dx, dy)
-    if norm < 1e-6:
-        # Robot is on top of us — pick a random direction
-        theta = random.uniform(-math.pi, math.pi)
-        dx, dy = math.cos(theta), math.sin(theta)
-        norm = 1.0
-    ux, uy = dx / norm, dy / norm
-    nx = state.x + ux * speed * dt
-    ny = state.y + uy * speed * dt
-    # Clamp inside bounds while preserving heading
-    nx = max(-bounds, min(bounds, nx))
-    ny = max(-bounds, min(bounds, ny))
-    return PersonState(nx, ny, math.atan2(uy, ux))
-
-
-def should_run(detected: bool,
-               current_state: str,
-               time_since_last_detection: float,
-               calm_down_secs: float) -> str:
-    """Pure FSM transition function.
-
-    ``detected`` is the latest ``/person_detected`` flag value.  Once
-    triggered, RUN persists until ``calm_down_secs`` of no fresh detection.
-    """
-    if detected:
-        return RUN
-    if current_state == RUN and time_since_last_detection < calm_down_secs:
-        return RUN
-    return WALK
+    speed: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -139,126 +174,129 @@ def should_run(detected: bool,
 # ---------------------------------------------------------------------------
 
 class PersonControllerNode(Node):
-    """Drives the ``person_intruder`` actor between WALK and RUN modes."""
+    """Publish /person/cmd_vel according to the WALK/RUN/EXHAUSTED model."""
 
     def __init__(self):
         super().__init__('person_controller')
 
-        # --- parameters --------------------------------------------------
-        self.declare_parameter('actor_name', 'person_intruder')
-        self.declare_parameter('walk_speed', 0.8)
-        self.declare_parameter('run_speed', 2.0)
-        self.declare_parameter('update_rate_hz', 20.0)
+        self.declare_parameter('walk_speed', 0.7)
+        self.declare_parameter('walk_speed_jitter', 0.1)
+        self.declare_parameter('run_speed', 2.5)
+        self.declare_parameter('exhausted_speed', 0.5)
+        self.declare_parameter('accel', 2.0)
+        self.declare_parameter('decel', 3.0)
+        self.declare_parameter('walk_max_yaw_rate', 1.5)
+        self.declare_parameter('run_max_yaw_rate', 1.0)
+        self.declare_parameter('max_run_secs', 3.5)
+        self.declare_parameter('recovery_secs', 8.0)
+        self.declare_parameter('resume_stamina', 0.6)
         self.declare_parameter('calm_down_secs', 4.0)
+        self.declare_parameter('notice_radius', 7.0)
         self.declare_parameter('bounds', 8.0)
-        self.declare_parameter(
-            'waypoints',
-            [3.0, 0.0,
-             3.0, 3.0,
-             -1.0, 3.0,
-             -1.0, 0.0])
+        self.declare_parameter('update_rate_hz', 20.0)
 
-        self._actor = str(self.get_parameter('actor_name').value)
-        self._walk_speed = float(self.get_parameter('walk_speed').value)
-        self._run_speed = float(self.get_parameter('run_speed').value)
-        rate = float(self.get_parameter('update_rate_hz').value)
-        self._dt = 1.0 / max(rate, 1.0)
-        self._calm_down = float(self.get_parameter('calm_down_secs').value)
-        self._bounds = float(self.get_parameter('bounds').value)
+        gp = self.get_parameter
+        self._walk_speed = float(gp('walk_speed').value)
+        self._walk_jitter = float(gp('walk_speed_jitter').value)
+        self._run_speed = float(gp('run_speed').value)
+        self._exhausted_speed = float(gp('exhausted_speed').value)
+        self._accel = float(gp('accel').value)
+        self._decel = float(gp('decel').value)
+        self._walk_yaw = float(gp('walk_max_yaw_rate').value)
+        self._run_yaw = float(gp('run_max_yaw_rate').value)
+        self._max_run_secs = float(gp('max_run_secs').value)
+        self._recovery_secs = float(gp('recovery_secs').value)
+        self._resume_stamina = float(gp('resume_stamina').value)
+        self._calm_down = float(gp('calm_down_secs').value)
+        self._notice_radius = float(gp('notice_radius').value)
+        self._bounds = float(gp('bounds').value)
+        self._dt = 1.0 / max(float(gp('update_rate_hz').value), 1.0)
 
-        flat = list(self.get_parameter('waypoints').value)
-        self._waypoints = [(flat[i], flat[i + 1])
-                           for i in range(0, len(flat) - 1, 2)]
-        self._wp_idx = 0
-
-        # --- state -------------------------------------------------------
-        self._state = PersonState(self._waypoints[0][0],
-                                  self._waypoints[0][1], 0.0)
+        self._person = PersonPose()
+        self._have_person_pose = False
+        self._robot_xy = (0.0, 0.0)
         self._mode = WALK
-        self._last_detection_time = -1.0e9
-        self._robot_xy: Tuple[float, float] = (0.0, 0.0)
+        self._stamina = 1.0
+        self._last_detection = -1.0e9
+        self._waypoint = random_waypoint(self._bounds)
+        self._walk_target = self._walk_speed
 
-        # --- pubs / subs -------------------------------------------------
+        self._cmd_pub = self.create_publisher(Twist, '/person/cmd_vel', 10)
         self._mode_pub = self.create_publisher(String, '/person_mode', 10)
         self.create_subscription(
-            Bool, '/person_detected', self._on_detection, 10)
+            Odometry, '/person/odom', self._on_person_odom, 10)
+        self.create_subscription(Odometry, '/odom', self._on_robot_odom, 10)
         self.create_subscription(
-            Odometry, '/odom', self._on_odom, 10)
+            Bool, '/person_detected', self._on_detection, 10)
 
-        # --- gazebo service client --------------------------------------
-        self._set_state_client = None
-        self._set_state_req = None
-        self._init_gazebo_client()
-
-        self._timer = self.create_timer(self._dt, self._tick)
+        self.create_timer(self._dt, self._tick)
         self.get_logger().info(
-            f'person_controller up: walk={self._walk_speed} m/s, '
-            f'run={self._run_speed} m/s, actor={self._actor}')
+            f'person_controller: walk {self._walk_speed} m/s, '
+            f'run {self._run_speed} m/s for up to {self._max_run_secs} s')
 
     # ------------------------------------------------------------------
 
-    def _init_gazebo_client(self) -> None:
-        """Best-effort import of gazebo_msgs.  Tests don't need it."""
-        try:
-            from gazebo_msgs.srv import SetEntityState
-            self._set_state_client = self.create_client(
-                SetEntityState, '/gazebo/set_entity_state')
-            self._set_state_req_cls = SetEntityState.Request
-        except ImportError:
-            self.get_logger().warn(
-                'gazebo_msgs not available — pose updates disabled '
-                '(controller will still publish /person_mode)')
+    def _on_person_odom(self, msg: Odometry) -> None:
+        q = msg.pose.pose.orientation
+        self._person.x = msg.pose.pose.position.x
+        self._person.y = msg.pose.pose.position.y
+        self._person.yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._have_person_pose = True
 
-    # ------------------------------------------------------------------
+    def _on_robot_odom(self, msg: Odometry) -> None:
+        self._robot_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
     def _on_detection(self, msg: Bool) -> None:
         if msg.data:
-            self._last_detection_time = self._now()
-
-    def _on_odom(self, msg: Odometry) -> None:
-        self._robot_xy = (msg.pose.pose.position.x,
-                          msg.pose.pose.position.y)
+            self._last_detection = self._now()
 
     # ------------------------------------------------------------------
 
     def _tick(self) -> None:
-        now = self._now()
-        dt_since = now - self._last_detection_time
-        detected_recent = dt_since < self._dt * 1.5  # current-tick detection
-        self._mode = should_run(
-            detected_recent, self._mode, dt_since, self._calm_down)
-        self._mode_pub.publish(String(data=self._mode))
+        if not self._have_person_pose:
+            return  # plugin not up yet
+        p = self._person
+        robot_dist = math.hypot(p.x - self._robot_xy[0], p.y - self._robot_xy[1])
+        alarmed = ((self._now() - self._last_detection) < self._calm_down
+                   and robot_dist < self._notice_radius)
 
-        if self._mode == RUN:
-            self._state = step_flee(
-                self._state, self._robot_xy, self._run_speed,
-                self._dt, self._bounds)
+        prev = self._mode
+        self._stamina = update_stamina(
+            self._stamina, self._mode, self._dt,
+            self._max_run_secs, self._recovery_secs)
+        self._mode = next_mode(
+            self._mode, alarmed, self._stamina, self._resume_stamina)
+        if self._mode != prev:
+            self.get_logger().info(
+                f'{prev} -> {self._mode} (stamina {self._stamina:.2f}, '
+                f'robot {robot_dist:.1f} m)')
+            if self._mode == WALK:
+                self._waypoint = random_waypoint(self._bounds)
+
+        if self._mode == WALK:
+            if math.hypot(p.x - self._waypoint[0], p.y - self._waypoint[1]) < 0.5:
+                self._waypoint = random_waypoint(self._bounds)
+                self._walk_target = self._walk_speed + random.uniform(
+                    -self._walk_jitter, self._walk_jitter)
+            desired = math.atan2(self._waypoint[1] - p.y, self._waypoint[0] - p.x)
+            target, max_yaw = self._walk_target, self._walk_yaw
         else:
-            target = self._waypoints[self._wp_idx]
-            self._state = step_walk(
-                self._state, target, self._walk_speed, self._dt)
-            if math.hypot(self._state.x - target[0],
-                          self._state.y - target[1]) < 0.15:
-                self._wp_idx = (self._wp_idx + 1) % len(self._waypoints)
+            desired = flee_heading((p.x, p.y), self._robot_xy, self._bounds)
+            if self._mode == RUN:
+                target, max_yaw = self._run_speed, self._run_yaw
+            else:
+                target, max_yaw = self._exhausted_speed, self._walk_yaw
 
-        self._publish_pose()
+        p.speed, yaw_rate = steer(
+            p.yaw, desired, target, p.speed, self._dt,
+            max_yaw, self._accel, self._decel)
 
-    def _publish_pose(self) -> None:
-        if self._set_state_client is None:
-            return
-        if not self._set_state_client.service_is_ready():
-            return
-        req = self._set_state_req_cls()
-        req.state.name = self._actor
-        req.state.pose.position.x = float(self._state.x)
-        req.state.pose.position.y = float(self._state.y)
-        req.state.pose.position.z = 0.0
-        # Convert yaw → quaternion (Z-axis rotation)
-        half = self._state.yaw / 2.0
-        req.state.pose.orientation.z = math.sin(half)
-        req.state.pose.orientation.w = math.cos(half)
-        req.state.reference_frame = 'world'
-        self._set_state_client.call_async(req)
+        cmd = Twist()
+        cmd.linear.x = p.speed
+        cmd.angular.z = yaw_rate
+        self._cmd_pub.publish(cmd)
+        self._mode_pub.publish(String(data=self._mode))
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9

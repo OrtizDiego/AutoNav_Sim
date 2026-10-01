@@ -12,20 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure-Python tests for the person {controller, tracker, follower} math.
+"""Tests for the person {controller, tracker, follower} helpers and config.
 
-These exercise the module-level helper functions only, so they run without
-a ROS graph, Gazebo, or ONNX model.  ROS / OpenCV / cv_bridge imports are
-stubbed at module load so the modules-under-test import cleanly.
+Only module-level pure functions are exercised, so no ROS graph, Gazebo or
+ONNX model is needed. ROS packages, cv_bridge and (if absent) cv2 are
+stubbed before import; numpy must be installed.
 """
 
+import ast
 import math
 import os
 import sys
 import types
+import xml.etree.ElementTree as ET
+
+import pytest
+import yaml
 
 # ---------------------------------------------------------------------------
-# Stub ROS / OpenCV / cv_bridge so the modules import in a plain Python env
+# Stub ROS / cv_bridge (and cv2 if missing) so the modules import anywhere
 # ---------------------------------------------------------------------------
 for _mod in ('cv_bridge', 'rclpy', 'rclpy.node', 'rclpy.qos',
              'sensor_msgs', 'sensor_msgs.msg',
@@ -35,229 +40,352 @@ for _mod in ('cv_bridge', 'rclpy', 'rclpy.node', 'rclpy.qos',
              'visualization_msgs', 'visualization_msgs.msg'):
     sys.modules.setdefault(_mod, types.ModuleType(_mod))
 
-import rclpy.node as _rclpy_node  # noqa: E402
-_rclpy_node.Node = object
-import rclpy.qos as _rclpy_qos  # noqa: E402
-_rclpy_qos.qos_profile_sensor_data = None
+sys.modules['rclpy.node'].Node = getattr(sys.modules['rclpy.node'], 'Node', object)
+sys.modules['rclpy.qos'].qos_profile_sensor_data = None
+for _name in ('Image', 'LaserScan'):
+    setattr(sys.modules['sensor_msgs.msg'], _name,
+            getattr(sys.modules['sensor_msgs.msg'], _name, object))
+for _name in ('PointStamped', 'Twist', 'Pose'):
+    setattr(sys.modules['geometry_msgs.msg'], _name,
+            getattr(sys.modules['geometry_msgs.msg'], _name, object))
+sys.modules['nav_msgs.msg'].Odometry = getattr(
+    sys.modules['nav_msgs.msg'], 'Odometry', object)
+for _name in ('Bool', 'Float32', 'Float32MultiArray', 'String'):
+    setattr(sys.modules['std_msgs.msg'], _name,
+            getattr(sys.modules['std_msgs.msg'], _name, object))
+for _name in ('Marker', 'MarkerArray'):
+    setattr(sys.modules['visualization_msgs.msg'], _name,
+            getattr(sys.modules['visualization_msgs.msg'], _name, object))
+sys.modules['cv_bridge'].CvBridge = getattr(
+    sys.modules['cv_bridge'], 'CvBridge', object)
 
-import sensor_msgs.msg as _smsg  # noqa: E402
-_smsg.Image = object
-_smsg.LaserScan = object
-
-import geometry_msgs.msg as _gmsg  # noqa: E402
-_gmsg.PointStamped = object
-_gmsg.Twist = object
-_gmsg.Pose = object
-
-import nav_msgs.msg as _nmsg  # noqa: E402
-_nmsg.Odometry = object
-
-import std_msgs.msg as _stdmsg  # noqa: E402
-_stdmsg.Bool = object
-_stdmsg.Float32 = object
-_stdmsg.Float32MultiArray = object
-_stdmsg.String = object
-
-import visualization_msgs.msg as _vmsg  # noqa: E402
-_vmsg.Marker = object
-_vmsg.MarkerArray = object
-
-import cv_bridge as _cvb  # noqa: E402
-_cvb.CvBridge = object
-
-# cv2 + numpy stubs (only used so that `import` succeeds; the helper
-# functions tested here do not actually invoke OpenCV).  When the real
-# packages are installed (CI / Docker) they take precedence over the stubs.
 try:
     import cv2  # noqa: F401
 except ImportError:
     _cv2 = types.ModuleType('cv2')
-    _cv2.legacy = types.SimpleNamespace()
+    _cv2.legacy = None
     sys.modules['cv2'] = _cv2
-try:
-    import numpy  # noqa: F401
-except ImportError:
-    sys.modules['numpy'] = types.ModuleType('numpy')
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PKG_DIR)
 
-import pytest  # noqa: E402
+from my_bot import person_controller as pc  # noqa: E402
+from my_bot import person_follower as pf  # noqa: E402
+from my_bot import person_tracker as pt  # noqa: E402
 
-
-# ---------------------------------------------------------------------------
-# person_controller — FSM + locomotion primitives
-# ---------------------------------------------------------------------------
-
-def test_should_run_triggers_on_detection():
-    from my_bot.person_controller import RUN, WALK, should_run
-    assert should_run(True, WALK, 0.0, 4.0) == RUN
-
-
-def test_should_run_persists_during_calm_down():
-    from my_bot.person_controller import RUN, should_run
-    # Still inside the calm-down window → stay in RUN
-    assert should_run(False, RUN, 2.0, 4.0) == RUN
-
-
-def test_should_run_returns_to_walk_after_calm_down():
-    from my_bot.person_controller import RUN, WALK, should_run
-    assert should_run(False, RUN, 5.0, 4.0) == WALK
-
-
-def test_step_walk_advances_toward_waypoint():
-    from my_bot.person_controller import PersonState, step_walk
-    s = PersonState(0.0, 0.0, 0.0)
-    out = step_walk(s, (10.0, 0.0), speed=1.0, dt=1.0)
-    assert math.isclose(out.x, 1.0, abs_tol=1e-6)
-    assert math.isclose(out.y, 0.0, abs_tol=1e-6)
-    assert math.isclose(out.yaw, 0.0, abs_tol=1e-6)
-
-
-def test_step_walk_snaps_when_within_one_step():
-    from my_bot.person_controller import PersonState, step_walk
-    s = PersonState(0.0, 0.0, 0.0)
-    out = step_walk(s, (0.3, 0.0), speed=1.0, dt=1.0)
-    assert math.isclose(out.x, 0.3, abs_tol=1e-6)
-
-
-def test_step_flee_moves_away_from_robot():
-    from my_bot.person_controller import PersonState, step_flee
-    s = PersonState(2.0, 0.0, 0.0)
-    out = step_flee(s, (0.0, 0.0), speed=1.0, dt=1.0, bounds=8.0)
-    # Should move further from origin (the "robot")
-    assert math.hypot(out.x, out.y) > math.hypot(s.x, s.y)
-
-
-def test_step_flee_clamps_to_bounds():
-    from my_bot.person_controller import PersonState, step_flee
-    s = PersonState(7.9, 0.0, 0.0)
-    out = step_flee(s, (0.0, 0.0), speed=5.0, dt=1.0, bounds=8.0)
-    assert -8.0 <= out.x <= 8.0
-    assert -8.0 <= out.y <= 8.0
+FX = 320.0 / math.tan(1.089 / 2.0)
 
 
 # ---------------------------------------------------------------------------
-# person_tracker — pure helpers
+# person_controller
 # ---------------------------------------------------------------------------
 
-def test_select_person_box_picks_highest_score_person():
-    from my_bot.person_tracker import select_person_box
-    detections = [
-        (0, 0, 10, 10, 0, 0.6),   # person, low score
-        (5, 5, 30, 30, 0, 0.9),   # person, high score
-        (0, 0, 100, 100, 32, 0.95),  # sports ball — must be ignored
-    ]
-    box = select_person_box(detections, min_conf=0.4)
-    assert box == (5, 5, 25, 25)
+class TestModes:
+
+    def test_detection_starts_a_sprint(self):
+        assert pc.next_mode(pc.WALK, True, 1.0, 0.6) == pc.RUN
+
+    def test_no_sprint_with_empty_tank(self):
+        assert pc.next_mode(pc.WALK, True, 0.0, 0.6) == pc.WALK
+
+    def test_sprint_ends_when_stamina_runs_out(self):
+        assert pc.next_mode(pc.RUN, True, 0.0, 0.6) == pc.EXHAUSTED
+
+    def test_calm_person_returns_to_walking(self):
+        assert pc.next_mode(pc.RUN, False, 0.8, 0.6) == pc.WALK
+
+    def test_exhausted_until_recovered(self):
+        assert pc.next_mode(pc.EXHAUSTED, True, 0.5, 0.6) == pc.EXHAUSTED
+        assert pc.next_mode(pc.EXHAUSTED, True, 0.7, 0.6) == pc.RUN
+        assert pc.next_mode(pc.EXHAUSTED, False, 0.7, 0.6) == pc.WALK
+
+    def test_stamina_drains_and_recovers(self):
+        s = pc.update_stamina(1.0, pc.RUN, 1.0, max_run_secs=4.0, recovery_secs=8.0)
+        assert s == pytest.approx(0.75)
+        s = pc.update_stamina(s, pc.WALK, 2.0, max_run_secs=4.0, recovery_secs=8.0)
+        assert s == pytest.approx(1.0)
+        assert pc.update_stamina(0.01, pc.RUN, 1.0, 4.0, 8.0) == 0.0
+
+    def test_sprint_lasts_max_run_secs(self):
+        """Simulate a full sprint at 20 Hz: it must end after ~max_run_secs."""
+        mode, stamina, t, dt = pc.WALK, 1.0, 0.0, 0.05
+        mode = pc.next_mode(mode, True, stamina, 0.6)
+        while mode == pc.RUN and t < 20.0:
+            stamina = pc.update_stamina(stamina, mode, dt, 3.5, 8.0)
+            mode = pc.next_mode(mode, True, stamina, 0.6)
+            t += dt
+        assert mode == pc.EXHAUSTED
+        assert t == pytest.approx(3.5, abs=0.1)
 
 
-def test_select_person_box_returns_none_when_no_person():
-    from my_bot.person_tracker import select_person_box
-    detections = [(0, 0, 10, 10, 32, 0.95)]
-    assert select_person_box(detections) is None
+class TestFleeHeading:
+
+    def test_points_away_from_robot(self):
+        h = pc.flee_heading((3.0, 0.0), (0.0, 0.0), bounds=8.0)
+        assert h == pytest.approx(0.0, abs=1e-6)
+
+    def test_bends_away_from_wall(self):
+        # Fleeing straight into the east wall must gain a sideways component
+        # and must not keep pushing into the wall.
+        h = pc.flee_heading((7.8, 1.0), (5.0, 1.0), bounds=8.0)
+        assert math.cos(h) < 0.5
+
+    def test_coincident_positions_do_not_crash(self):
+        assert math.isfinite(pc.flee_heading((1.0, 1.0), (1.0, 1.0), 8.0))
 
 
-def test_select_person_box_respects_min_confidence():
-    from my_bot.person_tracker import select_person_box
-    detections = [(0, 0, 10, 10, 0, 0.2)]
-    assert select_person_box(detections, min_conf=0.4) is None
+class TestSteer:
 
+    def test_acceleration_is_limited(self):
+        v, _ = pc.steer(0.0, 0.0, 2.5, 0.7, 0.05, 1.0, accel=2.0, decel=3.0)
+        assert v == pytest.approx(0.8)
 
-def test_box_iou_identical_is_one():
-    from my_bot.person_tracker import box_iou
-    a = (0, 0, 10, 10)
-    assert math.isclose(box_iou(a, a), 1.0, abs_tol=1e-6)
+    def test_yaw_rate_is_limited(self):
+        _, w = pc.steer(0.0, math.pi / 2, 1.0, 1.0, 0.05, 1.0, 2.0, 3.0)
+        assert w == pytest.approx(1.0)
 
+    def test_slows_down_for_sharp_turns(self):
+        v_straight, _ = pc.steer(0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 10.0, 10.0)
+        v_turn, _ = pc.steer(0.0, math.pi * 0.9, 1.0, 1.0, 1.0, 1.0, 10.0, 10.0)
+        assert v_turn < v_straight
 
-def test_box_iou_disjoint_is_zero():
-    from my_bot.person_tracker import box_iou
-    assert box_iou((0, 0, 10, 10), (100, 100, 10, 10)) == 0.0
+    def test_wrap_angle(self):
+        assert pc.wrap_angle(3 * math.pi / 2) == pytest.approx(-math.pi / 2)
 
-
-def test_box_iou_half_overlap():
-    from my_bot.person_tracker import box_iou
-    iou = box_iou((0, 0, 10, 10), (5, 0, 10, 10))
-    # intersection = 5*10 = 50, union = 100+100-50 = 150 → 1/3
-    assert math.isclose(iou, 1.0 / 3.0, abs_tol=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# person_follower — control law
-# ---------------------------------------------------------------------------
-
-def test_compute_command_stops_when_no_range():
-    from my_bot.person_follower import compute_command
-    v, w = compute_command(0.1, -1.0, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2)
-    assert v == 0.0 and w == 0.0
-
-
-def test_compute_command_advances_when_too_far():
-    from my_bot.person_follower import compute_command
-    v, _ = compute_command(0.0, 3.0, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2,
-                           deadband=0.1)
-    assert v > 0.0
-
-
-def test_compute_command_backs_off_when_too_close():
-    from my_bot.person_follower import compute_command
-    v, _ = compute_command(0.0, 0.5, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2,
-                           deadband=0.1)
-    assert v < 0.0
-
-
-def test_compute_command_respects_deadband():
-    from my_bot.person_follower import compute_command
-    v, _ = compute_command(0.0, 1.55, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2,
-                           deadband=0.1)
-    assert v == 0.0
-
-
-def test_compute_command_clips_linear_speed():
-    from my_bot.person_follower import compute_command
-    v, _ = compute_command(0.0, 100.0, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2)
-    assert v == 0.4
-
-
-def test_compute_command_turns_toward_target():
-    """Positive bearing (target to the left) → positive angular.z (turn left)."""
-    from my_bot.person_follower import compute_command
-    # compute_bearing in sensor_fusion uses atan2(pixel_x - cx, fx), so a target
-    # to the *right* of the optical axis gives a positive bearing; the follower
-    # control law uses w = -k_yaw * bearing, so a right-of-centre target turns
-    # the robot right (negative w).
-    _, w_right = compute_command(0.5, 2.0, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2)
-    _, w_left = compute_command(-0.5, 2.0, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2)
-    assert w_right < 0.0
-    assert w_left > 0.0
-
-
-def test_compute_command_clips_angular_speed():
-    from my_bot.person_follower import compute_command
-    _, w = compute_command(10.0, 2.0, 1.5, 0.6, 1.2, 0.4, 0.2, 1.2)
-    assert abs(w) <= 1.2 + 1e-9
-
-
-def test_bbox_centroid_x_basic():
-    from my_bot.person_follower import bbox_centroid_x
-    assert bbox_centroid_x([10.0, 20.0, 40.0, 60.0]) == 30.0
-
-
-def test_bbox_centroid_x_empty():
-    from my_bot.person_follower import bbox_centroid_x
-    assert bbox_centroid_x([]) is None
+    def test_random_waypoint_inside_bounds(self):
+        for _ in range(100):
+            x, y = pc.random_waypoint(8.0)
+            assert abs(x) <= 6.0 and abs(y) <= 6.0
 
 
 # ---------------------------------------------------------------------------
-# person.world — structural sanity
+# person_tracker
 # ---------------------------------------------------------------------------
 
-def test_person_world_exists_and_has_actor():
-    test_dir = os.path.dirname(os.path.abspath(__file__))
-    pkg_path = os.path.dirname(test_dir)
-    world = os.path.join(pkg_path, 'worlds', 'person.world')
-    assert os.path.exists(world), 'person.world missing'
-    with open(world) as f:
-        content = f.read()
-    assert '<actor name="person_intruder">' in content
-    assert 'walk.dae' in content
-    assert 'libgazebo_ros_state.so' in content
+class TestTrackerHelpers:
+
+    def test_select_person_box_picks_highest_score_person(self):
+        detections = [
+            (0, 0, 10, 10, 0, 0.6),
+            (5, 5, 30, 30, 0, 0.9),
+            (0, 0, 100, 100, 32, 0.95),  # sports ball, ignored
+        ]
+        assert pt.select_person_box(detections, 0.4) == (5, 5, 25, 25)
+
+    def test_select_person_box_none_without_person(self):
+        assert pt.select_person_box([(0, 0, 10, 10, 32, 0.95)]) is None
+        assert pt.select_person_box([(0, 0, 10, 10, 0, 0.2)], 0.4) is None
+
+    def test_box_iou(self):
+        assert pt.box_iou((0, 0, 10, 10), (0, 0, 10, 10)) == pytest.approx(1.0)
+        assert pt.box_iou((0, 0, 10, 10), (100, 100, 10, 10)) == 0.0
+        assert pt.box_iou((0, 0, 10, 10), (5, 0, 10, 10)) == pytest.approx(1 / 3)
+
+    def test_letterbox_shape_is_square(self):
+        assert pt.letterbox_shape((480, 640, 3)) == (640, 640)
+        assert pt.letterbox_shape((720, 1280, 3)) == (1280, 1280)
+
+    def test_letterbox_decoding_keeps_y_unscaled(self):
+        """A box at y=400 in a 640x480 frame must decode back to y=400."""
+        np = pytest.importorskip('numpy')
+        pytest.importorskip('cv2.dnn')
+        from my_bot.object_detector import postprocess
+        out = np.zeros((1, 84, 8400), dtype=np.float32)
+        # Letterboxed 640x480 -> 640x640 with scale 1.0: pixels are unchanged
+        out[0, :4, 0] = [320.0, 400.0, 50.0, 100.0]
+        out[0, 4, 0] = 0.9
+        dets = postprocess(out, pt.letterbox_shape((480, 640, 3)), 0.5, 0.45)
+        assert len(dets) == 1
+        cy = (dets[0][1] + dets[0][3]) / 2
+        assert cy == pytest.approx(400.0, abs=1.0)
+
+    def test_clip_box(self):
+        assert pt.clip_box((-10, -10, 30, 40), 640, 480) == (0, 0, 20, 30)
+        assert pt.clip_box((630, 470, 50, 50), 640, 480) == (630, 470, 10, 10)
+        assert pt.clip_box((700, 10, 20, 20), 640, 480) is None
+
+
+class TestBoxKalman:
+
+    def test_first_update_returns_measurement(self):
+        kf = pt.BoxKalman((100, 100, 50, 120))
+        kf.predict()
+        box = kf.update((100, 100, 50, 120))
+        assert box == pytest.approx((100, 100, 50, 120), abs=1)
+
+    def test_learns_velocity_and_predicts_motion(self):
+        kf = pt.BoxKalman((100, 100, 50, 120))
+        for k in range(1, 20):
+            kf.predict()
+            kf.update((100 + 5 * k, 100, 50, 120))
+        predicted = kf.predict()
+        # Last measurement x=195; constant 5 px/frame motion -> ~200
+        assert predicted[0] == pytest.approx(200, abs=3)
+
+    def test_smooths_measurement_noise(self):
+        kf = pt.BoxKalman((300, 100, 50, 120))
+        for k in range(30):
+            kf.predict()
+            jitter = 6 if k % 2 else -6
+            box = kf.update((300 + jitter, 100, 50, 120))
+        assert abs(box[0] - 300) < 6
+
+
+# ---------------------------------------------------------------------------
+# person_follower
+# ---------------------------------------------------------------------------
+
+class TestFollowerGeometry:
+
+    def test_right_of_image_is_negative_ros_angle(self):
+        """Image right == robot's right == negative angle in ROS."""
+        assert pf.pixel_to_angle(600.0, 320.0, FX) < 0.0
+        assert pf.pixel_to_angle(40.0, 320.0, FX) > 0.0
+        assert pf.pixel_to_angle(320.0, 320.0, FX) == pytest.approx(0.0)
+
+    def _scan(self, default=10.0):
+        n = 360
+        inc = 2 * math.pi / n
+        return [default] * n, -math.pi, inc
+
+    def test_scan_window_finds_person_on_the_right(self):
+        ranges, amin, inc = self._scan()
+        # Person at -20 deg (robot's right), 2.5 m
+        for deg in range(-22, -17):
+            ranges[int(round((math.radians(deg) - amin) / inc))] = 2.5
+        r = pf.scan_window_range(ranges, amin, inc, math.radians(-15),
+                                 math.radians(-25), 0.3, 12.0)
+        assert r == pytest.approx(2.5)
+        # Mirrored window (the old bug) sees only background
+        r_mirror = pf.scan_window_range(ranges, amin, inc, math.radians(25),
+                                        math.radians(15), 0.3, 12.0)
+        assert r_mirror == pytest.approx(10.0)
+
+    def test_scan_window_ignores_invalid_returns(self):
+        ranges, amin, inc = self._scan(float('inf'))
+        assert pf.scan_window_range(ranges, amin, inc, 0.1, -0.1, 0.3, 12.0) is None
+
+    def test_scan_window_wraps_at_pi(self):
+        ranges, amin, inc = self._scan()
+        ranges[0] = 3.0     # -pi
+        ranges[-1] = 3.0    # just below +pi
+        r = pf.scan_window_range(ranges, amin, inc, math.pi + 0.02,
+                                 math.pi - 0.02, 0.3, 12.0, percentile=0.0)
+        assert r == pytest.approx(3.0)
+
+    def test_monocular_range_full_body(self):
+        # 1.72 m person, 2.5 m away -> h = fy * 1.72 / 2.5
+        h = FX * 1.72 / 2.5
+        r = pf.monocular_range([300, 100, 60, h], 480, FX, 240.0, 1.72, 0.103)
+        assert r == pytest.approx(2.5, rel=0.01)
+
+    def test_monocular_range_from_feet_when_head_cut(self):
+        # Head cut off at the top; feet 0.103 m below the camera at 2.0 m
+        feet_y = 240.0 + FX * 0.103 / 2.0
+        r = pf.monocular_range([300, 0, 60, feet_y], 480, FX, 240.0, 1.72, 0.103)
+        assert r == pytest.approx(2.0, rel=0.01)
+
+    def test_monocular_range_none_when_both_ends_cut(self):
+        assert pf.monocular_range([300, 0, 60, 480], 480, FX, 240.0, 1.72, 0.103) is None
+
+    def test_fuse_range(self):
+        assert pf.fuse_range(2.4, 2.5) == 2.4          # agree -> lidar
+        assert pf.fuse_range(9.0, 2.5) == 2.5          # beam missed legs
+        assert pf.fuse_range(None, 2.5) == 2.5
+        assert pf.fuse_range(2.4, None) == 2.4
+        assert pf.fuse_range(None, None) is None
+
+
+class TestFollowerControl:
+
+    ARGS = dict(desired_distance=2.5, k_lin=0.8, k_yaw=1.5,
+                max_lin=1.0, max_back=0.2, max_yaw=1.5)
+
+    def test_turns_only_without_range(self):
+        v, w = pf.compute_command(0.3, None, **self.ARGS)
+        assert v == 0.0 and w > 0.0
+
+    def test_advances_when_too_far(self):
+        v, _ = pf.compute_command(0.0, 4.0, **self.ARGS)
+        assert v == pytest.approx(1.0)
+
+    def test_backs_off_when_too_close(self):
+        v, _ = pf.compute_command(0.0, 1.5, **self.ARGS)
+        assert v == pytest.approx(-0.2)
+
+    def test_deadband(self):
+        v, _ = pf.compute_command(0.0, 2.6, **self.ARGS)
+        assert v == 0.0
+
+    def test_turns_toward_person(self):
+        _, w_left = pf.compute_command(0.4, 2.5, **self.ARGS)
+        _, w_right = pf.compute_command(-0.4, 2.5, **self.ARGS)
+        assert w_left > 0.0 > w_right
+
+    def test_turn_before_driving(self):
+        v_ahead, _ = pf.compute_command(0.0, 4.0, **self.ARGS)
+        v_side, _ = pf.compute_command(1.2, 4.0, **self.ARGS)
+        assert v_side < v_ahead
+
+    def test_safety_stop(self):
+        v, _ = pf.compute_command(0.0, 4.0, front_clear=0.4,
+                                  safety_distance=0.6, **self.ARGS)
+        assert v == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Config, world and plugin wiring
+# ---------------------------------------------------------------------------
+
+def _declared_defaults(module_file):
+    """Map parameter name -> default value from declare_parameter calls."""
+    tree = ast.parse(open(module_file).read())
+    out = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, 'attr', '') == 'declare_parameter'
+                and len(node.args) == 2):
+            out[ast.literal_eval(node.args[0])] = ast.literal_eval(node.args[1])
+    return out
+
+
+@pytest.mark.parametrize('node', ['person_controller', 'person_tracker',
+                                  'person_follower'])
+def test_yaml_params_match_declared_types(node):
+    """YAML values must match declared types (int vs double fails in ROS)."""
+    with open(os.path.join(PKG_DIR, 'config', 'behavior_params.yaml')) as f:
+        section = yaml.safe_load(f)[node]
+    declared = _declared_defaults(os.path.join(PKG_DIR, 'my_bot', f'{node}.py'))
+    for key, value in section.items():
+        assert key in declared, f'{node}: unknown parameter {key}'
+        assert type(value) is type(declared[key]), (
+            f'{node}.{key}: yaml {type(value).__name__} vs '
+            f'declared {type(declared[key]).__name__}')
+
+
+def test_person_world_uses_plugin_not_script():
+    root = ET.parse(os.path.join(PKG_DIR, 'worlds', 'person.world')).getroot()
+    actor = root.find('.//actor[@name="person_intruder"]')
+    assert actor is not None
+    # A <script> trajectory would override the plugin's pose every frame
+    assert actor.find('script') is None
+    anims = {a.get('name'): a.findtext('filename')
+             for a in actor.findall('animation')}
+    assert anims == {'walking': 'walk.dae', 'running': 'run.dae'}
+    plugin = actor.find('plugin')
+    assert plugin.get('filename') == 'libperson_actor_plugin.so'
+    assert plugin.findtext('ros/namespace') == '/person'
+
+
+def test_plugin_package_exports_plugin_path():
+    xml = os.path.join(os.path.dirname(PKG_DIR), 'person_actor_plugin',
+                       'package.xml')
+    root = ET.parse(xml).getroot()
+    export = root.find('export/gazebo_ros')
+    assert export is not None and 'plugin_path' in export.attrib
+
+
+def test_sim_launch_accepts_world_argument():
+    src = open(os.path.join(PKG_DIR, 'launch', 'sim.launch.py')).read()
+    assert "DeclareLaunchArgument(\n        'world'" in src
+    assert "LaunchConfiguration('world')" in src

@@ -54,8 +54,8 @@ help:
 	@echo "  intruder-bot       - Run autonomous intruder random walk"
 	@echo "  obstacle-controller- Run dynamic obstacle controller"
 	@echo "  person-sim         - Full person-intruder sim (actor + tracker + follower)"
-	@echo "  person-controller  - Run WALK/RUN pedestrian FSM (actor pose driver)"
-	@echo "  person-tracker     - YOLO + CSRT person tracker"
+	@echo "  person-controller  - Run pedestrian behaviour (WALK/RUN/EXHAUSTED)"
+	@echo "  person-tracker     - YOLO + OpenCV tracker + Kalman person tracker"
 	@echo "  person-follower    - Stand-off follower for the tracked person"
 
 # --- DOCKER MANAGEMENT ---
