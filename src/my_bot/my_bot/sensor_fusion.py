@@ -37,14 +37,16 @@ from std_msgs.msg import Float32
 def compute_bearing(pixel_x: float, cx: float, fx: float) -> float:
     """Return bearing (rad) of a pixel column relative to camera optical axis.
 
-    Positive bearing → target is to the robot's left (ROS convention).
+    Positive bearing → target is to the robot's left (ROS REP-103), i.e.
+    pixels left of the image centre give positive angles, matching the
+    LaserScan angle convention.
 
     Args:
         pixel_x: Horizontal pixel coordinate of the target centroid.
         cx:      Image optical centre (pixels).  Typically image_width / 2.
         fx:      Focal length in pixels.  fx = (width/2) / tan(FOV_h/2).
     """
-    return math.atan2(pixel_x - cx, fx)
+    return math.atan2(cx - pixel_x, fx)
 
 
 def bearing_to_scan_index(bearing: float,

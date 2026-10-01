@@ -246,16 +246,30 @@ class TestPostprocess:
         assert results == []
 
     def test_coordinates_scaled_to_original_size(self):
-        """Box at image centre should map to roughly (270,360) for 480x640."""
+        """Letterboxed 480x640 frame: one uniform scale (1.0) for both axes."""
         output = _make_output(320, 240, 64, 48, class_id=0, score=0.9)
         results = postprocess(output, orig_shape=(480, 640), conf_threshold=0.5)
         assert len(results) == 1
         x1, y1, x2, y2 = results[0][:4]
         cx = (x1 + x2) / 2
         cy = (y1 + y2) / 2
-        # Scale: 640→640 (x unchanged), 640→480 (y * 480/640 = 0.75)
+        # preprocess() scales by 640/max(h, w) = 1.0 and pads bottom only,
+        # so canvas coordinates equal original coordinates.
         assert cx == pytest.approx(320.0, abs=2.0)
-        assert cy == pytest.approx(240.0 * (480 / 640), abs=2.0)
+        assert cy == pytest.approx(240.0, abs=2.0)
+        assert x2 - x1 == pytest.approx(64.0, abs=1.0)
+        assert y2 - y1 == pytest.approx(48.0, abs=1.0)
+
+    def test_uniform_scale_for_smaller_frame(self):
+        """240x320 frame is letterboxed by 2x; both axes must scale by 0.5."""
+        output = _make_output(320, 200, 100, 80, class_id=0, score=0.9)
+        results = postprocess(output, orig_shape=(240, 320), conf_threshold=0.5)
+        assert len(results) == 1
+        x1, y1, x2, y2 = results[0][:4]
+        assert (x1 + x2) / 2 == pytest.approx(160.0, abs=1.0)
+        assert (y1 + y2) / 2 == pytest.approx(100.0, abs=1.0)
+        assert x2 - x1 == pytest.approx(50.0, abs=1.0)
+        assert y2 - y1 == pytest.approx(40.0, abs=1.0)
 
     def test_3d_input_accepted(self):
         """Ensure output with leading batch dim is handled correctly."""

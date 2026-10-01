@@ -105,14 +105,14 @@ def postprocess(
     confs = confidences[mask]
     cls_ids = class_ids[mask]
 
-    # Scale boxes from 640 back to original image size
+    # Undo the uniform letterbox scale from preprocess(). Padding is added
+    # bottom/right only, so no offset needs subtracting.
     orig_h, orig_w = orig_shape[:2]
-    scale_x = orig_w / _INPUT_SIZE
-    scale_y = orig_h / _INPUT_SIZE
-    cx = boxes_xywh[:, 0] * scale_x
-    cy = boxes_xywh[:, 1] * scale_y
-    bw = boxes_xywh[:, 2] * scale_x
-    bh = boxes_xywh[:, 3] * scale_y
+    scale = max(orig_h, orig_w) / _INPUT_SIZE
+    cx = boxes_xywh[:, 0] * scale
+    cy = boxes_xywh[:, 1] * scale
+    bw = boxes_xywh[:, 2] * scale
+    bh = boxes_xywh[:, 3] * scale
     x1 = cx - bw / 2
     y1 = cy - bh / 2
     x2 = cx + bw / 2
