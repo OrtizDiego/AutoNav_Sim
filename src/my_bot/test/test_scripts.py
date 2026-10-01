@@ -70,3 +70,17 @@ def test_scripts_compile():
             capture_output=True, text=True)
         assert result.returncode == 0, (
             f'{script} has syntax error:\n{result.stderr}')
+
+
+def test_security_guard_launch_drives_lifecycle():
+    """security_guard_full.launch.py must configure, then activate, security_guard."""
+    pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
+    with open(launch_file) as f:
+        src = f.read()
+    assert 'Transition.TRANSITION_CONFIGURE' in src
+    assert 'Transition.TRANSITION_ACTIVATE' in src
+    assert "start_state='configuring'" in src
+    assert "goal_state='inactive'" in src
+    assert 'configure_security_guard' in src.split('LaunchDescription([')[-1]
+    assert 'activate_on_inactive' in src.split('LaunchDescription([')[-1]
