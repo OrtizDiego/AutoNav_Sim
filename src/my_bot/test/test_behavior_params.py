@@ -45,6 +45,9 @@ NODE_SOURCES = {
     'ball_chaser': 'ball_chaser.py',
     'security_guard': 'security_guard.py',
     'sensor_fusion': 'sensor_fusion.py',
+    'person_controller': 'person_controller.py',
+    'person_tracker': 'person_tracker.py',
+    'person_follower': 'person_follower.py',
 }
 
 
@@ -170,7 +173,7 @@ def test_yaml_params_match_declared_types(section):
 def test_hsv_ranges_valid():
     """All HSV boundary values must be integers in [0, 255]."""
     params = _load_params()
-    for section in NODE_SOURCES:
+    for section in ('ball_chaser', 'security_guard', 'sensor_fusion'):
         for key in ('hsv_red_lower1', 'hsv_red_upper1',
                     'hsv_red_lower2', 'hsv_red_upper2'):
             values = params[section][key]

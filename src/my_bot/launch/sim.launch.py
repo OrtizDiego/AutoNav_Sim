@@ -18,8 +18,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -34,15 +35,19 @@ def generate_launch_description():
         )]), launch_arguments={'use_sim_time': 'true'}.items()
     )
 
-    # 2. Start Gazebo (MODIFIED)
-    # Define the path to your world file
-    world_path = os.path.join(get_package_share_directory(pkg_name), 'worlds', 'room.world')
+    # 2. Start Gazebo. The world is a launch argument so wrappers such as
+    # dynamic_sim.launch.py and person_sim.launch.py can override it.
+    default_world = os.path.join(
+        get_package_share_directory(pkg_name), 'worlds', 'room.world')
+    world_arg = DeclareLaunchArgument(
+        'world', default_value=default_world,
+        description='Absolute path to the Gazebo world file')
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
             get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py'
         )]),
-        launch_arguments={'world': world_path}.items()  # Load your custom world
+        launch_arguments={'world': LaunchConfiguration('world')}.items()  # Load your custom world
     )
 
     # 3. Spawn Entity
@@ -64,6 +69,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        world_arg,
         rsp,
         gazebo,
         spawn_entity,

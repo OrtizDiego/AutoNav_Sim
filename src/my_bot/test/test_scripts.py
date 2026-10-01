@@ -39,6 +39,9 @@ SCRIPTS = [
     'object_detector.py',
     'intruder_bot.py',
     'obstacle_controller.py',
+    'person_controller.py',
+    'person_tracker.py',
+    'person_follower.py',
 ]
 
 

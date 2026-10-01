@@ -80,7 +80,7 @@ make security-guard
 - Simulates a differential drive robot (TurtleBot3 Waffle Pi meshes/dimensions) with 2D Lidar and RGB camera
 - Publishes: `/scan` (Lidar), `/odom` (odometry), `/camera/image_raw` (camera)
 - Subscribes to: `/cmd_vel` (velocity commands)
-- Multiple world files: `room.world`, `obstacles.world`, `intruder.world`
+- Multiple world files: `room.world`, `obstacles.world`, `intruder.world`, `dynamic.world`, `person.world` (pass `world:=<path>` to `sim.launch.py`)
 
 **SLAM Toolbox**
 - Runs asynchronous SLAM to generate `/map` from Lidar scans and odometry
@@ -102,6 +102,9 @@ make security-guard
 - **object_detector.py**: YOLOv8-nano ONNX inference node. GPU auto-select (CUDA → CPU fallback). Publishes `/detections` (MarkerArray), `/person_detected`, `/target_detected`.
 - **intruder_bot.py**: Autonomous random-walk node driving the intruder sphere via `/target_cmd_vel`.
 - **obstacle_controller.py**: Drives dynamic world obstacles (moving_box_1, moving_cylinder_1) with timed random walk.
+- **person_controller.py**: Pedestrian behaviour model (WALK / RUN / EXHAUSTED). Publishes `/person/cmd_vel` with human-like acceleration and turn-rate limits. A `/person_detected` lock within `notice_radius` triggers a sprint away from the robot (boundary-aware); sprints are stamina-limited (`max_run_secs`), after which the person is EXHAUSTED until stamina recovers. Reads `/person/odom` (plugin) and `/odom` (robot; spawns at world origin).
+- **person_tracker.py**: YOLOv8n detection + OpenCV tracker (CSRT → KCF → MIL fallback) + constant-velocity Kalman filter. YOLO reseeds the tracker every `redetect_every` frames or on drift, and drops the track after `max_yolo_misses`. The Kalman filter smooths the box and coasts through short tracker failures. Publishes `/person_bbox` (Float32MultiArray [x,y,w,h]), `/person_track` (PointStamped centroid), `/person_detected` (Bool), `/person_tracker/image` (debug). Decodes YOLO boxes against the square letterbox canvas (`letterbox_shape`).
+- **person_follower.py**: Stand-off follower (default 2.5 m, which keeps the torso in view of the low camera). Range = low percentile of lidar beams across the bbox's angular span, cross-checked against a monocular estimate (person height, or feet ground-contact when the head is cut off). Image bearings are positive-right, so they are negated for ROS angles. P-control on range and bearing, front safety stop, turns toward the last-seen side on track loss.
 - **patrol.py**: Simple waypoint navigation (superseded by security_guard)
 
 **RViz Visualization**
@@ -121,6 +124,9 @@ src/my_bot/
 │   ├── object_detector.py     # YOLOv8-nano ONNX detector (GPU/CPU)
 │   ├── intruder_bot.py        # Autonomous random-walk intruder node
 │   ├── obstacle_controller.py # Dynamic obstacle random-walk driver
+│   ├── person_controller.py   # WALK/RUN/EXHAUSTED pedestrian behaviour → /person/cmd_vel
+│   ├── person_tracker.py      # YOLO + OpenCV tracker + Kalman person tracker
+│   ├── person_follower.py     # Stand-off follower (proportional control)
 │   ├── patrol.py              # Basic waypoint navigation
 │   └── camera_test.py         # Debug camera feed
 ├── launch/                    # Python launch files
@@ -130,7 +136,8 @@ src/my_bot/
 │   ├── rsp.launch.py          # Robot State Publisher (Xacro)
 │   ├── sensor_fusion.launch.py        # sensor_fusion node only
 │   ├── security_guard_full.launch.py  # sensor_fusion + security_guard + monitor
-│   └── dynamic_sim.launch.py          # Gazebo with dynamic world + obstacles
+│   ├── dynamic_sim.launch.py          # Gazebo with dynamic world + obstacles
+│   └── person_sim.launch.py           # person.world + tracker + controller + follower
 ├── config/                    # Parameters & visualization configs
 │   ├── nav2_params.yaml       # Navigation stack tuning
 │   ├── mapper_params_online_async.yaml  # SLAM tuning
@@ -148,7 +155,8 @@ src/my_bot/
 │   ├── room.world             # Simple room environment
 │   ├── obstacles.world        # Complex environment with obstacles
 │   ├── intruder.world         # Room with target/intruder sphere
-│   └── dynamic.world          # intruder.world + 2 moving obstacles
+│   ├── dynamic.world          # intruder.world + 2 moving obstacles
+│   └── person.world           # Walled yard + pedestrian actor (walk.dae/run.dae, PersonActorPlugin)
 ├── maps/                      # Saved occupancy grids
 │   └── my_map.yaml / my_map.pgm
 ├── test/                      # Unit tests (69/70 pass without ROS runtime)
@@ -157,8 +165,12 @@ src/my_bot/
 │   ├── test_behavior_params.py  # behavior_params.yaml structure validation
 │   ├── test_sensor_fusion.py  # Pure-Python math tests (18 tests)
 │   ├── test_behavior_tree.py  # BT leaf + tree structure tests (28 tests)
-│   └── test_object_detector.py  # preprocess/postprocess tests (15 tests)
+│   ├── test_object_detector.py  # preprocess/postprocess tests (15 tests)
+│   └── test_person.py         # Person controller/tracker/follower helpers + config/world wiring
 └── package.xml                # ROS 2 package manifest
+
+src/person_actor_plugin/          # ament_cmake Gazebo plugin package
+└── src/person_actor_plugin.cpp   # Twist-driven actor; walk/run clip switching, gait synced to distance
 ```
 
 ### Development Workflow
@@ -231,6 +243,9 @@ Defined in `setup.py`:
 - `object_detector` → `my_bot.object_detector:main`
 - `intruder_bot` → `my_bot.intruder_bot:main`
 - `obstacle_controller` → `my_bot.obstacle_controller:main`
+- `person_controller` → `my_bot.person_controller:main`
+- `person_tracker` → `my_bot.person_tracker:main`
+- `person_follower` → `my_bot.person_follower:main`
 - `camera_test` → `my_bot.camera_test:main`
 
 Run with `ros2 run my_bot <script_name>` or via Make targets.
@@ -246,6 +261,10 @@ Run with `ros2 run my_bot <script_name>` or via Make targets.
 | `make object-detector` | YOLOv8-nano ONNX inference |
 | `make intruder-bot` | Autonomous random-walk intruder |
 | `make dynamic-sim` | Simulation with moving obstacles |
+| `make person-sim` | Full person-intruder sim (walking/running actor + YOLO tracker + follower) |
+| `make person-controller` | Pedestrian behaviour (publishes `/person/cmd_vel` for the actor plugin) |
+| `make person-tracker` | YOLO + OpenCV tracker + Kalman person tracker only |
+| `make person-follower` | Stand-off follower only |
 | `make up-gpu` | Start GPU container (autonav_gpu) |
 
 ## Dependencies

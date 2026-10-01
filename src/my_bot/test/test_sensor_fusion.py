@@ -86,29 +86,35 @@ class TestComputeBearing:
         bearing = compute_bearing(320.0, CX, FX)
         assert abs(bearing) < 1e-9
 
-    def test_left_edge_gives_negative_bearing(self):
-        """Pixel at left edge (0) should give a negative bearing."""
+    def test_left_edge_gives_positive_bearing(self):
+        """Pixel at left edge (0) is to the robot's left: positive (REP-103)."""
         bearing = compute_bearing(0.0, CX, FX)
-        assert bearing < 0.0
-
-    def test_right_edge_gives_positive_bearing(self):
-        """Pixel at right edge (639) should give a positive bearing."""
-        bearing = compute_bearing(639.0, CX, FX)
         assert bearing > 0.0
+
+    def test_right_edge_gives_negative_bearing(self):
+        """Pixel at right edge (639) is to the robot's right: negative (REP-103)."""
+        bearing = compute_bearing(639.0, CX, FX)
+        assert bearing < 0.0
 
     def test_symmetric_about_center(self):
         """Pixels equidistant from center should produce equal-magnitude bearings."""
         b_left = compute_bearing(CX - 100, CX, FX)
         b_right = compute_bearing(CX + 100, CX, FX)
         assert abs(abs(b_left) - abs(b_right)) < 1e-9
-        assert b_left < 0.0
-        assert b_right > 0.0
+        assert b_left > 0.0
+        assert b_right < 0.0
 
     def test_full_fov_magnitude(self):
         """Bearing at far edge should be approximately half the camera FOV."""
         bearing = compute_bearing(639.0, CX, FX)
-        expected = math.atan2(319.0, FX)
+        expected = -math.atan2(319.0, FX)
         assert abs(bearing - expected) < 1e-6
+
+    def test_left_pixel_maps_to_left_lidar_beam(self):
+        """A target left of centre must look up a beam with angle > 0."""
+        bearing = compute_bearing(100.0, CX, FX)
+        idx = bearing_to_scan_index(bearing, ANGLE_MIN, ANGLE_INC, N_SAMPLES)
+        assert ANGLE_MIN + idx * ANGLE_INC > 0.0
 
 
 class TestBearingToScanIndex:

@@ -41,3 +41,53 @@ sensor_fusion:
     min_contour_area: 300.0
     range_min: 0.3
     range_max: 12.0
+
+person_controller:
+  ros__parameters:
+    walk_speed: 0.7
+    walk_speed_jitter: 0.1
+    run_speed: 2.5
+    exhausted_speed: 0.5
+    accel: 2.0
+    decel: 3.0
+    walk_max_yaw_rate: 1.5
+    run_max_yaw_rate: 1.0
+    max_run_secs: 3.5
+    recovery_secs: 8.0
+    resume_stamina: 0.6
+    calm_down_secs: 4.0
+    notice_radius: 7.0
+    bounds: 8.0
+    update_rate_hz: 20.0
+
+person_tracker:
+  ros__parameters:
+    model_path: /root/models/yolov8n.onnx
+    confidence_threshold: 0.4
+    nms_iou_threshold: 0.45
+    redetect_every: 10
+    reseed_iou_threshold: 0.3
+    max_yolo_misses: 2
+    max_coast_frames: 10
+    publish_debug_image: true
+
+person_follower:
+  ros__parameters:
+    desired_distance: 2.5
+    deadband: 0.15
+    k_lin: 0.8
+    k_yaw: 1.5
+    max_linear_speed: 1.0
+    max_back_speed: 0.2
+    max_angular_speed: 1.5
+    safety_distance: 0.6
+    track_timeout: 0.5
+    search_secs: 4.0
+    search_angular_speed: 0.6
+    range_min: 0.3
+    range_max: 12.0
+    image_width: 640
+    image_height: 480
+    horizontal_fov: 1.089
+    camera_height: 0.103
+    person_height: 1.72
