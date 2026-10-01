@@ -33,19 +33,17 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
-import yaml
 
 
 def generate_launch_description():
     """Compose the person-sim launch description."""
     pkg = get_package_share_directory('my_bot')
-    # behavior_params.yaml is flat (no ros__parameters key), so it can't be
-    # passed as a --params-file; load each node's section as a dict instead.
-    with open(os.path.join(pkg, 'config', 'behavior_params.yaml')) as f:
-        all_params = yaml.safe_load(f)
-
-    def params(node_name):
-        return [all_params.get(node_name, {}), {'use_sim_time': True}]
+    # behavior_params.yaml is a standard params file; each node picks up its
+    # own <node_name>: ros__parameters: section.
+    node_params = [
+        os.path.join(pkg, 'config', 'behavior_params.yaml'),
+        {'use_sim_time': True},
+    ]
 
     sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -60,7 +58,7 @@ def generate_launch_description():
         executable='person_tracker',
         name='person_tracker',
         output='screen',
-        parameters=params('person_tracker'),
+        parameters=node_params,
     )
 
     person_controller = Node(
@@ -68,7 +66,7 @@ def generate_launch_description():
         executable='person_controller',
         name='person_controller',
         output='screen',
-        parameters=params('person_controller'),
+        parameters=node_params,
     )
 
     person_follower = Node(
@@ -76,7 +74,7 @@ def generate_launch_description():
         executable='person_follower',
         name='person_follower',
         output='screen',
-        parameters=params('person_follower'),
+        parameters=node_params,
     )
 
     return LaunchDescription([

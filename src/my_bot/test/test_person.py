@@ -354,7 +354,7 @@ def _declared_defaults(module_file):
 def test_yaml_params_match_declared_types(node):
     """YAML values must match declared types (int vs double fails in ROS)."""
     with open(os.path.join(PKG_DIR, 'config', 'behavior_params.yaml')) as f:
-        section = yaml.safe_load(f)[node]
+        section = yaml.safe_load(f)[node]['ros__parameters']
     declared = _declared_defaults(os.path.join(PKG_DIR, 'my_bot', f'{node}.py'))
     for key, value in section.items():
         assert key in declared, f'{node}: unknown parameter {key}'
