@@ -44,9 +44,10 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
 
-          # Build with tests enabled
+          # Build my_bot and the workspace packages it depends on
+          # (person_actor_plugin), with tests enabled
           colcon build \
-            --packages-select my_bot \
+            --packages-up-to my_bot \
             --cmake-args -DBUILD_TESTING=ON
 
           # Run tests (ament_lint_auto runs here)
