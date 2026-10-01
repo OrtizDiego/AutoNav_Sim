@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validate that behavior_params.yaml exists and contains all required keys."""
+"""Validate that behavior_params.yaml is a valid ROS 2 params file for its nodes."""
 
+import ast
 import os
 
+import pytest
 import yaml
 
 
@@ -28,9 +30,56 @@ def _params_path():
     return os.path.join(pkg_path, 'config', 'behavior_params.yaml')
 
 
-def _load_params():
+def _load_file():
     with open(_params_path()) as f:
         return yaml.safe_load(f)
+
+
+def _load_params():
+    """Return {node_name: {param: value}} with the ros__parameters level removed."""
+    return {node: body['ros__parameters'] for node, body in _load_file().items()}
+
+
+# YAML section (node name) -> source file that declares its parameters.
+NODE_SOURCES = {
+    'ball_chaser': 'ball_chaser.py',
+    'security_guard': 'security_guard.py',
+    'sensor_fusion': 'sensor_fusion.py',
+}
+
+
+def _declared_params(source_file):
+    """Return {name: default_value} for literal declare_parameter() calls."""
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(test_dir), 'my_bot', source_file)
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    declared = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'declare_parameter'
+                and len(node.args) >= 2):
+            declared[ast.literal_eval(node.args[0])] = (
+                ast.literal_eval(node.args[1]))
+    return declared
+
+
+def _ros_type(value):
+    """Map a Python value to the ROS 2 parameter type rcl would infer."""
+    if isinstance(value, bool):
+        return 'bool'
+    if isinstance(value, int):
+        return 'integer'
+    if isinstance(value, float):
+        return 'double'
+    if isinstance(value, str):
+        return 'string'
+    if isinstance(value, list):
+        elem_types = {_ros_type(v) for v in value}
+        assert len(elem_types) == 1, f'array must be non-empty and single-typed: {value}'
+        return elem_types.pop() + '_array'
+    raise AssertionError(f'unsupported parameter value: {value!r}')
 
 
 BALL_CHASER_KEYS = [
@@ -47,6 +96,12 @@ SECURITY_GUARD_KEYS = [
     'min_contour_area', 'stop_distance_area', 'waypoints',
 ]
 
+SENSOR_FUSION_KEYS = [
+    'hsv_red_lower1', 'hsv_red_upper1',
+    'hsv_red_lower2', 'hsv_red_upper2',
+    'min_contour_area', 'range_min', 'range_max',
+]
+
 
 def test_params_file_exists():
     """behavior_params.yaml must exist in the config directory."""
@@ -54,11 +109,25 @@ def test_params_file_exists():
         f'behavior_params.yaml not found at {_params_path()}')
 
 
+def test_ros_params_file_structure():
+    """Each section must be node_name: {ros__parameters: {...}} and nothing else.
+
+    rcl's --params-file parser rejects values placed directly under the node
+    name ("Cannot have a value before ros__parameters").
+    """
+    for node, body in _load_file().items():
+        assert isinstance(body, dict), f'{node} must be a mapping'
+        assert list(body) == ['ros__parameters'], (
+            f'{node} must contain only a ros__parameters key, got {list(body)}')
+        assert isinstance(body['ros__parameters'], dict), (
+            f'{node}.ros__parameters must be a mapping')
+
+
 def test_top_level_sections():
-    """File must have ball_chaser and security_guard top-level sections."""
+    """File must have a section for every node launched with it."""
     params = _load_params()
-    assert 'ball_chaser' in params, 'Missing ball_chaser section'
-    assert 'security_guard' in params, 'Missing security_guard section'
+    for section in NODE_SOURCES:
+        assert section in params, f'Missing {section} section'
 
 
 def test_ball_chaser_keys():
@@ -75,10 +144,33 @@ def test_security_guard_keys():
         assert key in sg, f'security_guard missing key: {key}'
 
 
+def test_sensor_fusion_keys():
+    """sensor_fusion section must contain all required keys."""
+    sf = _load_params()['sensor_fusion']
+    for key in SENSOR_FUSION_KEYS:
+        assert key in sf, f'sensor_fusion missing key: {key}'
+
+
+@pytest.mark.parametrize('section', sorted(NODE_SOURCES))
+def test_yaml_params_match_declared_types(section):
+    """Every YAML value must be declared by its node with the same ROS type.
+
+    rclpy rejects overrides whose type differs from the declared default
+    (e.g. integer 300 for a double parameter).
+    """
+    declared = _declared_params(NODE_SOURCES[section])
+    for key, value in _load_params()[section].items():
+        assert key in declared, (
+            f'{section}.{key} is not declared by {NODE_SOURCES[section]}')
+        assert _ros_type(value) == _ros_type(declared[key]), (
+            f'{section}.{key}: YAML type {_ros_type(value)} != declared '
+            f'type {_ros_type(declared[key])}')
+
+
 def test_hsv_ranges_valid():
     """All HSV boundary values must be integers in [0, 255]."""
     params = _load_params()
-    for section in ('ball_chaser', 'security_guard'):
+    for section in NODE_SOURCES:
         for key in ('hsv_red_lower1', 'hsv_red_upper1',
                     'hsv_red_lower2', 'hsv_red_upper2'):
             values = params[section][key]
@@ -89,11 +181,10 @@ def test_hsv_ranges_valid():
 
 
 def test_waypoints_format():
-    """Waypoints must be a list of [x, y] pairs."""
+    """Waypoints must be a flat [x0, y0, x1, y1, ...] list of floats."""
     waypoints = _load_params()['security_guard']['waypoints']
     assert isinstance(waypoints, list), 'waypoints must be a list'
     assert len(waypoints) > 0, 'waypoints must not be empty'
-    for wp in waypoints:
-        assert len(wp) == 2, f'Each waypoint must have 2 elements, got: {wp}'
-        assert all(isinstance(v, (int, float)) for v in wp), (
-            f'Waypoint values must be numeric: {wp}')
+    assert len(waypoints) % 2 == 0, 'waypoints must contain x, y pairs'
+    for v in waypoints:
+        assert isinstance(v, float), f'Waypoint values must be floats: {v!r}'
