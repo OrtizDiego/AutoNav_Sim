@@ -14,9 +14,12 @@
 
 """Tests for verifying that scripts are executable, have correct shebangs, and compile."""
 
+import importlib.util
 import os
 import subprocess
 import sys
+
+import pytest
 
 
 def _scripts_path():
@@ -84,3 +87,14 @@ def test_security_guard_launch_drives_lifecycle():
     assert "goal_state='inactive'" in src
     assert 'configure_security_guard' in src.split('LaunchDescription([')[-1]
     assert 'activate_on_inactive' in src.split('LaunchDescription([')[-1]
+
+
+def test_security_guard_launch_description_builds():
+    """Import and build security_guard_full.launch.py (needs a ROS environment)."""
+    pytest.importorskip('launch_ros')
+    pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    launch_file = os.path.join(pkg_path, 'launch', 'security_guard_full.launch.py')
+    spec = importlib.util.spec_from_file_location('security_guard_full_launch', launch_file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.generate_launch_description().entities
