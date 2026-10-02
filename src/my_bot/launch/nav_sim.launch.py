@@ -41,9 +41,17 @@ def generate_launch_description():
     )
 
     # Give Gazebo a head start so /clock, /scan and odom TF exist when
-    # AMCL and the costmaps activate.
+    # AMCL and the costmaps activate. Pass Nav2's files explicitly: a
+    # DeclareLaunchArgument default is skipped when an earlier include has
+    # already set a launch configuration of the same name.
     nav2 = TimerAction(period=5.0, actions=[IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg, 'launch', 'navigation.launch.py')))])
+            os.path.join(pkg, 'launch', 'navigation.launch.py')),
+        launch_arguments={
+            'map': os.path.join(pkg, 'maps', 'my_map.yaml'),
+            'params_file': os.path.join(pkg, 'config', 'nav2_params.yaml'),
+            'use_sim_time': 'true',
+        }.items(),
+    )])
 
     return LaunchDescription([sim, nav2])

@@ -15,14 +15,15 @@
 """Robot in the museum (room.world) with Gazebo and RViz: `make sim`.
 
 Every scenario launch file includes this one and overrides ``world`` and
-``rviz_config``.
+``rviz_config``. The default layout is navigation.rviz (map, costmaps,
+plan), so `make sim` + `make nav` shows the map exactly as before.
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -48,15 +49,19 @@ def generate_launch_description():
         description='Absolute path to the Gazebo world file')
     rviz_arg = DeclareLaunchArgument(
         'rviz_config', default_value=os.path.join(
-            get_package_share_directory(pkg_name), 'config', 'sim.rviz'),
+            get_package_share_directory(pkg_name), 'config', 'navigation.rviz'),
         description='Absolute path to the RViz config file')
 
-    gazebo = IncludeLaunchDescription(
+    # gzserver.launch.py declares ~25 launch arguments, among them
+    # params_file:=''. Launch configurations are global, so without a scope
+    # that empty params_file leaks into anything a scenario includes later
+    # (Nav2's bringup then fails with "No such file or directory: ''").
+    gazebo = GroupAction(scoped=True, actions=[IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
             get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py'
         )]),
         launch_arguments={'world': LaunchConfiguration('world')}.items()  # Load your custom world
-    )
+    )])
 
     # 3. Spawn Entity
     spawn_entity = Node(package='gazebo_ros', executable='spawn_entity.py',

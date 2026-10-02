@@ -48,7 +48,7 @@ Everything is grouped into four one-command scenarios. Each opens Gazebo and an 
 | `make person-sim` | **The full demo:** a security guard that patrols, spots a running person with YOLO, follows them, searches when they escape and resumes the patrol. |
 | `make yolo-sim` | A person standing in front of the robot: proof of YOLO detection + LiDAR fusion. |
 
-> **Why does `make sim` show no map?** Nothing publishes `/map` (or the `map → odom` transform) until Nav2's map_server and AMCL run. `make sim` + `make nav` in two terminals works, but `make nav-sim` starts both. AMCL's initial pose is the spawn point (`nav2_params.yaml`), so no "2D Pose Estimate" click is needed.
+> **Why does `make sim` show no map?** `make sim` opens the navigation RViz layout, but nothing publishes `/map` (or the `map → odom` transform) until Nav2's map_server and AMCL run. Start them with `make nav` in a second terminal, or use `make nav-sim`, which starts both. AMCL's initial pose is the spawn point (`nav2_params.yaml`), so no "2D Pose Estimate" click is needed.
 
 ### `make ball-sim`: chase the ball
 
@@ -156,8 +156,7 @@ src/my_bot/
 │   ├── behavior_params.yaml             # Parameters of every behaviour node
 │   ├── nav2_params.yaml                 # Navigation stack tuning
 │   ├── mapper_params_online_async.yaml  # SLAM tuning
-│   ├── sim.rviz                         # sim: robot, lidar, camera (odom frame)
-│   ├── navigation.rviz                  # nav-sim / nav: map, costmap, plan
+│   ├── navigation.rviz                  # sim / nav-sim / nav: map, costmap, plan
 │   ├── perception.rviz                  # ball-sim, yolo-sim: fused target + annotated image
 │   └── person.rviz                      # person-sim: navigation + perception + sightings
 ├── launch/

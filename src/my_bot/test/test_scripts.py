@@ -48,7 +48,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(PKG_PATH))
 
 # make target -> (launch file, world, rviz config)
 SCENARIOS = {
-    'sim': ('sim.launch.py', 'room.world', 'sim.rviz'),
+    'sim': ('sim.launch.py', 'room.world', 'navigation.rviz'),
     'nav-sim': ('nav_sim.launch.py', 'room.world', 'navigation.rviz'),
     'ball-sim': ('ball_sim.launch.py', 'ball.world', 'perception.rviz'),
     'person-sim': ('person_sim.launch.py', 'person.world', 'person.rviz'),
@@ -111,6 +111,19 @@ def test_scenario_wiring(target):
     assert os.path.exists(os.path.join(PKG_PATH, 'worlds', world))
     assert os.path.exists(os.path.join(PKG_PATH, 'config', rviz))
     assert f'ros2 launch $(PACKAGE_NAME) {launch}' in _make_targets()[target]
+
+
+def test_gazebo_launch_arguments_do_not_leak():
+    """Gazebo's params_file:='' must not reach Nav2 (make nav-sim crashed on it)."""
+    with open(os.path.join(PKG_PATH, 'launch', 'sim.launch.py')) as f:
+        assert 'GroupAction(scoped=True' in f.read()
+    for launch in os.listdir(os.path.join(PKG_PATH, 'launch')):
+        if not launch.endswith('.launch.py'):
+            continue
+        with open(os.path.join(PKG_PATH, 'launch', launch)) as f:
+            src = f.read()
+        if "'navigation.launch.py'" in src:
+            assert "'params_file': os.path.join(pkg, 'config', 'nav2_params.yaml')" in src, launch
 
 
 def test_makefile_runs_only_existing_nodes():

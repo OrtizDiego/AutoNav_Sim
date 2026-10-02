@@ -57,8 +57,12 @@
                         <max_angle>3.14</max_angle>
                     </horizontal>
                 </scan>
+                <!-- LDS-01 spec. Rays start at <min>, so anything closer is
+                     invisible and Nav2's raytracing clears it from the local
+                     costmap: at 0.3 m a wall next to the robot disappeared
+                     and DWB drove into it. -->
                 <range>
-                    <min>0.3</min>
+                    <min>0.12</min>
                     <max>12</max>
                 </range>
                 <noise type="gaussian">
