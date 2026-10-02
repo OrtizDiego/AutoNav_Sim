@@ -135,3 +135,19 @@ def test_diff_drive_matches_wheel_joints():
     expected = wheel_y['left_wheel_joint'] - wheel_y['right_wheel_joint']
     assert abs(separation - expected) < 1e-6, (
         f"wheel_separation={separation} but wheel joints are {expected} m apart")
+
+
+def test_no_box_collisions():
+    """Collision geometry must not use boxes.
+
+    Gazebo's ODE ray-box test reports ghost hits on a box just below the
+    lidar plane as soon as the robot tilts slightly, so the scan showed the
+    chassis outline. Cylinders and spheres are unaffected.
+    """
+    urdf_dir = _urdf_dir()
+    for name in os.listdir(urdf_dir):
+        if not name.endswith('.xacro'):
+            continue
+        root = ET.parse(os.path.join(urdf_dir, name)).getroot()
+        for collision in root.iter('collision'):
+            assert collision.find('.//box') is None, f"Box collision in {name}"
