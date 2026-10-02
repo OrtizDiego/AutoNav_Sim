@@ -118,6 +118,8 @@ def test_gazebo_launch_arguments_do_not_leak():
     with open(os.path.join(PKG_PATH, 'launch', 'sim.launch.py')) as f:
         assert 'GroupAction(scoped=True' in f.read()
     for launch in os.listdir(os.path.join(PKG_PATH, 'launch')):
+        if not launch.endswith('.launch.py'):
+            continue
         with open(os.path.join(PKG_PATH, 'launch', launch)) as f:
             src = f.read()
         if "'navigation.launch.py'" in src:
