@@ -120,7 +120,7 @@ src/my_bot/
 │   ├── mapper_params_online_async.yaml
 │   └── navigation.rviz (sim, nav-sim) / perception.rviz / person.rviz
 ├── meshes/                    # TurtleBot3 Waffle Pi STL meshes (Apache-2.0, see meshes/README.md)
-├── urdf/                      # Xacro: robot_core, gazebo_control, lidar (noise 0.01 m), camera (noise 0.007)
+├── urdf/                      # Xacro: robot_core, gazebo_control, lidar (min range 0.12 m, noise 0.01 m), camera (noise 0.007)
 ├── worlds/                    # room, ball, person, yolo
 ├── maps/                      # my_map.yaml / my_map.pgm (museum; also used by tests)
 ├── test/                      # pytest; conftest.py stubs ROS so tests run without it
