@@ -123,7 +123,8 @@ src/my_bot/
 ├── urdf/                      # Xacro: robot_core, gazebo_control, lidar (min range 0.12 m, noise 0.01 m), camera (noise 0.007)
 ├── worlds/                    # room, ball, person, yolo
 ├── maps/                      # my_map.yaml / my_map.pgm (museum; also used by tests)
-├── test/                      # pytest; conftest.py stubs ROS so tests run without it
+├── test/                      # pytest; conftest.py fakes rclpy + msgs (recording Node, manual
+│                              # clock, wire() for multi-node integration tests), no ROS needed
 └── package.xml
 
 src/person_actor_plugin/          # ament_cmake Gazebo plugin package
