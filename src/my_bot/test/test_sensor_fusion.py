@@ -15,55 +15,13 @@
 """Unit tests for sensor_fusion pure math functions.
 
 These tests import module-level functions directly and do not require
-a running ROS node or any ROS infrastructure.  Heavy dependencies
-(cv2, cv_bridge, rclpy) are stubbed before import so tests run in a
-plain Python environment without ROS installed.
+a running ROS node or any ROS infrastructure; conftest.py stubs the ROS
+packages so they run in a plain Python environment.
 """
 
 import math
-import sys
-import os
-import types
 
-# ---------------------------------------------------------------------------
-# Stub out ROS/OpenCV imports so the module loads in a plain Python env
-# ---------------------------------------------------------------------------
-for _mod in ('cv_bridge', 'rclpy', 'rclpy.node', 'rclpy.qos',
-             'sensor_msgs', 'sensor_msgs.msg',
-             'geometry_msgs', 'geometry_msgs.msg',
-             'std_msgs', 'std_msgs.msg'):
-    if _mod not in sys.modules:
-        sys.modules[_mod] = types.ModuleType(_mod)
-
-# rclpy.node.Node stub
-import rclpy.node as _rclpy_node  # noqa: E402
-_rclpy_node.Node = object
-
-# rclpy.qos stub
-import rclpy.qos as _rclpy_qos  # noqa: E402
-_rclpy_qos.qos_profile_sensor_data = None
-
-# sensor_msgs.msg stub
-import sensor_msgs.msg as _smsg  # noqa: E402
-_smsg.Image = object
-_smsg.LaserScan = object
-
-# geometry_msgs.msg stub
-import geometry_msgs.msg as _gmsg  # noqa: E402
-_gmsg.PointStamped = object
-
-# std_msgs.msg stub
-import std_msgs.msg as _stdmsg  # noqa: E402
-_stdmsg.Float32 = object
-
-# cv_bridge stub
-import cv_bridge as _cvb  # noqa: E402
-_cvb.CvBridge = object
-
-# Allow importing my_bot package without a full ROS install
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from my_bot.sensor_fusion import (  # noqa: E402
+from my_bot.sensor_fusion import (
     compute_bearing,
     bearing_to_scan_index,
     validate_range,

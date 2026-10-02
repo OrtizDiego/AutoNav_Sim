@@ -12,68 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the person {controller, tracker, follower} helpers and config.
+"""Tests for person-sim: controller, tracker, fusion/follow helpers, wiring.
 
-Only module-level pure functions are exercised, so no ROS graph, Gazebo or
-ONNX model is needed. ROS packages, cv_bridge and (if absent) cv2 are
-stubbed before import; numpy must be installed.
+Only module-level pure functions are exercised (conftest.py stubs ROS), so
+no ROS graph, Gazebo or ONNX model is needed. The controller is also
+simulated on the real museum map to prove the person stays off the walls.
 """
 
 import ast
 import math
 import os
-import sys
-import types
+import random
 import xml.etree.ElementTree as ET
 
 import pytest
 import yaml
 
-# ---------------------------------------------------------------------------
-# Stub ROS / cv_bridge (and cv2 if missing) so the modules import anywhere
-# ---------------------------------------------------------------------------
-for _mod in ('cv_bridge', 'rclpy', 'rclpy.node', 'rclpy.qos',
-             'sensor_msgs', 'sensor_msgs.msg',
-             'geometry_msgs', 'geometry_msgs.msg',
-             'nav_msgs', 'nav_msgs.msg',
-             'std_msgs', 'std_msgs.msg',
-             'visualization_msgs', 'visualization_msgs.msg'):
-    sys.modules.setdefault(_mod, types.ModuleType(_mod))
-
-sys.modules['rclpy.node'].Node = getattr(sys.modules['rclpy.node'], 'Node', object)
-sys.modules['rclpy.qos'].qos_profile_sensor_data = None
-for _name in ('Image', 'LaserScan'):
-    setattr(sys.modules['sensor_msgs.msg'], _name,
-            getattr(sys.modules['sensor_msgs.msg'], _name, object))
-for _name in ('PointStamped', 'Twist', 'Pose'):
-    setattr(sys.modules['geometry_msgs.msg'], _name,
-            getattr(sys.modules['geometry_msgs.msg'], _name, object))
-sys.modules['nav_msgs.msg'].Odometry = getattr(
-    sys.modules['nav_msgs.msg'], 'Odometry', object)
-for _name in ('Bool', 'Float32', 'Float32MultiArray', 'String'):
-    setattr(sys.modules['std_msgs.msg'], _name,
-            getattr(sys.modules['std_msgs.msg'], _name, object))
-for _name in ('Marker', 'MarkerArray'):
-    setattr(sys.modules['visualization_msgs.msg'], _name,
-            getattr(sys.modules['visualization_msgs.msg'], _name, object))
-sys.modules['cv_bridge'].CvBridge = getattr(
-    sys.modules['cv_bridge'], 'CvBridge', object)
-
-try:
-    import cv2  # noqa: F401
-except ImportError:
-    _cv2 = types.ModuleType('cv2')
-    _cv2.legacy = None
-    sys.modules['cv2'] = _cv2
+from my_bot.clearance_map import ClearanceMap, safe_heading
+from my_bot import follow_control as fc
+from my_bot import person_controller as pc
+from my_bot import person_tracker as pt
+from my_bot import sensor_fusion as sf
 
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PKG_DIR)
-
-from my_bot import person_controller as pc  # noqa: E402
-from my_bot import person_follower as pf  # noqa: E402
-from my_bot import person_tracker as pt  # noqa: E402
-
+MAP_YAML = os.path.join(PKG_DIR, 'maps', 'my_map.yaml')
 FX = 320.0 / math.tan(1.089 / 2.0)
+
+
+@pytest.fixture(scope='module')
+def museum():
+    return ClearanceMap.from_yaml(MAP_YAML)
 
 
 # ---------------------------------------------------------------------------
@@ -121,17 +89,16 @@ class TestModes:
 class TestFleeHeading:
 
     def test_points_away_from_robot(self):
-        h = pc.flee_heading((3.0, 0.0), (0.0, 0.0), bounds=8.0)
-        assert h == pytest.approx(0.0, abs=1e-6)
-
-    def test_bends_away_from_wall(self):
-        # Fleeing straight into the east wall must gain a sideways component
-        # and must not keep pushing into the wall.
-        h = pc.flee_heading((7.8, 1.0), (5.0, 1.0), bounds=8.0)
-        assert math.cos(h) < 0.5
+        assert pc.flee_heading((3.0, 0.0), (0.0, 0.0)) == pytest.approx(0.0)
+        assert pc.flee_heading((0.0, -2.0), (0.0, 0.0)) == pytest.approx(-math.pi / 2)
 
     def test_coincident_positions_do_not_crash(self):
-        assert math.isfinite(pc.flee_heading((1.0, 1.0), (1.0, 1.0), 8.0))
+        assert math.isfinite(pc.flee_heading((1.0, 1.0), (1.0, 1.0)))
+
+    def test_stopping_speed(self):
+        assert pc.stopping_speed(0.05, 3.0) == 0.0
+        # v^2 = 2 a d  ->  from 2.5 m/s at 3 m/s^2 one needs ~1.04 m + margin
+        assert pc.stopping_speed(1.14, 3.0) == pytest.approx(2.5, abs=0.01)
 
 
 class TestSteer:
@@ -152,10 +119,75 @@ class TestSteer:
     def test_wrap_angle(self):
         assert pc.wrap_angle(3 * math.pi / 2) == pytest.approx(-math.pi / 2)
 
-    def test_random_waypoint_inside_bounds(self):
-        for _ in range(100):
-            x, y = pc.random_waypoint(8.0)
-            assert abs(x) <= 6.0 and abs(y) <= 6.0
+
+# ---------------------------------------------------------------------------
+# Clearance map + wall avoidance on the real museum map
+# ---------------------------------------------------------------------------
+
+class TestClearanceMap:
+
+    def test_spawn_point_is_open_floor(self, museum):
+        assert museum.clearance(0.0, 0.0) > 1.0
+
+    def test_outside_the_map_is_blocked(self, museum):
+        assert museum.clearance(100.0, 100.0) == 0.0
+
+    def test_free_distance_stops_before_wall(self):
+        box = ClearanceMap.from_bounds(5.0)
+        # From the centre heading +x the wall is 5 m away; keep 0.5 m
+        assert box.free_distance(0.0, 0.0, 0.0, 10.0, 0.5) == pytest.approx(4.5, abs=0.1)
+
+    def test_can_always_move_away_from_a_wall(self):
+        box = ClearanceMap.from_bounds(5.0)
+        # 0.2 m from the east wall: east is blocked (to within a grid cell),
+        # west is open
+        assert box.free_distance(4.8, 0.0, 0.0, 2.0, 0.5) <= box.resolution
+        assert box.free_distance(4.8, 0.0, math.pi, 2.0, 0.5) == pytest.approx(2.0)
+
+    def test_safe_heading_bends_around_wall(self):
+        box = ClearanceMap.from_bounds(5.0)
+        # Heading straight at the east wall (x = 5) from x = 3.5: the chosen
+        # heading must give 2 m of travel that stays 0.5 m off the wall.
+        h, free = safe_heading(box, 3.5, 0.0, 0.0, 2.0, 0.5)
+        assert free >= 2.0
+        assert 3.5 + 2.0 * math.cos(h) <= 4.5 + 1e-6
+
+    def test_random_free_point_has_clearance(self, museum):
+        rng = random.Random(0)
+        for _ in range(50):
+            assert museum.clearance(*museum.random_free_point(1.0, rng)) >= 1.0
+
+
+def _simulate_person(cmap, seed, start, seconds=240.0, dt=0.05):
+    """Run PersonBrain like the actor plugin does; return (min clearance, metres)."""
+    brain = pc.PersonBrain(cmap, rng=random.Random(seed))
+    p = pc.PersonPose(start[0], start[1], 0.0, 0.0)
+    robot = [0.0, 0.0]
+    min_clear, travelled = math.inf, 0.0
+    for k in range(int(seconds / dt)):
+        alarmed = int(k * dt / 30.0) % 2 == 1  # calm 30 s, chased 30 s, ...
+        # A robot that chases at 1 m/s and stops 2.5 m short
+        dx, dy = p.x - robot[0], p.y - robot[1]
+        d = math.hypot(dx, dy)
+        if d > 2.5:
+            robot[0] += dx / d * dt
+            robot[1] += dy / d * dt
+        v, w = brain.step(dt, p, tuple(robot), alarmed)
+        p.speed = v = max(0.0, v)  # the plugin never walks backwards
+        p.yaw = pc.wrap_angle(p.yaw + w * dt)
+        p.x += v * dt * math.cos(p.yaw)
+        p.y += v * dt * math.sin(p.yaw)
+        travelled += v * dt
+        min_clear = min(min_clear, cmap.clearance(p.x, p.y))
+    return min_clear, travelled
+
+
+@pytest.mark.parametrize('seed', range(3))
+def test_person_never_walks_into_the_museum_walls(museum, seed):
+    min_clear, travelled = _simulate_person(museum, seed, start=(0.5, 7.5))
+    params = pc.PersonParams()
+    assert min_clear >= params.min_clearance - 0.05
+    assert travelled > 100.0, 'the person must keep moving, not freeze at a wall'
 
 
 # ---------------------------------------------------------------------------
@@ -232,16 +264,16 @@ class TestBoxKalman:
 
 
 # ---------------------------------------------------------------------------
-# person_follower
+# sensor_fusion ranging + follow_control
 # ---------------------------------------------------------------------------
 
 class TestFollowerGeometry:
 
     def test_right_of_image_is_negative_ros_angle(self):
         """Image right == robot's right == negative angle in ROS."""
-        assert pf.pixel_to_angle(600.0, 320.0, FX) < 0.0
-        assert pf.pixel_to_angle(40.0, 320.0, FX) > 0.0
-        assert pf.pixel_to_angle(320.0, 320.0, FX) == pytest.approx(0.0)
+        assert sf.compute_bearing(600.0, 320.0, FX) < 0.0
+        assert sf.compute_bearing(40.0, 320.0, FX) > 0.0
+        assert sf.compute_bearing(320.0, 320.0, FX) == pytest.approx(0.0)
 
     def _scan(self, default=10.0):
         n = 360
@@ -253,47 +285,47 @@ class TestFollowerGeometry:
         # Person at -20 deg (robot's right), 2.5 m
         for deg in range(-22, -17):
             ranges[int(round((math.radians(deg) - amin) / inc))] = 2.5
-        r = pf.scan_window_range(ranges, amin, inc, math.radians(-15),
+        r = sf.scan_window_range(ranges, amin, inc, math.radians(-15),
                                  math.radians(-25), 0.3, 12.0)
         assert r == pytest.approx(2.5)
         # Mirrored window (the old bug) sees only background
-        r_mirror = pf.scan_window_range(ranges, amin, inc, math.radians(25),
+        r_mirror = sf.scan_window_range(ranges, amin, inc, math.radians(25),
                                         math.radians(15), 0.3, 12.0)
         assert r_mirror == pytest.approx(10.0)
 
     def test_scan_window_ignores_invalid_returns(self):
         ranges, amin, inc = self._scan(float('inf'))
-        assert pf.scan_window_range(ranges, amin, inc, 0.1, -0.1, 0.3, 12.0) is None
+        assert sf.scan_window_range(ranges, amin, inc, 0.1, -0.1, 0.3, 12.0) is None
 
     def test_scan_window_wraps_at_pi(self):
         ranges, amin, inc = self._scan()
         ranges[0] = 3.0     # -pi
         ranges[-1] = 3.0    # just below +pi
-        r = pf.scan_window_range(ranges, amin, inc, math.pi + 0.02,
+        r = sf.scan_window_range(ranges, amin, inc, math.pi + 0.02,
                                  math.pi - 0.02, 0.3, 12.0, percentile=0.0)
         assert r == pytest.approx(3.0)
 
     def test_monocular_range_full_body(self):
         # 1.72 m person, 2.5 m away -> h = fy * 1.72 / 2.5
         h = FX * 1.72 / 2.5
-        r = pf.monocular_range([300, 100, 60, h], 480, FX, 240.0, 1.72, 0.103)
+        r = sf.monocular_range([300, 100, 60, h], 480, FX, 240.0, 1.72, 0.103)
         assert r == pytest.approx(2.5, rel=0.01)
 
     def test_monocular_range_from_feet_when_head_cut(self):
         # Head cut off at the top; feet 0.103 m below the camera at 2.0 m
         feet_y = 240.0 + FX * 0.103 / 2.0
-        r = pf.monocular_range([300, 0, 60, feet_y], 480, FX, 240.0, 1.72, 0.103)
+        r = sf.monocular_range([300, 0, 60, feet_y], 480, FX, 240.0, 1.72, 0.103)
         assert r == pytest.approx(2.0, rel=0.01)
 
     def test_monocular_range_none_when_both_ends_cut(self):
-        assert pf.monocular_range([300, 0, 60, 480], 480, FX, 240.0, 1.72, 0.103) is None
+        assert sf.monocular_range([300, 0, 60, 480], 480, FX, 240.0, 1.72, 0.103) is None
 
     def test_fuse_range(self):
-        assert pf.fuse_range(2.4, 2.5) == 2.4          # agree -> lidar
-        assert pf.fuse_range(9.0, 2.5) == 2.5          # beam missed legs
-        assert pf.fuse_range(None, 2.5) == 2.5
-        assert pf.fuse_range(2.4, None) == 2.4
-        assert pf.fuse_range(None, None) is None
+        assert sf.fuse_range(2.4, 2.5) == 2.4          # agree -> lidar
+        assert sf.fuse_range(9.0, 2.5) == 2.5          # beam missed legs
+        assert sf.fuse_range(None, 2.5) == 2.5
+        assert sf.fuse_range(2.4, None) == 2.4
+        assert sf.fuse_range(None, None) is None
 
 
 class TestFollowerControl:
@@ -302,33 +334,33 @@ class TestFollowerControl:
                 max_lin=1.0, max_back=0.2, max_yaw=1.5)
 
     def test_turns_only_without_range(self):
-        v, w = pf.compute_command(0.3, None, **self.ARGS)
+        v, w = fc.compute_command(0.3, None, **self.ARGS)
         assert v == 0.0 and w > 0.0
 
     def test_advances_when_too_far(self):
-        v, _ = pf.compute_command(0.0, 4.0, **self.ARGS)
+        v, _ = fc.compute_command(0.0, 4.0, **self.ARGS)
         assert v == pytest.approx(1.0)
 
     def test_backs_off_when_too_close(self):
-        v, _ = pf.compute_command(0.0, 1.5, **self.ARGS)
+        v, _ = fc.compute_command(0.0, 1.5, **self.ARGS)
         assert v == pytest.approx(-0.2)
 
     def test_deadband(self):
-        v, _ = pf.compute_command(0.0, 2.6, **self.ARGS)
+        v, _ = fc.compute_command(0.0, 2.6, **self.ARGS)
         assert v == 0.0
 
     def test_turns_toward_person(self):
-        _, w_left = pf.compute_command(0.4, 2.5, **self.ARGS)
-        _, w_right = pf.compute_command(-0.4, 2.5, **self.ARGS)
+        _, w_left = fc.compute_command(0.4, 2.5, **self.ARGS)
+        _, w_right = fc.compute_command(-0.4, 2.5, **self.ARGS)
         assert w_left > 0.0 > w_right
 
     def test_turn_before_driving(self):
-        v_ahead, _ = pf.compute_command(0.0, 4.0, **self.ARGS)
-        v_side, _ = pf.compute_command(1.2, 4.0, **self.ARGS)
+        v_ahead, _ = fc.compute_command(0.0, 4.0, **self.ARGS)
+        v_side, _ = fc.compute_command(1.2, 4.0, **self.ARGS)
         assert v_side < v_ahead
 
     def test_safety_stop(self):
-        v, _ = pf.compute_command(0.0, 4.0, front_clear=0.4,
+        v, _ = fc.compute_command(0.0, 4.0, front_clear=0.4,
                                   safety_distance=0.6, **self.ARGS)
         assert v == 0.0
 
@@ -349,8 +381,7 @@ def _declared_defaults(module_file):
     return out
 
 
-@pytest.mark.parametrize('node', ['person_controller', 'person_tracker',
-                                  'person_follower'])
+@pytest.mark.parametrize('node', ['person_controller', 'person_tracker'])
 def test_yaml_params_match_declared_types(node):
     """YAML values must match declared types (int vs double fails in ROS)."""
     with open(os.path.join(PKG_DIR, 'config', 'behavior_params.yaml')) as f:
@@ -363,10 +394,23 @@ def test_yaml_params_match_declared_types(node):
             f'declared {type(declared[key]).__name__}')
 
 
-def test_person_world_uses_plugin_not_script():
-    root = ET.parse(os.path.join(PKG_DIR, 'worlds', 'person.world')).getroot()
+def test_person_params_dataclass_matches_node_defaults():
+    """PersonParams (used by tests/sim) must mirror the ROS parameter defaults."""
+    declared = _declared_defaults(os.path.join(PKG_DIR, 'my_bot', 'person_controller.py'))
+    for name, value in vars(pc.PersonParams()).items():
+        assert declared[name] == value, name
+
+
+def _actor(world):
+    root = ET.parse(os.path.join(PKG_DIR, 'worlds', world)).getroot()
     actor = root.find('.//actor[@name="person_intruder"]')
     assert actor is not None
+    return actor
+
+
+@pytest.mark.parametrize('world', ['person.world', 'yolo.world'])
+def test_actor_uses_plugin_not_script(world):
+    actor = _actor(world)
     # A <script> trajectory would override the plugin's pose every frame
     assert actor.find('script') is None
     anims = {a.get('name'): a.findtext('filename')
@@ -377,15 +421,28 @@ def test_person_world_uses_plugin_not_script():
     assert plugin.findtext('ros/namespace') == '/person'
 
 
+def test_person_spawns_on_open_floor(museum):
+    x, y = (float(v) for v in _actor('person.world').findtext('pose').split()[:2])
+    assert museum.clearance(x, y) >= 1.0
+
+
+def test_yolo_person_stands_in_front_of_the_camera():
+    x, y, *_, yaw = (float(v) for v in _actor('yolo.world').findtext('pose').split())
+    bearing = math.atan2(y, x)
+    assert 2.0 <= math.hypot(x, y) <= 4.0
+    assert abs(bearing) < 1.089 / 2.0           # inside the camera's FOV
+    assert math.cos(yaw - (bearing + math.pi)) > 0.9  # facing the robot
+
+
+def test_person_sim_gives_the_controller_the_museum_map():
+    src = open(os.path.join(PKG_DIR, 'launch', 'person_sim.launch.py')).read()
+    assert "'map_yaml'" in src and "'my_map.yaml'" in src
+    assert "'person.world'" in src
+
+
 def test_plugin_package_exports_plugin_path():
     xml = os.path.join(os.path.dirname(PKG_DIR), 'person_actor_plugin',
                        'package.xml')
     root = ET.parse(xml).getroot()
     export = root.find('export/gazebo_ros')
     assert export is not None and 'plugin_path' in export.attrib
-
-
-def test_sim_launch_accepts_world_argument():
-    src = open(os.path.join(PKG_DIR, 'launch', 'sim.launch.py')).read()
-    assert "DeclareLaunchArgument(\n        'world'" in src
-    assert "LaunchConfiguration('world')" in src

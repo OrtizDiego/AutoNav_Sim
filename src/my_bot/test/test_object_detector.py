@@ -17,125 +17,13 @@
 """Unit tests for object_detector.py pure functions.
 
 No ROS runtime or ONNX model required — only tests preprocess() and
-postprocess() which depend only on numpy and OpenCV.
+postprocess(), which depend only on numpy and OpenCV.
 """
 
-import sys
-import types
+import numpy as np
+import pytest
 
-# ---------------------------------------------------------------------------
-# Stub ROS modules so the import succeeds without ROS runtime
-# ---------------------------------------------------------------------------
-
-_stub_mods = [
-    'rclpy', 'rclpy.node',
-    'cv_bridge',
-    'sensor_msgs', 'sensor_msgs.msg',
-    'std_msgs', 'std_msgs.msg',
-    'visualization_msgs', 'visualization_msgs.msg',
-]
-for _mod in _stub_mods:
-    if _mod not in sys.modules:
-        sys.modules[_mod] = types.ModuleType(_mod)
-
-_rclpy = sys.modules['rclpy']
-_rclpy.init = lambda **kw: None
-_rclpy.spin = lambda n: None
-_rclpy.shutdown = lambda: None
-
-
-class _FakeNode:
-    def get_logger(self):
-        return types.SimpleNamespace(info=lambda *a: None, warn=lambda *a: None,
-                                     debug=lambda *a: None)
-
-    def declare_parameter(self, *a, **kw):
-        pass
-
-    def get_parameter(self, name):
-        defaults = {
-            'model_path': '/nonexistent/model.onnx',
-            'confidence_threshold': 0.5,
-            'nms_iou_threshold': 0.45,
-            'target_classes': [0, 32],
-        }
-        return types.SimpleNamespace(value=defaults.get(name, 0))
-
-    def create_subscription(self, *a, **kw):
-        return None
-
-    def create_publisher(self, *a, **kw):
-        return types.SimpleNamespace(publish=lambda *a: None)
-
-
-sys.modules['rclpy.node'].Node = _FakeNode
-
-_bridge_mod = sys.modules['cv_bridge']
-
-
-class _FakeCvBridge:
-    def imgmsg_to_cv2(self, *a, **kw):
-        return None
-
-
-_bridge_mod.CvBridge = _FakeCvBridge
-
-_sen_msg = sys.modules['sensor_msgs.msg']
-
-
-class _FakeImage:
-    pass
-
-
-_sen_msg.Image = _FakeImage
-
-_std_msg = sys.modules['std_msgs.msg']
-
-
-class _FakeBool:
-    def __init__(self, data=False):
-        self.data = data
-
-
-_std_msg.Bool = _FakeBool
-
-
-class _FakeMarker:
-    TEXT_VIEW_FACING = 9
-    ADD = 0
-
-    def __init__(self):
-        self.header = None
-        self.ns = ''
-        self.id = 0
-        self.type = 0
-        self.action = 0
-        self.pose = types.SimpleNamespace(
-            position=types.SimpleNamespace(x=0.0, y=0.0, z=0.0),
-            orientation=types.SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
-        )
-        self.scale = types.SimpleNamespace(x=0.0, y=0.0, z=0.0)
-        self.color = types.SimpleNamespace(r=0.0, g=0.0, b=0.0, a=1.0)
-        self.text = ''
-
-
-class _FakeMarkerArray:
-    def __init__(self):
-        self.markers = []
-
-
-_viz_msg = sys.modules['visualization_msgs.msg']
-_viz_msg.Marker = _FakeMarker
-_viz_msg.MarkerArray = _FakeMarkerArray
-
-# ---------------------------------------------------------------------------
-# Now import the module under test
-# ---------------------------------------------------------------------------
-
-import numpy as np  # noqa: E402
-
-sys.path.insert(0, 'src/my_bot')
-from my_bot.object_detector import preprocess, postprocess, _INPUT_SIZE  # noqa: E402
+from my_bot.object_detector import preprocess, postprocess, _INPUT_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +76,6 @@ class TestPreprocess:
 # ---------------------------------------------------------------------------
 # postprocess() tests
 # ---------------------------------------------------------------------------
-
-import pytest  # noqa: E402 — needed for approx above
-
 
 def _make_output(cx, cy, w, h, class_id, score, n_classes=80):
     """Build a minimal [1, 84, 8400] array with one detection."""

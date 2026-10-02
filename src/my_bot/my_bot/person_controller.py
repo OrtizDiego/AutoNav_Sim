@@ -23,10 +23,26 @@ animations.
 
 Modes
 -----
-WALK       Wanders between random points at a casual pace.
+WALK       Wanders between random points of the museum at a casual pace.
 RUN        Sprints away from the robot after being detected.
 EXHAUSTED  Out of breath after a sprint: keeps moving away, but slowly,
            until stamina recovers.
+
+Staying out of the walls
+------------------------
+Gazebo actors have no physics, so nothing stops one from walking through a
+wall. The person therefore steers on the saved museum map (maps/my_map,
+whose frame equals the world frame because the robot spawns at the origin):
+
+* wander targets are sampled only from open floor with a clear line of
+  sight from where the person stands;
+* every step the heading is the one closest to the desired direction that
+  still has ``lookahead`` metres of free floor ahead (wider when running);
+* speed is capped so the person can always stop before the free floor
+  along its *current* heading runs out, so turning never cuts a corner.
+
+test_person.py simulates minutes of walking and fleeing on the real map and
+checks the person never comes closer than ``min_clearance`` to a wall.
 
 Realism details
 ---------------
@@ -34,8 +50,6 @@ Realism details
   so the person never teleports or spins on the spot.
 * The person slows down for sharp turns.
 * Sprints drain stamina; an empty tank forces EXHAUSTED until it refills.
-* Fleeing is steered away from the yard boundary so the person does not
-  run into a wall.
 * Walking speed has small random variation, as real gait does.
 
 Subscribes
@@ -54,7 +68,7 @@ Publishes
 from dataclasses import dataclass
 import math
 import random
-from typing import Tuple
+from typing import Optional, Tuple
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
@@ -62,10 +76,14 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
+from my_bot.clearance_map import ClearanceMap, safe_heading
+
 
 WALK = 'WALK'
 RUN = 'RUN'
 EXHAUSTED = 'EXHAUSTED'
+
+Point = Tuple[float, float]
 
 
 # ---------------------------------------------------------------------------
@@ -106,35 +124,13 @@ def next_mode(mode: str, alarmed: bool, stamina: float,
     return RUN if alarmed and stamina > 0.0 else WALK
 
 
-def flee_heading(person_xy: Tuple[float, float],
-                 robot_xy: Tuple[float, float],
-                 bounds: float,
-                 margin: float = 2.0) -> float:
-    """Heading (rad) that moves away from the robot without hitting walls.
-
-    The escape direction points from the robot to the person. Inside
-    ``margin`` of the boundary a repulsive term grows linearly and bends the
-    path along the wall.
-    """
+def flee_heading(person_xy: Point, robot_xy: Point) -> float:
+    """Heading (rad) pointing from the robot through the person."""
     dx = person_xy[0] - robot_xy[0]
     dy = person_xy[1] - robot_xy[1]
-    norm = math.hypot(dx, dy)
-    if norm < 1e-6:
-        dx, dy, norm = 1.0, 0.0, 1.0
-    vx, vy = dx / norm, dy / norm
-
-    for axis in (0, 1):
-        p = person_xy[axis]
-        push = 0.0
-        if p > bounds - margin:
-            push = -(p - (bounds - margin)) / margin
-        elif p < -bounds + margin:
-            push = (-bounds + margin - p) / margin
-        if axis == 0:
-            vx += 2.0 * push
-        else:
-            vy += 2.0 * push
-    return math.atan2(vy, vx)
+    if math.hypot(dx, dy) < 1e-6:
+        return 0.0
+    return math.atan2(dy, dx)
 
 
 def steer(heading: float, desired_heading: float, target_speed: float,
@@ -153,10 +149,10 @@ def steer(heading: float, desired_heading: float, target_speed: float,
     return speed, yaw_rate
 
 
-def random_waypoint(bounds: float, margin: float = 2.0) -> Tuple[float, float]:
-    """Pick a random wander target well inside the yard."""
-    lim = bounds - margin
-    return random.uniform(-lim, lim), random.uniform(-lim, lim)
+def stopping_speed(free_distance: float, decel: float,
+                   margin: float = 0.1) -> float:
+    """Fastest speed from which one can still stop within ``free_distance``."""
+    return math.sqrt(2.0 * decel * max(0.0, free_distance - margin))
 
 
 @dataclass
@@ -167,6 +163,98 @@ class PersonPose:
     y: float = 0.0
     yaw: float = 0.0
     speed: float = 0.0
+
+
+@dataclass
+class PersonParams:
+    """Tunables of the behaviour model (same names as the ROS parameters)."""
+
+    walk_speed: float = 0.7
+    walk_speed_jitter: float = 0.1
+    run_speed: float = 2.5
+    exhausted_speed: float = 0.5
+    accel: float = 2.0
+    decel: float = 3.0
+    walk_max_yaw_rate: float = 1.5
+    run_max_yaw_rate: float = 1.0
+    max_run_secs: float = 3.5
+    recovery_secs: float = 8.0
+    resume_stamina: float = 0.6
+    min_clearance: float = 0.5
+    waypoint_clearance: float = 1.0
+
+
+class PersonBrain:
+    """WALK / RUN / EXHAUSTED behaviour on a clearance map (no ROS)."""
+
+    def __init__(self, cmap: ClearanceMap, params: Optional[PersonParams] = None,
+                 rng: Optional[random.Random] = None):
+        self.cmap = cmap
+        self.p = params or PersonParams()
+        self.rng = rng or random.Random()
+        self.mode = WALK
+        self.stamina = 1.0
+        self.waypoint: Optional[Point] = None
+        self._walk_target = self.p.walk_speed
+        self._best_dist = float('inf')
+        self._stuck_for = 0.0
+
+    def pick_waypoint(self, here: Point) -> Point:
+        """Random open spot, at least 2 m away, in line of sight of ``here``."""
+        need = self.p.min_clearance + 0.15
+        candidate = here
+        for _ in range(200):
+            candidate = self.cmap.random_free_point(self.p.waypoint_clearance, self.rng)
+            if (math.dist(candidate, here) >= 2.0
+                    and self.cmap.segment_clearance(here, candidate) >= need):
+                break
+        self._best_dist = float('inf')
+        self._stuck_for = 0.0
+        self._walk_target = self.p.walk_speed + self.rng.uniform(
+            -self.p.walk_speed_jitter, self.p.walk_speed_jitter)
+        return candidate
+
+    def step(self, dt: float, pose: PersonPose, robot_xy: Point,
+             alarmed: bool) -> Tuple[float, float]:
+        """Advance the behaviour by ``dt``; return (speed, yaw_rate)."""
+        p = self.p
+        here = (pose.x, pose.y)
+        prev = self.mode
+        self.stamina = update_stamina(
+            self.stamina, self.mode, dt, p.max_run_secs, p.recovery_secs)
+        self.mode = next_mode(self.mode, alarmed, self.stamina, p.resume_stamina)
+        if self.waypoint is None or (self.mode == WALK and prev != WALK):
+            self.waypoint = self.pick_waypoint(here)
+
+        if self.mode == WALK:
+            dist = math.dist(here, self.waypoint)
+            if dist < self._best_dist - 0.3:
+                self._best_dist, self._stuck_for = dist, 0.0
+            else:
+                self._stuck_for += dt
+            if dist < 0.6 or self._stuck_for > 8.0:
+                self.waypoint = self.pick_waypoint(here)
+            desired = math.atan2(self.waypoint[1] - pose.y, self.waypoint[0] - pose.x)
+            target, max_yaw = self._walk_target, p.walk_max_yaw_rate
+        else:
+            desired = flee_heading(here, robot_xy)
+            if self.mode == RUN:
+                target, max_yaw = p.run_speed, p.run_max_yaw_rate
+            else:
+                target, max_yaw = p.exhausted_speed, p.walk_max_yaw_rate
+
+        # Look far enough ahead to turn away at this speed (radius v / w).
+        lookahead = 1.0 + 1.5 * max(target, pose.speed) / max_yaw
+        heading, _ = safe_heading(
+            self.cmap, pose.x, pose.y, desired, lookahead, p.min_clearance)
+        speed, yaw_rate = steer(pose.yaw, heading, target, pose.speed, dt,
+                                max_yaw, p.accel, p.decel)
+
+        # Never outrun the free floor along the current heading.
+        free = self.cmap.free_distance(
+            pose.x, pose.y, pose.yaw, lookahead, p.min_clearance)
+        speed = min(speed, stopping_speed(free, p.decel), free / dt)
+        return speed, yaw_rate
 
 
 # ---------------------------------------------------------------------------
@@ -190,36 +278,36 @@ class PersonControllerNode(Node):
         self.declare_parameter('max_run_secs', 3.5)
         self.declare_parameter('recovery_secs', 8.0)
         self.declare_parameter('resume_stamina', 0.6)
+        self.declare_parameter('min_clearance', 0.5)
+        self.declare_parameter('waypoint_clearance', 1.0)
         self.declare_parameter('calm_down_secs', 4.0)
         self.declare_parameter('notice_radius', 7.0)
+        self.declare_parameter('map_yaml', '')
         self.declare_parameter('bounds', 8.0)
         self.declare_parameter('update_rate_hz', 20.0)
 
         gp = self.get_parameter
-        self._walk_speed = float(gp('walk_speed').value)
-        self._walk_jitter = float(gp('walk_speed_jitter').value)
-        self._run_speed = float(gp('run_speed').value)
-        self._exhausted_speed = float(gp('exhausted_speed').value)
-        self._accel = float(gp('accel').value)
-        self._decel = float(gp('decel').value)
-        self._walk_yaw = float(gp('walk_max_yaw_rate').value)
-        self._run_yaw = float(gp('run_max_yaw_rate').value)
-        self._max_run_secs = float(gp('max_run_secs').value)
-        self._recovery_secs = float(gp('recovery_secs').value)
-        self._resume_stamina = float(gp('resume_stamina').value)
+        params = PersonParams(**{
+            name: float(gp(name).value) for name in vars(PersonParams())})
         self._calm_down = float(gp('calm_down_secs').value)
         self._notice_radius = float(gp('notice_radius').value)
-        self._bounds = float(gp('bounds').value)
         self._dt = 1.0 / max(float(gp('update_rate_hz').value), 1.0)
+
+        map_yaml = str(gp('map_yaml').value)
+        if map_yaml:
+            cmap = ClearanceMap.from_yaml(map_yaml)
+            self.get_logger().info(f'avoiding walls from {map_yaml}')
+        else:
+            bounds = float(gp('bounds').value)
+            cmap = ClearanceMap.from_bounds(bounds + 2.0)
+            self.get_logger().warn(
+                f'no map_yaml: keeping inside +/-{bounds} m only')
+        self._brain = PersonBrain(cmap, params)
 
         self._person = PersonPose()
         self._have_person_pose = False
         self._robot_xy = (0.0, 0.0)
-        self._mode = WALK
-        self._stamina = 1.0
         self._last_detection = -1.0e9
-        self._waypoint = random_waypoint(self._bounds)
-        self._walk_target = self._walk_speed
 
         self._cmd_pub = self.create_publisher(Twist, '/person/cmd_vel', 10)
         self._mode_pub = self.create_publisher(String, '/person_mode', 10)
@@ -231,8 +319,8 @@ class PersonControllerNode(Node):
 
         self.create_timer(self._dt, self._tick)
         self.get_logger().info(
-            f'person_controller: walk {self._walk_speed} m/s, '
-            f'run {self._run_speed} m/s for up to {self._max_run_secs} s')
+            f'person_controller: walk {params.walk_speed} m/s, '
+            f'run {params.run_speed} m/s for up to {params.max_run_secs} s')
 
     # ------------------------------------------------------------------
 
@@ -261,42 +349,18 @@ class PersonControllerNode(Node):
         alarmed = ((self._now() - self._last_detection) < self._calm_down
                    and robot_dist < self._notice_radius)
 
-        prev = self._mode
-        self._stamina = update_stamina(
-            self._stamina, self._mode, self._dt,
-            self._max_run_secs, self._recovery_secs)
-        self._mode = next_mode(
-            self._mode, alarmed, self._stamina, self._resume_stamina)
-        if self._mode != prev:
+        prev = self._brain.mode
+        p.speed, yaw_rate = self._brain.step(self._dt, p, self._robot_xy, alarmed)
+        if self._brain.mode != prev:
             self.get_logger().info(
-                f'{prev} -> {self._mode} (stamina {self._stamina:.2f}, '
-                f'robot {robot_dist:.1f} m)')
-            if self._mode == WALK:
-                self._waypoint = random_waypoint(self._bounds)
-
-        if self._mode == WALK:
-            if math.hypot(p.x - self._waypoint[0], p.y - self._waypoint[1]) < 0.5:
-                self._waypoint = random_waypoint(self._bounds)
-                self._walk_target = self._walk_speed + random.uniform(
-                    -self._walk_jitter, self._walk_jitter)
-            desired = math.atan2(self._waypoint[1] - p.y, self._waypoint[0] - p.x)
-            target, max_yaw = self._walk_target, self._walk_yaw
-        else:
-            desired = flee_heading((p.x, p.y), self._robot_xy, self._bounds)
-            if self._mode == RUN:
-                target, max_yaw = self._run_speed, self._run_yaw
-            else:
-                target, max_yaw = self._exhausted_speed, self._walk_yaw
-
-        p.speed, yaw_rate = steer(
-            p.yaw, desired, target, p.speed, self._dt,
-            max_yaw, self._accel, self._decel)
+                f'{prev} -> {self._brain.mode} (stamina '
+                f'{self._brain.stamina:.2f}, robot {robot_dist:.1f} m)')
 
         cmd = Twist()
         cmd.linear.x = p.speed
         cmd.angular.z = yaw_rate
         self._cmd_pub.publish(cmd)
-        self._mode_pub.publish(String(data=self._mode))
+        self._mode_pub.publish(String(data=self._brain.mode))
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9

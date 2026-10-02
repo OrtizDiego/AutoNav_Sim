@@ -29,19 +29,14 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'patrol = my_bot.patrol:main',
-            'camera_test = my_bot.camera_test:main',
+            'ball_controller = my_bot.ball_controller:main',
+            'ball_teleop = my_bot.ball_teleop:main',
             'ball_chaser = my_bot.ball_chaser:main',
-            'security_guard = my_bot.security_guard:main',
             'sensor_fusion = my_bot.sensor_fusion:main',
-            'system_monitor = my_bot.system_monitor:main',
-            'security_guard_bt = my_bot.security_guard_bt:main',
-            'object_detector = my_bot.object_detector:main',
-            'intruder_bot = my_bot.intruder_bot:main',
-            'obstacle_controller = my_bot.obstacle_controller:main',
             'person_controller = my_bot.person_controller:main',
             'person_tracker = my_bot.person_tracker:main',
-            'person_follower = my_bot.person_follower:main',
+            'security_guard_bt = my_bot.security_guard_bt:main',
+            'system_monitor = my_bot.system_monitor:main',
         ],
     },
 )

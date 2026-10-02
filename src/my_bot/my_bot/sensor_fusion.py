@@ -14,10 +14,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fuse camera pixel coordinates with LiDAR scan to estimate target position."""
+"""Fuse a camera detection with the LiDAR scan into a range and bearing.
+
+The camera says *where* the target is (a box in the image); the lidar says
+*how far* it is. Every behaviour (ball chaser, security guard BT) consumes
+the fused output, so they do not care which detector produced the box.
+
+Modes (parameter ``mode``)
+--------------------------
+hsv     Largest red blob in /camera/image_raw (the ball in ball-sim).
+person  Box from person_tracker on /person_bbox (YOLO + tracker).
+
+Ranging
+-------
+The lidar sits ~0.12 m above the ground. The range is a low percentile over
+every beam inside the box's angular span, which finds the target's near
+surface even when single beams slip past it (between a person's legs). In
+person mode it is cross-checked against a monocular estimate from the box
+(person height, or the feet's ground contact when the head is cut off); if
+the lidar disagrees (beams hit the background) the monocular value wins.
+
+Sign convention: image columns grow to the right, ROS angles grow to the
+left, so bearings are negated (REP-103, same as LaserScan and angular.z).
+
+Publishes
+---------
+/target_range      std_msgs/Float32             metres, -1.0 if unknown
+/target_bearing    std_msgs/Float32             rad, positive left; NaN if
+                                                no target
+/target_position   geometry_msgs/PointStamped   base_link, when ranged
+/sensor_fusion/image  sensor_msgs/Image         annotated debug view
+"""
 
 import math
 import threading
+from typing import List, Optional, Tuple
 
 import cv2
 from cv_bridge import CvBridge
@@ -27,7 +58,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Float32MultiArray, Header
+
+Box = Tuple[float, float, float, float]
 
 
 # ---------------------------------------------------------------------------
@@ -50,9 +83,9 @@ def compute_bearing(pixel_x: float, cx: float, fx: float) -> float:
 
 
 def bearing_to_scan_index(bearing: float,
-                           angle_min: float,
-                           angle_increment: float,
-                           n_samples: int) -> int:
+                          angle_min: float,
+                          angle_increment: float,
+                          n_samples: int) -> int:
     """Map a bearing angle to the nearest LaserScan array index.
 
     Args:
@@ -70,31 +103,89 @@ def validate_range(r: float, r_min: float, r_max: float) -> bool:
     return math.isfinite(r) and r_min <= r <= r_max
 
 
+def scan_window_range(ranges: List[float], angle_min: float,
+                      angle_increment: float, left_angle: float,
+                      right_angle: float, range_min: float, range_max: float,
+                      percentile: float = 0.2) -> Optional[float]:
+    """Low-percentile range of valid beams between two angles.
+
+    ``left_angle`` >= ``right_angle`` (ROS angles). Returns None if no beam
+    in the window has a valid return.
+    """
+    n = len(ranges)
+    if n == 0:
+        return None
+    lo = int(math.floor((right_angle - angle_min) / angle_increment))
+    hi = int(math.ceil((left_angle - angle_min) / angle_increment))
+    vals = []
+    for i in range(lo, hi + 1):
+        r = ranges[i % n]  # wrap across the +/-pi seam
+        if validate_range(r, range_min, range_max):
+            vals.append(r)
+    if not vals:
+        return None
+    vals.sort()
+    return vals[min(len(vals) - 1, int(percentile * len(vals)))]
+
+
+def monocular_range(bbox: Box, img_h: int, fy: float, cy: float,
+                    person_height: float, camera_height: float,
+                    edge_margin: float = 3.0) -> Optional[float]:
+    """Estimate distance to a person from the bbox alone.
+
+    Uses the apparent height when head and feet are both in frame,
+    otherwise the feet's ground contact point (needs the feet visible).
+    """
+    _, y, _, h = bbox
+    top_cut = y <= edge_margin
+    bottom_cut = y + h >= img_h - edge_margin
+    if not top_cut and not bottom_cut and h > 1.0:
+        return fy * person_height / h
+    if not bottom_cut:
+        below = (y + h) - cy  # pixels below the horizon
+        if below > 1.0:
+            return fy * camera_height / below
+    return None
+
+
+def fuse_range(lidar: Optional[float], mono: Optional[float],
+               tolerance: float = 0.4) -> Optional[float]:
+    """Prefer lidar unless it disagrees with the monocular estimate."""
+    if lidar is None:
+        return mono
+    if mono is None:
+        return lidar
+    if abs(lidar - mono) <= tolerance * mono:
+        return lidar
+    return mono
+
+
+def detect_red_blob(bgr: np.ndarray, lower1, upper1, lower2, upper2,
+                    min_area: float) -> Optional[Box]:
+    """Bounding box (x, y, w, h) of the largest red blob, or None."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, lower1, upper1) | cv2.inRange(hsv, lower2, upper2)
+    contours, _ = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    valid = [c for c in contours if cv2.contourArea(c) >= min_area]
+    if not valid:
+        return None
+    x, y, w, h = cv2.boundingRect(max(valid, key=cv2.contourArea))
+    return float(x), float(y), float(w), float(h)
+
+
 # ---------------------------------------------------------------------------
 # ROS node
 # ---------------------------------------------------------------------------
 
 class SensorFusionNode(Node):
-    """Combines HSV-based target detection with LiDAR ranging.
-
-    Subscribes to /camera/image_raw and /scan.  When a target is detected in
-    the camera frame, projects the pixel bearing onto the lidar scan to
-    obtain a metric range measurement.
-
-    Publishes:
-        /target_position  (geometry_msgs/PointStamped, frame_id=base_link)
-        /target_range     (std_msgs/Float32, metres; -1.0 if no valid reading)
-    """
-
-    # Camera intrinsics derived from camera.xacro: FOV=1.089 rad, width=640
-    _CAMERA_CX: float = 320.0
-    _CAMERA_FX: float = 320.0 / math.tan(1.089 / 2.0)   # ≈ 534.8
+    """Turns an image-space box into range + bearing using the lidar."""
 
     def __init__(self):
         """Declare parameters, create sub/pub."""
         super().__init__('sensor_fusion')
 
-        # HSV detection params — same defaults as behavior_params.yaml
+        self.declare_parameter('mode', 'hsv')
         self.declare_parameter('hsv_red_lower1', [0, 100, 100])
         self.declare_parameter('hsv_red_upper1', [10, 255, 255])
         self.declare_parameter('hsv_red_lower2', [160, 100, 100])
@@ -102,109 +193,149 @@ class SensorFusionNode(Node):
         self.declare_parameter('min_contour_area', 300.0)
         self.declare_parameter('range_min', 0.3)
         self.declare_parameter('range_max', 12.0)
+        # Camera model (camera.xacro: 640x480, horizontal FOV 1.089 rad)
+        self.declare_parameter('image_width', 640)
+        self.declare_parameter('image_height', 480)
+        self.declare_parameter('horizontal_fov', 1.089)
+        self.declare_parameter('camera_height', 0.103)
+        self.declare_parameter('person_height', 1.72)
 
-        self._lower1 = np.array(
-            self.get_parameter('hsv_red_lower1').value, dtype=np.uint8)
-        self._upper1 = np.array(
-            self.get_parameter('hsv_red_upper1').value, dtype=np.uint8)
-        self._lower2 = np.array(
-            self.get_parameter('hsv_red_lower2').value, dtype=np.uint8)
-        self._upper2 = np.array(
-            self.get_parameter('hsv_red_upper2').value, dtype=np.uint8)
-        self._min_area = float(self.get_parameter('min_contour_area').value)
-        self._range_min = float(self.get_parameter('range_min').value)
-        self._range_max = float(self.get_parameter('range_max').value)
+        gp = self.get_parameter
+        self._mode = str(gp('mode').value)
+        if self._mode not in ('hsv', 'person'):
+            raise ValueError(f"mode must be 'hsv' or 'person', got {self._mode!r}")
+        self._lower1 = np.array(gp('hsv_red_lower1').value, dtype=np.uint8)
+        self._upper1 = np.array(gp('hsv_red_upper1').value, dtype=np.uint8)
+        self._lower2 = np.array(gp('hsv_red_lower2').value, dtype=np.uint8)
+        self._upper2 = np.array(gp('hsv_red_upper2').value, dtype=np.uint8)
+        self._min_area = float(gp('min_contour_area').value)
+        self._range_min = float(gp('range_min').value)
+        self._range_max = float(gp('range_max').value)
+        width = int(gp('image_width').value)
+        self._img_h = int(gp('image_height').value)
+        self._cx = width / 2.0
+        self._cy = self._img_h / 2.0
+        self._fx = (width / 2.0) / math.tan(float(gp('horizontal_fov').value) / 2.0)
+        self._cam_h = float(gp('camera_height').value)
+        self._person_h = float(gp('person_height').value)
 
         self._bridge = CvBridge()
+        self._lock = threading.Lock()
+        self._scan: Optional[LaserScan] = None
+        self._frame = None  # latest camera frame, person mode debug view
 
-        # Thread-safe cache for the latest scan
-        self._latest_scan: LaserScan | None = None
-        self._scan_lock = threading.Lock()
-
-        self._scan_sub = self.create_subscription(
+        self.create_subscription(
             LaserScan, '/scan', self._scan_cb, qos_profile_sensor_data)
-        self._cam_sub = self.create_subscription(
+        self.create_subscription(
             Image, '/camera/image_raw', self._camera_cb, qos_profile_sensor_data)
+        if self._mode == 'person':
+            self.create_subscription(
+                Float32MultiArray, '/person_bbox', self._bbox_cb, 10)
 
         self._pos_pub = self.create_publisher(PointStamped, '/target_position', 10)
         self._range_pub = self.create_publisher(Float32, '/target_range', 10)
+        self._bearing_pub = self.create_publisher(Float32, '/target_bearing', 10)
+        self._debug_pub = self.create_publisher(Image, '/sensor_fusion/image', 1)
+        self.get_logger().info(f'sensor_fusion running in {self._mode} mode')
 
     # ------------------------------------------------------------------
 
     def _scan_cb(self, msg: LaserScan):
-        """Cache the most recent scan under a lock."""
-        with self._scan_lock:
-            self._latest_scan = msg
+        with self._lock:
+            self._scan = msg
 
     def _camera_cb(self, msg: Image):
-        """Detect target in frame; fuse with latest scan; publish."""
+        if self._mode == 'person' and not self._want_debug():
+            return
         try:
-            cv_image = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
-        except Exception as e:
+            frame = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
+        except Exception as e:  # noqa: BLE001
             self.get_logger().error(f'Image conversion failed: {e}')
             return
-
-        pixel_x = self._detect_target(cv_image)
-
-        range_msg = Float32()
-        if pixel_x is None:
-            range_msg.data = -1.0
-            self._range_pub.publish(range_msg)
+        if self._mode == 'person':
+            with self._lock:
+                self._frame = frame
             return
+        box = detect_red_blob(frame, self._lower1, self._upper1,
+                              self._lower2, self._upper2, self._min_area)
+        self._fuse(box, msg.header, frame, 'ball')
 
-        bearing = compute_bearing(float(pixel_x), self._CAMERA_CX, self._CAMERA_FX)
+    def _bbox_cb(self, msg: Float32MultiArray):
+        box = tuple(msg.data[:4]) if len(msg.data) >= 4 else None
+        with self._lock:
+            frame = self._frame
+        header = Header(stamp=self.get_clock().now().to_msg(),
+                        frame_id='camera_link_optical')
+        self._fuse(box, header, frame, 'person')
 
-        with self._scan_lock:
-            scan = self._latest_scan
+    # ------------------------------------------------------------------
 
-        if scan is None:
-            range_msg.data = -1.0
-            self._range_pub.publish(range_msg)
-            return
+    def _fuse(self, box: Optional[Box], header, frame, label: str):
+        bearing = float('nan')
+        rng = None
+        source = ''
+        if box is not None:
+            x, _, w, _ = box
+            bearing = compute_bearing(x + w / 2.0, self._cx, self._fx)
+            rng, source = self._range_for(box)
 
-        idx = bearing_to_scan_index(
-            bearing, scan.angle_min, scan.angle_increment, len(scan.ranges))
-        r = scan.ranges[idx]
+        self._bearing_pub.publish(Float32(data=bearing))
+        self._range_pub.publish(Float32(data=float(rng) if rng else -1.0))
+        if rng:
+            pos = PointStamped()
+            pos.header.stamp = header.stamp
+            pos.header.frame_id = 'base_link'
+            pos.point.x = rng * math.cos(bearing)
+            pos.point.y = rng * math.sin(bearing)
+            self._pos_pub.publish(pos)
 
-        if not validate_range(r, self._range_min, self._range_max):
-            range_msg.data = -1.0
-            self._range_pub.publish(range_msg)
-            return
+        if frame is not None and self._want_debug():
+            self._publish_debug(frame, header, box, rng, bearing, source, label)
 
-        # Publish metric range
-        range_msg.data = float(r)
-        self._range_pub.publish(range_msg)
+    def _range_for(self, box: Box) -> Tuple[Optional[float], str]:
+        """Fused range to the boxed target and which sensor produced it."""
+        x, _, w, _ = box
+        with self._lock:
+            scan = self._scan
+        lidar = None
+        if scan is not None:
+            margin = math.radians(1.0)
+            lidar = scan_window_range(
+                scan.ranges, scan.angle_min, scan.angle_increment,
+                compute_bearing(x, self._cx, self._fx) - margin,
+                compute_bearing(x + w, self._cx, self._fx) + margin,
+                self._range_min, self._range_max)
+        if self._mode != 'person':
+            return lidar, 'lidar' if lidar else ''
+        mono = monocular_range(box, self._img_h, self._fx, self._cy,
+                               self._person_h, self._cam_h)
+        rng = fuse_range(lidar, mono)
+        if rng is None:
+            return None, ''
+        return rng, 'lidar' if rng == lidar else 'camera'
 
-        # Publish Cartesian position in base_link frame
-        pos_msg = PointStamped()
-        pos_msg.header.stamp = self.get_clock().now().to_msg()
-        pos_msg.header.frame_id = 'base_link'
-        pos_msg.point.x = r * math.cos(bearing)
-        pos_msg.point.y = r * math.sin(bearing)
-        pos_msg.point.z = 0.0
-        self._pos_pub.publish(pos_msg)
+    # ------------------------------------------------------------------
 
-        self.get_logger().debug(
-            f'Target: bearing={math.degrees(bearing):.1f}°  range={r:.2f}m  '
-            f'pos=({pos_msg.point.x:.2f}, {pos_msg.point.y:.2f})')
+    def _want_debug(self) -> bool:
+        return self._debug_pub.get_subscription_count() > 0
 
-    def _detect_target(self, cv_image) -> int | None:
-        """Return pixel_x of the largest red blob centroid, or None."""
-        hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
-        mask = (cv2.inRange(hsv, self._lower1, self._upper1) +
-                cv2.inRange(hsv, self._lower2, self._upper2))
-        contours, _ = cv2.findContours(
-            mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-        valid = [c for c in contours if cv2.contourArea(c) >= self._min_area]
-        if not valid:
-            return None
-
-        c = max(valid, key=cv2.contourArea)
-        m = cv2.moments(c)
-        if m['m00'] <= 0:
-            return None
-        return int(m['m10'] / m['m00'])
+    def _publish_debug(self, frame, header, box, rng, bearing, source, label):
+        vis = frame.copy()
+        if box is None:
+            cv2.putText(vis, f'no {label}', (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        else:
+            x, y, w, h = (int(v) for v in box)
+            cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 220, 0), 2)
+            text = f'{label} {rng:.2f} m ({source})' if rng else f'{label} (no range)'
+            cv2.putText(vis, text, (x, max(20, y - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 0), 2)
+            cv2.putText(vis, f'bearing {math.degrees(bearing):+.1f} deg',
+                        (10, vis.shape[0] - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        out = self._bridge.cv2_to_imgmsg(vis, 'bgr8')
+        out.header = header
+        self._debug_pub.publish(out)
 
 
 def main(args=None):

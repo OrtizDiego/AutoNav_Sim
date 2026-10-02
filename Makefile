@@ -12,12 +12,9 @@ PACKAGE_NAME := my_bot
 EXEC := docker exec -it $(CONTAINER_NAME) bash -c
 SOURCE := source /opt/ros/humble/setup.bash && source install/setup.bash
 
-.PHONY: help build clean lint test shell sim slam nav teleop save-map \
-        ball-chaser security-guard security-guard-bt \
-        sensor-fusion system-monitor object-detector \
-        intruder-bot obstacle-controller dynamic-sim \
-        person-sim person-controller person-tracker person-follower \
-        up up-gpu down
+.PHONY: help up up-gpu down shell build clean lint test \
+        sim nav-sim slam nav teleop save-map system-monitor \
+        ball-sim teleop-ball person-sim yolo-sim
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -35,28 +32,20 @@ help:
 	@echo "  lint            - Run ROS 2 linting tools"
 	@echo "  test            - Run ROS 2 unit tests"
 	@echo ""
-	@echo "Simulation & Navigation:"
-	@echo "  sim             - Launch Gazebo simulation (room.world)"
-	@echo "  dynamic-sim     - Launch Gazebo simulation (dynamic.world with moving obstacles)"
-	@echo "  slam            - Start SLAM for mapping"
-	@echo "  nav             - Start Autonomous Navigation"
-	@echo "  teleop          - Control the robot with arrow keys"
-	@echo "  teleop-target   - Control the Intruder/Ball with arrow keys"
-	@echo "  save-map NAME=x - Save the current map (default: my_map)"
+	@echo "Scenarios (each is a single command):"
+	@echo "  sim             - Robot in the museum, Gazebo + RViz, nothing else"
+	@echo "  nav-sim         - sim + Nav2 (map, AMCL, planners) in one go"
+	@echo "  ball-sim        - Robot chases the red ball (HSV + lidar fusion)"
+	@echo "  person-sim      - Security guard: patrol + YOLO + fusion + follow (the demo)"
+	@echo "  yolo-sim        - Static person in front of the robot: YOLO + fusion proof"
 	@echo ""
-	@echo "Behavior Nodes:"
-	@echo "  ball-chaser        - Run the ball chaser (HSV + sensor fusion)"
-	@echo "  security-guard     - Run the security guard (LifecycleNode)"
-	@echo "  security-guard-bt  - Run the security guard (Behavior Tree)"
-	@echo "  sensor-fusion      - Run LiDAR-camera fusion node"
-	@echo "  system-monitor     - Run system watchdog + full security stack"
-	@echo "  object-detector    - Run YOLOv8-nano ONNX object detector"
-	@echo "  intruder-bot       - Run autonomous intruder random walk"
-	@echo "  obstacle-controller- Run dynamic obstacle controller"
-	@echo "  person-sim         - Full person-intruder sim (actor + tracker + follower)"
-	@echo "  person-controller  - Run pedestrian behaviour (WALK/RUN/EXHAUSTED)"
-	@echo "  person-tracker     - YOLO + OpenCV tracker + Kalman person tracker"
-	@echo "  person-follower    - Stand-off follower for the tracked person"
+	@echo "Tools (run next to a scenario, in a second terminal):"
+	@echo "  teleop          - Drive the robot with the keyboard"
+	@echo "  teleop-ball     - Drive the ball in ball-sim with the keyboard"
+	@echo "  slam            - SLAM mapping (with sim + teleop)"
+	@echo "  save-map NAME=x - Save the current SLAM map (default: my_map)"
+	@echo "  nav             - Nav2 only (with an already running sim)"
+	@echo "  system-monitor  - Sensor watchdog + /trigger_estop (built into person-sim)"
 
 # --- DOCKER MANAGEMENT ---
 
@@ -94,64 +83,40 @@ test:
 		colcon test --packages-select $(PACKAGE_NAME) --return-code-on-test-failure && \
 		colcon test-result --verbose"
 
-# --- ROS 2 WORKFLOWS ---
+# --- SCENARIOS ---
 
 sim:
 	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) sim.launch.py"
 
-slam:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) slam.launch.py"
+nav-sim:
+	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) nav_sim.launch.py"
 
-nav:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) navigation.launch.py"
+ball-sim:
+	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) ball_sim.launch.py"
+
+person-sim:
+	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
+
+yolo-sim:
+	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py"
+
+# --- TOOLS ---
 
 teleop:
 	$(EXEC) "$(SOURCE) && ros2 run teleop_twist_keyboard teleop_twist_keyboard"
 
-teleop-target:
-	$(EXEC) "$(SOURCE) && ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/target_cmd_vel"
+teleop-ball:
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) ball_teleop"
+
+slam:
+	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) slam.launch.py"
 
 save-map:
 	@MAP_NAME=$(or $(NAME),my_map); \
 	$(EXEC) "$(SOURCE) && ./src/save_map.sh $$MAP_NAME"
 
-# --- BEHAVIOR NODES ---
-
-ball-chaser:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) ball_chaser"
-
-security-guard:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) security_guard"
-
-security-guard-bt:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) security_guard_bt"
-
-sensor-fusion:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) sensor_fusion.launch.py"
+nav:
+	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) navigation.launch.py"
 
 system-monitor:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) security_guard_full.launch.py"
-
-object-detector:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) object_detector"
-
-intruder-bot:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) intruder_bot"
-
-obstacle-controller:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) obstacle_controller"
-
-dynamic-sim:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) dynamic_sim.launch.py"
-
-person-sim:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
-
-person-controller:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) person_controller"
-
-person-tracker:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) person_tracker"
-
-person-follower:
-	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) person_follower"
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) system_monitor --ros-args --params-file src/$(PACKAGE_NAME)/config/behavior_params.yaml -p use_sim_time:=true"

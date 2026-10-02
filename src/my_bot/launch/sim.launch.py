@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Launch file to start simulation in Gazebo and RViz."""
+"""Robot in the museum (room.world) with Gazebo and RViz: `make sim`.
+
+Every scenario launch file includes this one and overrides ``world`` and
+``rviz_config``.
+"""
 
 import os
 
@@ -35,13 +39,17 @@ def generate_launch_description():
         )]), launch_arguments={'use_sim_time': 'true'}.items()
     )
 
-    # 2. Start Gazebo. The world is a launch argument so wrappers such as
-    # dynamic_sim.launch.py and person_sim.launch.py can override it.
+    # 2. Start Gazebo. The world and the RViz layout are launch arguments so
+    # the scenario launch files (ball_sim, person_sim, ...) can override them.
     default_world = os.path.join(
         get_package_share_directory(pkg_name), 'worlds', 'room.world')
     world_arg = DeclareLaunchArgument(
         'world', default_value=default_world,
         description='Absolute path to the Gazebo world file')
+    rviz_arg = DeclareLaunchArgument(
+        'rviz_config', default_value=os.path.join(
+            get_package_share_directory(pkg_name), 'config', 'sim.rviz'),
+        description='Absolute path to the RViz config file')
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([os.path.join(
@@ -56,22 +64,20 @@ def generate_launch_description():
                                    '-entity', 'my_bot'],
                         output='screen')
 
-    # 4. Launch RViz (New Step!)
-    # We find the config file we just saved
-    rviz_config_file = os.path.join(
-        get_package_share_directory(pkg_name), 'config', 'navigation.rviz')
-
+    # 4. Launch RViz
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
-        arguments=['-d', rviz_config_file],  # -d means "load this description file"
+        arguments=['-d', LaunchConfiguration('rviz_config')],
+        parameters=[{'use_sim_time': True}],
         output='screen'
     )
 
     return LaunchDescription([
         world_arg,
+        rviz_arg,
         rsp,
         gazebo,
         spawn_entity,
-        rviz_node,  # Add the new node here
+        rviz_node,
     ])

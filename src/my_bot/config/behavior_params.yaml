@@ -1,39 +1,49 @@
-# Shared parameters for the vision-based behavior nodes.
+# Shared parameters for the behaviour nodes of every scenario.
 #
 # Standard ROS 2 params-file layout (node_name: ros__parameters: {...}) so it
 # can be passed directly to launch `parameters=[...]` or `--params-file`.
 # Every value's type must match the node's declare_parameter() default
 # (e.g. 300.0 not 300 for a double); test_behavior_params.py enforces this.
+# Launch files add per-scenario overrides on top (sensor_fusion mode,
+# person_controller map_yaml).
+
+# --- ball-sim -------------------------------------------------------------
+
+ball_controller:
+  ros__parameters:
+    autopilot: true
+    # Figure-eight checked against maps/my_map by test_ball.py
+    path_center: [2.5, -2.5]
+    path_half_width: 3.5
+    path_half_height: 1.25
+    cruise_speed: 0.35
+    flee_speed: 0.8
+    flee_distance: 1.8
+    wait_distance: 4.5
+    max_speed: 1.0
+    accel: 1.5
+    teleop_timeout: 1.0
+    update_rate_hz: 30.0
 
 ball_chaser:
   ros__parameters:
-    hsv_red_lower1: [0, 100, 100]
-    hsv_red_upper1: [10, 255, 255]
-    hsv_red_lower2: [160, 100, 100]
-    hsv_red_upper2: [180, 255, 255]
-    angular_gain: 100.0
-    linear_speed: 0.2
-    min_contour_area: 300.0
-    search_angular_speed: 0.3
-    search_timeout_sec: 3.0
+    desired_distance: 1.0
+    deadband: 0.1
+    k_lin: 0.6
+    k_yaw: 1.8
+    max_linear_speed: 0.6
+    max_back_speed: 0.15
+    max_angular_speed: 1.5
+    safety_distance: 0.35
+    target_timeout: 0.5
+    search_secs: 20.0
+    search_angular_speed: 0.6
 
-security_guard:
-  ros__parameters:
-    hsv_red_lower1: [0, 100, 100]
-    hsv_red_upper1: [10, 255, 255]
-    hsv_red_lower2: [160, 100, 100]
-    hsv_red_upper2: [180, 255, 255]
-    angular_gain: 0.01
-    linear_speed: 0.2
-    max_angular_speed: 0.5
-    min_contour_area: 500.0
-    stop_distance_area: 35000.0
-    # Flat [x0, y0, x1, y1, ...] — ROS 2 parameters cannot hold nested lists.
-    waypoints: [3.28, 6.85, -0.92, 6.85, 5.13, -2.45, 0.23, -2.55, -4.52, 8.60, 0.0, 0.0]
-    waypoint_dwell_secs: 2.0
+# --- shared perception (ball-sim: mode hsv, yolo-sim/person-sim: person) ---
 
 sensor_fusion:
   ros__parameters:
+    mode: hsv
     hsv_red_lower1: [0, 100, 100]
     hsv_red_upper1: [10, 255, 255]
     hsv_red_lower2: [160, 100, 100]
@@ -41,6 +51,24 @@ sensor_fusion:
     min_contour_area: 300.0
     range_min: 0.3
     range_max: 12.0
+    image_width: 640
+    image_height: 480
+    horizontal_fov: 1.089
+    camera_height: 0.103
+    person_height: 1.72
+
+person_tracker:
+  ros__parameters:
+    model_path: /root/models/yolov8n.onnx
+    confidence_threshold: 0.4
+    nms_iou_threshold: 0.45
+    redetect_every: 10
+    reseed_iou_threshold: 0.3
+    max_yolo_misses: 2
+    max_coast_frames: 10
+    publish_debug_image: true
+
+# --- person-sim -----------------------------------------------------------
 
 person_controller:
   ros__parameters:
@@ -55,24 +83,24 @@ person_controller:
     max_run_secs: 3.5
     recovery_secs: 8.0
     resume_stamina: 0.6
+    min_clearance: 0.5
+    waypoint_clearance: 1.0
     calm_down_secs: 4.0
     notice_radius: 7.0
-    bounds: 8.0
     update_rate_hz: 20.0
 
-person_tracker:
+security_guard_bt:
   ros__parameters:
-    model_path: /root/models/yolov8n.onnx
-    confidence_threshold: 0.4
-    nms_iou_threshold: 0.45
-    redetect_every: 10
-    reseed_iou_threshold: 0.3
-    max_yolo_misses: 2
-    max_coast_frames: 10
-    publish_debug_image: true
-
-person_follower:
-  ros__parameters:
+    # Flat [x0, y0, x1, y1, ...] in the map frame — ROS 2 parameters cannot
+    # hold nested lists.
+    waypoints: [3.28, 6.85, -0.92, 6.85, 5.13, -2.45, 0.23, -2.55, -4.52, 8.60, 0.0, 0.0]
+    waypoint_dwell_secs: 2.0
+    target_timeout: 0.5
+    search_secs: 6.0
+    search_angular_speed: 0.6
+    # 2.5 m keeps the person's torso in view: the camera is ~0.10 m off the
+    # ground with a +/-24 deg vertical FOV, so closer than ~1.5 m it sees
+    # only the legs and YOLO becomes unreliable.
     desired_distance: 2.5
     deadband: 0.15
     k_lin: 0.8
@@ -81,13 +109,9 @@ person_follower:
     max_back_speed: 0.2
     max_angular_speed: 1.5
     safety_distance: 0.6
-    track_timeout: 0.5
-    search_secs: 4.0
-    search_angular_speed: 0.6
-    range_min: 0.3
-    range_max: 12.0
-    image_width: 640
-    image_height: 480
-    horizontal_fov: 1.089
-    camera_height: 0.103
-    person_height: 1.72
+
+system_monitor:
+  ros__parameters:
+    scan_timeout: 2.0
+    camera_timeout: 2.0
+    health_publish_rate: 1.0
