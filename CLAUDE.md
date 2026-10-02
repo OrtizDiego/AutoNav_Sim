@@ -43,7 +43,7 @@ make clean
 ### Scenarios
 Each scenario is one command (Gazebo + RViz layout + every node it needs). Make targets `docker exec` into the container, so run them from the host:
 ```bash
-make sim         # robot in the museum (room.world), nothing else
+make sim         # robot in the museum (room.world), navigation.rviz; add `make nav` for the map
 make nav-sim     # sim + Nav2 (map, AMCL with initial pose from nav2_params.yaml)
 make ball-sim    # ball chase: ball_controller + sensor_fusion(hsv) + ball_chaser
 make person-sim  # demo: Nav2 + person_controller + person_tracker + sensor_fusion(person)
@@ -68,7 +68,7 @@ make system-monitor  # watchdog + /trigger_estop, /clear_estop (already in perso
 - Simulates a differential drive robot (TurtleBot3 Waffle Pi meshes/dimensions) with 2D Lidar and RGB camera
 - Publishes: `/scan` (Lidar), `/odom` (odometry), `/camera/image_raw` (camera)
 - Subscribes to: `/cmd_vel` (velocity commands)
-- World files: `room.world` (museum, vanilla), `ball.world` (museum + red ball), `person.world` (museum + pedestrian actor), `yolo.world` (flat ground + standing person). `sim.launch.py` takes `world:=` and `rviz_config:=`. The museum block (incl. its `<state>` pose) must stay identical across the museum worlds: `maps/my_map` was built in it and its frame equals the world frame (robot spawns at the origin).
+- World files: `room.world` (museum, vanilla), `ball.world` (museum + red ball), `person.world` (museum + pedestrian actor), `yolo.world` (flat ground + standing person). `sim.launch.py` takes `world:=` and `rviz_config:=` (default `navigation.rviz`). It includes Gazebo inside a scoped `GroupAction`: gzserver declares `params_file:=''`, and launch configurations are global, so unscoped it would override Nav2's `params_file` default in any scenario that includes Nav2 afterwards. Scenarios that include `navigation.launch.py` also pass `map`/`params_file` explicitly. The museum block (incl. its `<state>` pose) must stay identical across the museum worlds: `maps/my_map` was built in it and its frame equals the world frame (robot spawns at the origin).
 
 **SLAM Toolbox**
 - Runs asynchronous SLAM to generate `/map` from Lidar scans and odometry
@@ -118,7 +118,7 @@ src/my_bot/
 │   ├── behavior_params.yaml   # one ros__parameters section per behaviour node
 │   ├── nav2_params.yaml       # Nav2 tuning (AMCL initial pose = spawn)
 │   ├── mapper_params_online_async.yaml
-│   └── sim.rviz / navigation.rviz / perception.rviz / person.rviz
+│   └── navigation.rviz (sim, nav-sim) / perception.rviz / person.rviz
 ├── meshes/                    # TurtleBot3 Waffle Pi STL meshes (Apache-2.0, see meshes/README.md)
 ├── urdf/                      # Xacro: robot_core, gazebo_control, lidar (noise 0.01 m), camera (noise 0.007)
 ├── worlds/                    # room, ball, person, yolo
