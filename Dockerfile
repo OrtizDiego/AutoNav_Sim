@@ -25,7 +25,9 @@ ENV TERM xterm-256color
 # 3. Update and Install Essential Robotics Tools
 # numpy<2: onnxruntime would otherwise pull NumPy 2, which breaks the
 # system cv2 and cv_bridge (built against NumPy 1.x) for every vision node.
+# python3-pip: the ROS base image has no pip, so pip3 failed with 127.
 RUN apt-get update && apt-get install -y \
+    python3-pip \
     python3-colcon-common-extensions \
     ros-humble-gazebo-ros-pkgs \
     ros-humble-xacro \
