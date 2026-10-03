@@ -211,17 +211,21 @@ class PersonTrackerNode(Node):
 
     def _load_model(self, model_path: str) -> None:
         # The Docker image exports the model at build time; a missing or
-        # empty file means the image predates that (rebuild it).
-        rebuild = 'rebuild the image (docker compose build)'
-        hint = f'nothing will be tracked; {rebuild}'
+        # empty file means the container runs an image from before that.
+        # Rebuilding alone does not help: a running container keeps its
+        # image until it is recreated, which `make image` also does.
+        fix = 'run make image on the host'
+        hint = (f'nothing will be tracked; {fix} (rebuilds the image and '
+                'recreates the container: docker compose build alone keeps '
+                'the old one)')
         if not os.path.exists(model_path):
             self.get_logger().error(
                 f'YOLO model not found at {model_path}; {hint}')
-            self._model_error = f'No YOLO model: {rebuild}'
+            self._model_error = f'No YOLO model: {fix}'
             return
         if os.path.getsize(model_path) == 0:
             self.get_logger().error(f'YOLO model {model_path} is empty; {hint}')
-            self._model_error = f'Empty YOLO model: {rebuild}'
+            self._model_error = f'Empty YOLO model: {fix}'
             return
         try:
             import onnxruntime as ort

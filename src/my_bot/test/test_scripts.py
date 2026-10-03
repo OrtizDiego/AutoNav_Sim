@@ -132,6 +132,35 @@ def test_makefile_runs_only_existing_nodes():
             assert f'{node}.py' in SCRIPTS, f'make {target} runs unknown {node}'
 
 
+def test_yolo_scenarios_need_the_model_and_make_image_provides_it():
+    """No model: stop with the fix instead of a sim that tracks nothing.
+
+    The fix (make image, named by person_tracker too) must recreate the
+    container: docker compose build alone leaves it on the old image.
+    """
+    targets = _make_targets()
+    for target in ('person-sim', 'yolo-sim'):
+        assert '"$(NEED_YOLO) $(SOURCE) && ros2 launch' in targets[target]
+    with open(os.path.join(REPO_ROOT, 'Makefile')) as f:
+        image = re.search(r'^image:\n((?:\t.*\n)+)', f.read(), re.M).group(1)
+    assert 'docker compose build' in image
+    assert 'docker compose up -d --force-recreate $(SERVICE)' in image
+
+
+def test_dockerfile_installs_pip_before_using_it():
+    """osrf/ros and ubuntu ship without pip: a bare pip3 exits with 127."""
+    dockerfile = os.path.join(REPO_ROOT, 'Dockerfile')
+    if not os.path.exists(dockerfile):
+        pytest.skip('Dockerfile not available (only src/ is mounted)')
+    with open(dockerfile) as f:
+        stages = re.split(r'^FROM ', f.read(), flags=re.M)[1:]
+    assert any('pip3 install' in stage for stage in stages)
+    for stage in stages:
+        if 'pip3 install' in stage:
+            before_pip = stage.split('pip3 install')[0]
+            assert 'python3-pip' in before_pip, stage.splitlines()[0]
+
+
 @pytest.mark.parametrize('launch_file', sorted(
     f for f in os.listdir(os.path.join(PKG_PATH, 'launch')) if f.endswith('.launch.py')))
 def test_launch_description_builds(launch_file):

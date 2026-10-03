@@ -20,6 +20,10 @@ make up
 # Enter the running container
 make shell
 # or: docker exec -it autonav_cpu bash
+
+# After Dockerfile changes: rebuild the image, recreate the container, rebuild the workspace
+# (docker compose build alone leaves the running container on the old image)
+make image
 ```
 
 ### Build & Test Workflow
@@ -217,6 +221,6 @@ Python: `cv2` (OpenCV), `numpy`, `onnxruntime-gpu` (CPU fallback), ROS 2 Python 
 ### GPU Notes
 - Container: `docker compose --profile gpu up -d` → starts `autonav_gpu`
 - `person_tracker.py` asks onnxruntime for `CUDAExecutionProvider`, but the image ships no CUDA 12 / cuDNN 9 runtime, so YOLO runs on the CPU (it logs the provider and why). The GPU container still renders Gazebo on the GPU
-- YOLOv8n model exported to `/root/models/yolov8n.onnx` during image build (`yolo_export` stage: Ultralytics only publishes `.pt` weights). An image built before that has an empty model file: person_tracker logs it and its debug image says so; rebuild with `docker compose build`
+- YOLOv8n model exported to `/root/models/yolov8n.onnx` during image build (`yolo_export` stage: Ultralytics only publishes `.pt` weights). A container on an older image has no model (or an empty file): person_tracker logs it and its debug image says so, and `make yolo-sim` / `make person-sim` stop with the fix. The fix is `make image`: `docker compose build` alone does not touch the running container
 - Override container: `make build CONTAINER=autonav_gpu`
 

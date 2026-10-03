@@ -126,6 +126,8 @@ make up                # start the container (CPU) — or: make up-gpu
 make build             # build the ROS 2 workspace (after every code change)
 ```
 
+After a change to the `Dockerfile` (or if `make yolo-sim` says there is no YOLO model), run `make image` (`make image CONTAINER=autonav_gpu` for the GPU container). It rebuilds the image, recreates the container on it and rebuilds the workspace. `docker compose build` on its own leaves the running container, which every make target uses, on the old image.
+
 Then run any scenario from the table above. `make shell` opens a shell inside the container for `ros2 topic echo` and friends.
 
 ---
@@ -200,6 +202,7 @@ src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walkin
 |--------|-------------|
 | `make up` / `make up-gpu` / `make down` | Start (CPU / GPU) or stop the container |
 | `make shell` | Enter the running container |
+| `make image` | Rebuild the image and recreate the container on it (after `Dockerfile` changes) |
 | `make build` / `make clean` | Build the workspace / remove build artifacts |
 | `make test` / `make lint` | Unit tests / linters |
 | `make sim` | Robot in the museum, Gazebo + RViz |
