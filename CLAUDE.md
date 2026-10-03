@@ -128,7 +128,8 @@ src/my_bot/
 └── package.xml
 
 src/person_actor_plugin/          # ament_cmake Gazebo plugin package
-└── src/person_actor_plugin.cpp   # Twist-driven actor; walk/run clip switching, gait synced to distance
+└── src/person_actor_plugin.cpp   # Twist-driven actor; walk/run clip switching, gait synced to distance;
+                                  # enables + thickens the bone collisions so the lidar sees the person
 ```
 
 ### Development Workflow
@@ -214,6 +215,6 @@ Python: `cv2` (OpenCV), `numpy`, `onnxruntime-gpu` (CPU fallback), ROS 2 Python 
 ### GPU Notes
 - Container: `docker compose --profile gpu up -d` → starts `autonav_gpu`
 - `person_tracker.py` auto-selects `CUDAExecutionProvider` if an NVIDIA GPU is available
-- YOLOv8n model downloaded to `/root/models/yolov8n.onnx` during image build
+- YOLOv8n model exported to `/root/models/yolov8n.onnx` during image build (`yolo_export` stage: Ultralytics only publishes `.pt` weights). An image built before that has an empty model file: person_tracker logs it and its debug image says so; rebuild with `docker compose build`
 - Override container: `make build CONTAINER=autonav_gpu`
 

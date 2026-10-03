@@ -63,7 +63,7 @@ person_tracker:
     confidence_threshold: 0.4
     nms_iou_threshold: 0.45
     redetect_every: 10
-    reseed_iou_threshold: 0.3
+    redetect_period: 0.5
     max_yolo_misses: 2
     max_coast_frames: 10
     publish_debug_image: true

@@ -18,9 +18,12 @@
 
 Pipeline per camera frame
 -------------------------
-1. Every ``redetect_every`` frames (or whenever there is no track) YOLOv8n
-   looks for people. The highest-scoring person seeds the OpenCV tracker,
-   or reseeds it if the tracker drifted (IoU below ``reseed_iou_threshold``).
+1. Every ``redetect_every`` frames or ``redetect_period`` seconds, whichever
+   comes first (or whenever there is no track), YOLOv8n looks for people.
+   The time bound keeps YOLO in charge on a slow, software-rendered camera
+   where ten frames can take seconds. The highest-scoring person (re)seeds
+   the OpenCV tracker, so tracker drift (CSRT tends to grow the box) never
+   outlives one cycle.
    If YOLO misses the person ``max_yolo_misses`` times in a row, the track
    is dropped, so a tracker stuck on the background cannot hold a lock.
 2. Between detections the OpenCV tracker (CSRT, then KCF, then MIL,
@@ -36,6 +39,7 @@ Published topics
 /person_tracker/image  sensor_msgs/Image           annotated debug view
 """
 
+import math
 import os
 from typing import Optional, Tuple
 
@@ -45,7 +49,7 @@ from geometry_msgs.msg import PointStamped
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32MultiArray
 
@@ -93,16 +97,6 @@ def select_person_box(detections: list,
         return None
     x1, y1, x2, y2, _, _ = max(people, key=lambda d: d[5])
     return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
-
-
-def box_iou(a: Box, b: Box) -> float:
-    """Intersection-over-union of two (x, y, w, h) boxes."""
-    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
-    ix2 = min(a[0] + a[2], b[0] + b[2])
-    iy2 = min(a[1] + a[3], b[1] + b[3])
-    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-    union = a[2] * a[3] + b[2] * b[3] - inter
-    return inter / union if union > 0 else 0.0
 
 
 def make_tracker():
@@ -174,7 +168,7 @@ class PersonTrackerNode(Node):
         self.declare_parameter('confidence_threshold', 0.4)
         self.declare_parameter('nms_iou_threshold', 0.45)
         self.declare_parameter('redetect_every', 10)
-        self.declare_parameter('reseed_iou_threshold', 0.3)
+        self.declare_parameter('redetect_period', 0.5)
         self.declare_parameter('max_yolo_misses', 2)
         self.declare_parameter('max_coast_frames', 10)
         self.declare_parameter('publish_debug_image', True)
@@ -183,7 +177,7 @@ class PersonTrackerNode(Node):
         self._conf = float(gp('confidence_threshold').value)
         self._iou = float(gp('nms_iou_threshold').value)
         self._redetect_every = max(1, int(gp('redetect_every').value))
-        self._reseed_iou = float(gp('reseed_iou_threshold').value)
+        self._redetect_period = float(gp('redetect_period').value)
         self._max_misses = int(gp('max_yolo_misses').value)
         self._max_coast = int(gp('max_coast_frames').value)
         self._debug = bool(gp('publish_debug_image').value)
@@ -196,11 +190,16 @@ class PersonTrackerNode(Node):
         self._kf: Optional[BoxKalman] = None
         self._box: Optional[Box] = None
         self._frames_since_detect = 0
+        self._last_yolo = -math.inf
         self._yolo_misses = 0
         self._coast = 0
 
+        # Depth 1: when inference is slower than the camera, work on the
+        # newest frame instead of a queue of stale ones (the box would lag).
+        latest_frame = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                                  reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(
-            Image, '/camera/image_raw', self._on_image, qos_profile_sensor_data)
+            Image, '/camera/image_raw', self._on_image, latest_frame)
         self._bbox_pub = self.create_publisher(Float32MultiArray, '/person_bbox', 10)
         self._track_pub = self.create_publisher(PointStamped, '/person_track', 10)
         self._detected_pub = self.create_publisher(Bool, '/person_detected', 10)
@@ -209,9 +208,15 @@ class PersonTrackerNode(Node):
     # ------------------------------------------------------------------
 
     def _load_model(self, model_path: str) -> None:
+        # The Docker image exports the model at build time; a missing or
+        # empty file means the image predates that (rebuild it).
+        hint = 'nothing will be tracked; rebuild the image (docker compose build)'
         if not os.path.exists(model_path):
             self.get_logger().error(
-                f'YOLO model not found at {model_path}; nothing will be tracked')
+                f'YOLO model not found at {model_path}; {hint}')
+            return
+        if os.path.getsize(model_path) == 0:
+            self.get_logger().error(f'YOLO model {model_path} is empty; {hint}')
             return
         try:
             import onnxruntime as ort
@@ -221,7 +226,7 @@ class PersonTrackerNode(Node):
             self.get_logger().info(
                 f'YOLO loaded ({self._session.get_providers()[0]})')
         except Exception as e:  # noqa: BLE001
-            self.get_logger().error(f'YOLO load failed: {e}')
+            self.get_logger().error(f'YOLO load failed: {e}; {hint}')
 
     def _reset(self) -> None:
         self._tracker = None
@@ -241,10 +246,13 @@ class PersonTrackerNode(Node):
         h, w = frame.shape[:2]
 
         self._frames_since_detect += 1
+        now = self.get_clock().now().nanoseconds * 1e-9
         detected: Optional[Box] = None
         if (self._tracker is None
-                or self._frames_since_detect >= self._redetect_every):
+                or self._frames_since_detect >= self._redetect_every
+                or now - self._last_yolo >= self._redetect_period):
             self._frames_since_detect = 0
+            self._last_yolo = now
             detected = self._run_yolo(frame)
             if detected is None and self._tracker is not None:
                 self._yolo_misses += 1
@@ -257,7 +265,7 @@ class PersonTrackerNode(Node):
         measured: Optional[Box] = None
         if detected is not None:
             measured = detected
-            self._reseed_if_needed(frame, detected)
+            self._seed_tracker(frame, detected)
         elif self._tracker is not None:
             ok, bb = self._tracker.update(frame)
             if ok:
@@ -298,11 +306,8 @@ class PersonTrackerNode(Node):
             return None
         return clip_box(box, frame.shape[1], frame.shape[0])
 
-    def _reseed_if_needed(self, frame, box: Box) -> None:
-        """Start a tracker, or restart it if it drifted away from YOLO."""
-        if (self._tracker is not None and self._box is not None
-                and box_iou(self._box, box) >= self._reseed_iou):
-            return
+    def _seed_tracker(self, frame, box: Box) -> None:
+        """(Re)start the tracker on a YOLO box; YOLO is the reference."""
         try:
             self._tracker = make_tracker()
             self._tracker.init(frame, tuple(box))
@@ -328,6 +333,9 @@ class PersonTrackerNode(Node):
 
         if self._debug and self._debug_pub.get_subscription_count() > 0:
             vis = frame.copy()
+            if self._session is None:
+                cv2.putText(vis, 'YOLO model not loaded (see log)', (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             if box is not None:
                 color = (0, 200, 0) if self._coast == 0 else (0, 200, 255)
                 x, y, w, h = box

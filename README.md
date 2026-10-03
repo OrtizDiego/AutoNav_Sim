@@ -91,14 +91,14 @@ Selector("SecurityGuard")
 ```
 
 * **person_controller** animates the pedestrian: it **walks** between random spots, **runs** away once the robot's tracker locks on, and is **exhausted** after a sprint. Gazebo actors have no physics, so it steers on the saved museum map. It only picks targets in line of sight, takes the heading closest to its goal that has free floor ahead, and caps its speed so it can always stop before a wall. A test simulates minutes of walking and fleeing on the real map and checks the person never gets within 0.5 m of a wall.
-* **person_tracker**: YOLOv8n reseeds an OpenCV tracker every 10 frames; a Kalman filter smooths the box and coasts through short dropouts.
+* **person_tracker**: YOLOv8n reseeds an OpenCV tracker every 10 frames or 0.5 s, whichever comes first; a Kalman filter smooths the box and coasts through short dropouts.
 * **sensor_fusion** (mode `person`) ranges the box with the LiDAR and falls back to a monocular estimate (person height / feet ground contact) when the beams miss the legs.
 * **security_guard_bt** publishes its active protocol on `/security_guard/state`, mission metrics on `/security_guard/metrics` and sighting markers on `/intruder_sightings`.
 * **E-stop:** `ros2 service call /trigger_estop std_srvs/srv/Trigger` latches it (the robot halts and Nav2 is cancelled). `ros2 service call /clear_estop std_srvs/srv/Trigger` releases it.
 
 ### `make yolo-sim`: perception proof
 
-A person stands 3 m in front of the robot, with a crate and a barrel to either side. RViz shows the **Sensor fusion** image: the YOLO box around the person only, labelled with the fused range (≈2.8–3.0 m, with its source, lidar or camera) and bearing. Check it numerically with `ros2 topic echo /target_range`. Drive around with `make teleop` and watch range and bearing follow. Enable the **YOLO tracker** image display to see the raw tracker output.
+A person stands 3 m in front of the robot, with a crate and a barrel to either side. RViz shows the **Sensor fusion** image: the YOLO box around the person only, labelled with the fused range (≈2.6 m, where the lidar hits the front shin) with its source (lidar or camera) and bearing. Check it numerically with `ros2 topic echo /target_range`. Drive around with `make teleop` and watch range and bearing follow. Enable the **YOLO tracker** image display to see the raw tracker output.
 
 ---
 
@@ -121,7 +121,7 @@ A person stands 3 m in front of the robot, with a crate and a barrel to either s
 ### Setup
 
 ```bash
-docker compose build   # build the image
+docker compose build   # build the image (also exports the YOLOv8n ONNX model)
 make up                # start the container (CPU) — or: make up-gpu
 make build             # build the ROS 2 workspace (after every code change)
 ```
