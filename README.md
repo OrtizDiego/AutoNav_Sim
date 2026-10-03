@@ -219,6 +219,9 @@ src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walkin
 | `make nav` | Nav2 only, next to an already running sim |
 | `make system-monitor` | Watchdog + e-stop services (already part of person-sim) |
 | `make perf` | Real-time factor, topic rates and detection latency of a running scenario |
+| `make stop` | Stop every scenario process in the container (each scenario also does this first) |
+
+The container uses ROS domain 42 and Gazebo port 11346 (`compose.yaml`), so it does not merge with another simulation on the same machine (both use host networking). Override with `AUTONAV_ROS_DOMAIN_ID` / `AUTONAV_GAZEBO_PORT` on the host, then `make down && make up && make build`.
 
 ---
 

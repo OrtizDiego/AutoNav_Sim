@@ -63,7 +63,12 @@ make slam            # SLAM (with sim + teleop), then make save-map NAME=x
 make nav             # Nav2 only, next to a running sim
 make system-monitor  # watchdog + /trigger_estop, /clear_estop (already in person-sim)
 make perf            # real-time factor, topic rates (sim Hz), message ages (latency)
+make stop            # stop every scenario process in the container (src/stop_sim.sh)
 ```
+Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not stop a `docker exec`, and gzserver can outlive Ctrl+C. Leftovers hold Gazebo's port (the old world stays on screen) and share node names with the new run (Nav2 bringup aborts → "Frame [map] does not exist"; doubled /cmd_vel).
+
+### Isolation
+`compose.yaml` sets `ROS_DOMAIN_ID` (default 42) and `GAZEBO_MASTER_URI` (port 11346; Gazebo's default is 11345). The container uses `network_mode: host`, so on the defaults another simulation on the host merges with this one (shared gzserver, mixed topics). Override with `AUTONAV_ROS_DOMAIN_ID` / `AUTONAV_GAZEBO_PORT`; changing them needs `make down && make up && make build`.
 
 ## Architecture
 

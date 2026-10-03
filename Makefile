@@ -21,10 +21,13 @@ NEED_YOLO := test -s $(YOLO_MODEL) || { \
 	echo 'No YOLO model at $(YOLO_MODEL): $(CONTAINER_NAME) runs an image from before the model export.'; \
 	echo 'Fix, on the host: make image CONTAINER=$(CONTAINER_NAME)  (rebuilds the image, recreates the container)'; \
 	exit 1; };
+# A scenario starts from a clean container: stop what an earlier run left
+# behind (closing a terminal does not stop docker exec; see src/stop_sim.sh).
+STOP_LEFTOVERS := bash src/stop_sim.sh;
 
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
-        ball-sim teleop-ball person-sim yolo-sim perf
+        ball-sim teleop-ball person-sim yolo-sim perf stop
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -59,6 +62,8 @@ help:
 	@echo "  nav             - Nav2 only (with an already running sim)"
 	@echo "  system-monitor  - Sensor watchdog + /trigger_estop (built into person-sim)"
 	@echo "  perf            - Real-time factor, topic rates and latencies of a running scenario"
+	@echo "  stop            - Stop every scenario process in the container (each scenario"
+	@echo "                    also does this first: a closed terminal leaves them running)"
 
 # --- DOCKER MANAGEMENT ---
 
@@ -107,19 +112,19 @@ test:
 # --- SCENARIOS ---
 
 sim:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) sim.launch.py"
 
 nav-sim:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) nav_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) nav_sim.launch.py"
 
 ball-sim:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) ball_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) ball_sim.launch.py"
 
 person-sim:
-	$(EXEC) "$(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
 
 yolo-sim:
-	$(EXEC) "$(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py"
 
 # --- TOOLS ---
 
@@ -144,3 +149,6 @@ system-monitor:
 
 perf:
 	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) perf_monitor --ros-args -p use_sim_time:=true"
+
+stop:
+	$(EXEC) "$(STOP_LEFTOVERS)"
