@@ -73,6 +73,21 @@ class TestPerfMonitorNode:
         ros_params['watch_camera'] = False
         assert '/camera/image_raw' not in pm.PerfMonitorNode().subscriptions
 
+    def test_first_window_before_clock_is_dropped(self, node):
+        node._window = (0.0, node.wall[0])            # started before /clock
+        target = Vector3Stamped()
+        target.header.stamp = _stamp(node.clock.seconds - 1.0)
+        node.subscriptions['/target'](target)
+        node.wall[0] += 5.0
+        node.timers[0]()
+        assert node.publishers['/perf_monitor'].msgs == []
+        assert node.logger.messages('info') == ['clock received, measuring']
+        assert node._stats['/target'].count == 0
+        node.clock.advance(1.0)
+        node.wall[0] += 1.0
+        node.timers[0]()
+        assert node.publishers['/perf_monitor'].last.status[0].message == '1.00'
+
     def test_reports_rtf_rates_and_ages(self, node):
         # 2 s of simulation take 4 s of wall time: the sim runs at half speed
         for i in range(4):

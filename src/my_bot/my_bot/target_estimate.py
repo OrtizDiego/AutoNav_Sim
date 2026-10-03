@@ -62,7 +62,9 @@ def yaw_from_quaternion(q) -> float:
 class TargetEstimate:
     """Last target measurement, re-expressed relative to the current pose."""
 
-    def __init__(self, history_secs: float = 2.0):
+    # 5 s: person-sim measured /target ages up to 2.1 s while the
+    # simulator was CPU-starved; older measurements clamp to the oldest pose.
+    def __init__(self, history_secs: float = 5.0):
         self._history_secs = history_secs
         self._poses = deque()  # (t, x, y, yaw), t increasing
         self._xy: Optional[Tuple[float, float]] = None  # odom, when ranged

@@ -31,6 +31,9 @@ Every ``report_period`` seconds this node logs, and publishes on
 Watched: /camera/image_raw (``watch_camera``; subscribing to raw images
 costs transport itself), /scan, /odom, /person_bbox, /target, /cmd_vel.
 Run with use_sim_time:=true so ages and rates are in simulation time.
+gazebo_ros publishes /clock at 10 Hz, so this node's clock trails the
+sensors' stamps by 0-100 ms: ages read about 50 ms low, and a sensor
+published as it is stamped (odom, scan) shows a small negative age.
 """
 
 import time
@@ -126,6 +129,15 @@ class PerfMonitorNode(Node):
 
     def _report(self) -> None:
         sim_now, wall_now = self._sim_now(), time.monotonic()
+        if self._window[0] <= 0.0:
+            # Started before /clock arrived: sim time jumped from 0 during
+            # this window, so its rates and ages are meaningless. Drop it.
+            self._window = (sim_now, wall_now)
+            for stats in self._stats.values():
+                stats.summary(1.0)
+            self.get_logger().info(
+                'waiting for /clock' if sim_now <= 0.0 else 'clock received, measuring')
+            return
         sim_elapsed = sim_now - self._window[0]
         rtf = real_time_factor(sim_elapsed, wall_now - self._window[1])
         self._window = (sim_now, wall_now)
