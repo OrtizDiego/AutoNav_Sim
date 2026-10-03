@@ -43,6 +43,13 @@
 // Gazebo gives every bone a 2 cm box collision but only enables them once
 // the links are Init()ed (as Gazebo's ActorCollisionsPlugin does); even
 // then 2 cm slips between 1-degree lidar beams, so the boxes are thickened.
+// Init() also gives every link an ODE body, which then owns the link pose:
+//   - SetWorldPose() must notify physics, or the body of the canonical link
+//     (the one holding the skin) stays at the spawn pose and ODE writes it
+//     back over the model every step: the person flickers to lying flat
+//     on the floor (more often the faster the sim runs).
+//   - The bodies are kinematic, so floor and robot contacts cannot push
+//     the bones between the actor's 30 Hz skeleton updates.
 //
 // The animation factors were measured from Gazebo's walk.dae (5.75 s clip,
 // 1.38 m of hip travel) and run.dae (7.83 s clip, 4.59 m of hip travel).
@@ -149,6 +156,7 @@ private:
   {
     for (const auto & link : actor_->GetLinks()) {
       link->Init();
+      link->SetKinematic(true);
       for (const auto & collision : link->GetCollisions()) {
         auto box = boost::dynamic_pointer_cast<gazebo::physics::BoxShape>(
           collision->GetShape());
@@ -210,7 +218,8 @@ private:
     // offsets of pi/2 (same convention as Gazebo's ActorPlugin).
     ignition::math::Pose3d pose(
       x_, y_, height_, M_PI_2, 0.0, heading_ + M_PI_2);
-    actor_->SetWorldPose(pose, false, false);
+    // notify = true: move the links' ODE bodies too (see the header).
+    actor_->SetWorldPose(pose, true, false);
     actor_->SetScriptTime(actor_->ScriptTime() + dist * factor);
 
     if (now - last_odom_time_ >= 1.0 / 30.0) {

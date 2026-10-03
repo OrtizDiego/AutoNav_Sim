@@ -184,6 +184,8 @@ class PersonTrackerNode(Node):
 
         self._bridge = CvBridge()
         self._session = None
+        # Why there is no session, drawn on the debug image.
+        self._model_error = ''
         self._load_model(str(gp('model_path').value))
 
         self._tracker = None
@@ -210,23 +212,41 @@ class PersonTrackerNode(Node):
     def _load_model(self, model_path: str) -> None:
         # The Docker image exports the model at build time; a missing or
         # empty file means the image predates that (rebuild it).
-        hint = 'nothing will be tracked; rebuild the image (docker compose build)'
+        rebuild = 'rebuild the image (docker compose build)'
+        hint = f'nothing will be tracked; {rebuild}'
         if not os.path.exists(model_path):
             self.get_logger().error(
                 f'YOLO model not found at {model_path}; {hint}')
+            self._model_error = f'No YOLO model: {rebuild}'
             return
         if os.path.getsize(model_path) == 0:
             self.get_logger().error(f'YOLO model {model_path} is empty; {hint}')
+            self._model_error = f'Empty YOLO model: {rebuild}'
             return
         try:
             import onnxruntime as ort
-            self._session = ort.InferenceSession(
-                model_path,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-            self.get_logger().info(
-                f'YOLO loaded ({self._session.get_providers()[0]})')
+            # Without CUDA 12 + cuDNN 9 in the image, onnxruntime prints a
+            # red error before falling back to CPU, which looks like the
+            # cause when something else fails. Report the provider instead.
+            set_severity = getattr(ort, 'set_default_logger_severity', None)
+            if set_severity is not None:
+                set_severity(4)
+            try:
+                self._session = ort.InferenceSession(
+                    model_path,
+                    providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            finally:
+                if set_severity is not None:
+                    set_severity(2)
+            provider = self._session.get_providers()[0]
+            self.get_logger().info(f'YOLO loaded ({provider})')
+            if provider != 'CUDAExecutionProvider':
+                self.get_logger().info(
+                    'CUDA unavailable to onnxruntime (needs a GPU plus the '
+                    'CUDA 12 and cuDNN 9 libraries); YOLO runs on the CPU')
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f'YOLO load failed: {e}; {hint}')
+            self._model_error = 'YOLO model failed to load (see log)'
 
     def _reset(self) -> None:
         self._tracker = None
@@ -334,8 +354,9 @@ class PersonTrackerNode(Node):
         if self._debug and self._debug_pub.get_subscription_count() > 0:
             vis = frame.copy()
             if self._session is None:
-                cv2.putText(vis, 'YOLO model not loaded (see log)', (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(vis, self._model_error or 'YOLO model not loaded',
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            (0, 0, 255), 2)
             if box is not None:
                 color = (0, 200, 0) if self._coast == 0 else (0, 200, 255)
                 x, y, w, h = box

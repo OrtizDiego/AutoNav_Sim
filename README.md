@@ -29,7 +29,7 @@ This project demonstrates expertise in:
 
 * **Full-Stack Robotics:** From URDF/Xacro modeling (with realistic sensor noise) to high-level behavior scripting.
 * **Autonomous Navigation:** The **Nav2** stack with A* global planner and DWB local planner, AMCL localization and `slam_toolbox` mapping.
-* **Deep Learning Perception:** YOLOv8-nano (ONNX, CUDA → CPU fallback) seeding an OpenCV tracker smoothed by a Kalman filter.
+* **Deep Learning Perception:** YOLOv8-nano (ONNX on CPU; CUDA if the image has the CUDA 12 runtime) seeding an OpenCV tracker smoothed by a Kalman filter.
 * **Sensor Fusion:** Camera boxes ranged with the LiDAR, cross-checked against a monocular estimate.
 * **Behavior Trees:** A `py_trees` security guard that patrols, follows intruders, searches for them and obeys an e-stop.
 * **DevOps & Reproducibility:** Fully containerized development environment with CI/CD via GitHub Actions.

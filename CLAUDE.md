@@ -129,7 +129,9 @@ src/my_bot/
 
 src/person_actor_plugin/          # ament_cmake Gazebo plugin package
 └── src/person_actor_plugin.cpp   # Twist-driven actor; walk/run clip switching, gait synced to distance;
-                                  # enables + thickens the bone collisions so the lidar sees the person
+                                  # enables + thickens the bone collisions so the lidar sees the person;
+                                  # those links get kinematic ODE bodies, so SetWorldPose must notify
+                                  # physics (else the stale canonical body lays the person flat)
 ```
 
 ### Development Workflow
@@ -214,7 +216,7 @@ Python: `cv2` (OpenCV), `numpy`, `onnxruntime-gpu` (CPU fallback), ROS 2 Python 
 
 ### GPU Notes
 - Container: `docker compose --profile gpu up -d` → starts `autonav_gpu`
-- `person_tracker.py` auto-selects `CUDAExecutionProvider` if an NVIDIA GPU is available
+- `person_tracker.py` asks onnxruntime for `CUDAExecutionProvider`, but the image ships no CUDA 12 / cuDNN 9 runtime, so YOLO runs on the CPU (it logs the provider and why). The GPU container still renders Gazebo on the GPU
 - YOLOv8n model exported to `/root/models/yolov8n.onnx` during image build (`yolo_export` stage: Ultralytics only publishes `.pt` weights). An image built before that has an empty model file: person_tracker logs it and its debug image says so; rebuild with `docker compose build`
 - Override container: `make build CONTAINER=autonav_gpu`
 

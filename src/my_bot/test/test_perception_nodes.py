@@ -308,6 +308,20 @@ class TestPersonTrackerNode:
         assert node._session.path == str(model)
         assert node._session.providers[0] == 'CUDAExecutionProvider'
         assert 'CPUExecutionProvider' in node.logger.messages('info')[0]
+        # CUDA was asked for but not granted: say why YOLO runs on the CPU.
+        assert 'CUDA' in node.logger.messages('info')[1]
+
+    def test_cuda_fallback_noise_is_silenced_during_load(
+            self, tmp_path, monkeypatch, ros_params):
+        model = tmp_path / 'yolo.onnx'
+        model.write_bytes(b'onnx')
+        severities = []
+        monkeypatch.setitem(sys.modules, 'onnxruntime', types.SimpleNamespace(
+            InferenceSession=FakeSession,
+            set_default_logger_severity=severities.append))
+        ros_params['model_path'] = str(model)
+        pt.PersonTrackerNode()
+        assert severities == [4, 2]           # fatal only, then restored
 
     def test_model_load_failure_is_logged(self, tmp_path, monkeypatch, ros_params):
         model = tmp_path / 'yolo.onnx'
@@ -321,6 +335,7 @@ class TestPersonTrackerNode:
         node = pt.PersonTrackerNode()
         assert node._session is None
         assert 'bad model' in node.logger.messages('error')[0]
+        assert 'failed' in node._model_error
 
     def test_empty_model_file_is_reported(self, tmp_path, ros_params):
         # What a failed download at image build time used to leave behind.
@@ -330,6 +345,7 @@ class TestPersonTrackerNode:
         node = pt.PersonTrackerNode()
         assert node._session is None
         assert 'empty' in node.logger.messages('error')[0]
+        assert 'rebuild the image' in node._model_error   # drawn below
         debug = node.publishers['/person_tracker/image']
         debug.subscribers = 1
         _see(node)
