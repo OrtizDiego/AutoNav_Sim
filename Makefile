@@ -5,14 +5,24 @@ SHELL := /bin/bash
 # Override: make build CONTAINER=autonav_gpu  (for GPU mode)
 CONTAINER ?= autonav_cpu
 CONTAINER_NAME := $(CONTAINER)
+# Compose service behind the container: autonav_cpu -> cpu, autonav_gpu -> gpu
+SERVICE := $(patsubst autonav_%,%,$(CONTAINER_NAME))
 WS_PATH := /root/dev_ws
 PACKAGE_NAME := my_bot
 
 # Helper to run commands inside the container
 EXEC := docker exec -it $(CONTAINER_NAME) bash -c
 SOURCE := source /opt/ros/humble/setup.bash && source install/setup.bash
+# The YOLO scenarios stop here instead of tracking nothing when the container
+# runs an image from before the model export (docker compose build alone
+# leaves a running container on its old image; make image recreates it).
+YOLO_MODEL := /root/models/yolov8n.onnx
+NEED_YOLO := test -s $(YOLO_MODEL) || { \
+	echo 'No YOLO model at $(YOLO_MODEL): $(CONTAINER_NAME) runs an image from before the model export.'; \
+	echo 'Fix, on the host: make image CONTAINER=$(CONTAINER_NAME)  (rebuilds the image, recreates the container)'; \
+	exit 1; };
 
-.PHONY: help up up-gpu down shell build clean lint test \
+.PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
         ball-sim teleop-ball person-sim yolo-sim
 
@@ -24,6 +34,8 @@ help:
 	@echo "  up-gpu          - Start the Docker container (GPU mode, NVIDIA WSL2)"
 	@echo "  down            - Stop the Docker container"
 	@echo "  shell           - Enter the running container"
+	@echo "  image           - Rebuild the image and recreate the container on it"
+	@echo "                    (after Dockerfile changes; also rebuilds the workspace)"
 	@echo "  Override: make <target> CONTAINER=autonav_gpu"
 	@echo ""
 	@echo "Development:"
@@ -61,6 +73,14 @@ down:
 shell:
 	docker exec -it $(CONTAINER_NAME) bash
 
+# docker compose build alone does not touch the running container, so every
+# make target would keep using the old image. Recreate it, then rebuild the
+# workspace (the image's install/ is a copy, make build symlinks src/).
+image:
+	docker compose build
+	docker compose up -d --force-recreate $(SERVICE)
+	$(MAKE) clean build CONTAINER=$(CONTAINER_NAME)
+
 # --- DEVELOPMENT ---
 
 build:
@@ -95,10 +115,10 @@ ball-sim:
 	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) ball_sim.launch.py"
 
 person-sim:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
+	$(EXEC) "$(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
 
 yolo-sim:
-	$(EXEC) "$(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py"
+	$(EXEC) "$(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py"
 
 # --- TOOLS ---
 

@@ -132,6 +132,21 @@ def test_makefile_runs_only_existing_nodes():
             assert f'{node}.py' in SCRIPTS, f'make {target} runs unknown {node}'
 
 
+def test_yolo_scenarios_need_the_model_and_make_image_provides_it():
+    """No model: stop with the fix instead of a sim that tracks nothing.
+
+    The fix (make image, named by person_tracker too) must recreate the
+    container: docker compose build alone leaves it on the old image.
+    """
+    targets = _make_targets()
+    for target in ('person-sim', 'yolo-sim'):
+        assert '"$(NEED_YOLO) $(SOURCE) && ros2 launch' in targets[target]
+    with open(os.path.join(REPO_ROOT, 'Makefile')) as f:
+        image = re.search(r'^image:\n((?:\t.*\n)+)', f.read(), re.M).group(1)
+    assert 'docker compose build' in image
+    assert 'docker compose up -d --force-recreate $(SERVICE)' in image
+
+
 @pytest.mark.parametrize('launch_file', sorted(
     f for f in os.listdir(os.path.join(PKG_PATH, 'launch')) if f.endswith('.launch.py')))
 def test_launch_description_builds(launch_file):

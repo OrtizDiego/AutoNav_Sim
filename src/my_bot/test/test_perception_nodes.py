@@ -294,6 +294,9 @@ class TestPersonTrackerNode:
             '/person_tracker/image'}
         assert node._session is None
         assert 'not found' in node.logger.messages('error')[0]
+        # docker compose build alone leaves the container on its old image.
+        assert 'make image' in node.logger.messages('error')[0]
+        assert 'make image' in node._model_error
         assert _see(node) == (False, [])
         assert node.publishers['/person_track'].msgs == []
 
@@ -345,7 +348,7 @@ class TestPersonTrackerNode:
         node = pt.PersonTrackerNode()
         assert node._session is None
         assert 'empty' in node.logger.messages('error')[0]
-        assert 'rebuild the image' in node._model_error   # drawn below
+        assert 'make image' in node._model_error   # drawn below
         debug = node.publishers['/person_tracker/image']
         debug.subscribers = 1
         _see(node)
