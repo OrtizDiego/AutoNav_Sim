@@ -49,8 +49,12 @@ COPY --from=yolo_export /export/yolov8n.onnx /root/models/yolov8n.onnx
 WORKDIR /root/dev_ws
 COPY src ./src
 
-# 5. Build the workspace (initially empty)
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && colcon build"
+# 5. Build the workspace with --symlink-install, like `make build`.
+# A plain build here makes the next `make build` switch modes: colcon then
+# deletes each data file before linking it, and fails ("[Errno 2] No such
+# file or directory: .../install/my_bot/share/...") on any file the image's
+# copy of src did not have, e.g. a launch file added since the image was built.
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install"
 
 # 6. Add sourcing to bashrc so we don't have to type it every time
 RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc

@@ -192,6 +192,8 @@ ros2 topic pub -1 /initialpose geometry_msgs/PoseWithCovarianceStamped "{ header
 
 **"Node not found" errors** → Workspace may be out of sync; run `make clean && make build`
 
+**`make build` fails with `[Errno 2] No such file or directory: .../install/my_bot/share/...`** → the container's `install/` came from a plain (non-symlink) build of an older `src`; run `make clean && make build`. The Dockerfile builds with `--symlink-install` so a fresh image does not hit this.
+
 ## Entry Points (Console Scripts)
 
 Defined in `setup.py` (test_scripts.py checks they match the modules):
