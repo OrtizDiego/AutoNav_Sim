@@ -23,7 +23,8 @@ the fused output, so they do not care which detector produced the box.
 Modes (parameter ``mode``)
 --------------------------
 hsv     Largest red blob in /camera/image_raw (the ball in ball-sim).
-person  Box from person_tracker on /person_bbox (YOLO + tracker).
+person  Box from person_tracker on /person_bbox (YOLO + tracker, a
+        PolygonStamped stamped with the camera image's time).
 
 Ranging
 -------
@@ -37,8 +38,18 @@ the lidar disagrees (beams hit the background) the monocular value wins.
 Sign convention: image columns grow to the right, ROS angles grow to the
 left, so bearings are negated (REP-103, same as LaserScan and angular.z).
 
+Timing: every output carries the camera image's timestamp, and the scan used
+for ranging is the one closest to it, so the followers can compensate the
+detection pipeline's latency with odometry (my_bot.target_estimate).
+
 Publishes
 ---------
+/target            geometry_msgs/Vector3Stamped vector.x = bearing (rad,
+                                                positive left, NaN if no
+                                                target), vector.y = range (m,
+                                                -1.0 if unknown); stamp = image
+                                                capture time. What followers
+                                                use.
 /target_range      std_msgs/Float32             metres, -1.0 if unknown
 /target_bearing    std_msgs/Float32             rad, positive left; NaN if
                                                 no target
@@ -46,19 +57,22 @@ Publishes
 /sensor_fusion/image  sensor_msgs/Image         annotated debug view
 """
 
+from collections import deque
 import math
 import threading
 from typing import List, Optional, Tuple
 
 import cv2
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PolygonStamped, Vector3Stamped
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
-from std_msgs.msg import Float32, Float32MultiArray, Header
+from std_msgs.msg import Float32, Header
+
+from my_bot.target_estimate import stamp_to_sec
 
 Box = Tuple[float, float, float, float]
 
@@ -160,6 +174,29 @@ def fuse_range(lidar: Optional[float], mono: Optional[float],
     return mono
 
 
+def polygon_to_box(points) -> Optional[Box]:
+    """(x, y, w, h) bounding box of polygon points, or None if empty."""
+    if not points:
+        return None
+    xs = [p.x for p in points]
+    ys = [p.y for p in points]
+    return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+
+def nearest_scan(scans, t: Optional[float]):
+    """Return the scan stamped closest to ``t`` (the newest if unknown)."""
+    if not scans:
+        return None
+    if t is None:
+        return scans[-1]
+    best, best_dt = scans[-1], math.inf
+    for scan in scans:
+        ts = stamp_to_sec(scan.header.stamp)
+        if ts is not None and abs(ts - t) < best_dt:
+            best, best_dt = scan, abs(ts - t)
+    return best
+
+
 def detect_red_blob(bgr: np.ndarray, lower1, upper1, lower2, upper2,
                     min_area: float) -> Optional[Box]:
     """Bounding box (x, y, w, h) of the largest red blob, or None."""
@@ -221,7 +258,9 @@ class SensorFusionNode(Node):
 
         self._bridge = CvBridge()
         self._lock = threading.Lock()
-        self._scan: Optional[LaserScan] = None
+        # ~1 s of 10 Hz scans: the image a box came from is older than the
+        # newest scan by the detection latency.
+        self._scans = deque(maxlen=10)
         self._frame = None  # latest camera frame, person mode debug view
 
         self.create_subscription(
@@ -230,8 +269,9 @@ class SensorFusionNode(Node):
             Image, '/camera/image_raw', self._camera_cb, qos_profile_sensor_data)
         if self._mode == 'person':
             self.create_subscription(
-                Float32MultiArray, '/person_bbox', self._bbox_cb, 10)
+                PolygonStamped, '/person_bbox', self._bbox_cb, 10)
 
+        self._target_pub = self.create_publisher(Vector3Stamped, '/target', 10)
         self._pos_pub = self.create_publisher(PointStamped, '/target_position', 10)
         self._range_pub = self.create_publisher(Float32, '/target_range', 10)
         self._bearing_pub = self.create_publisher(Float32, '/target_bearing', 10)
@@ -242,7 +282,7 @@ class SensorFusionNode(Node):
 
     def _scan_cb(self, msg: LaserScan):
         with self._lock:
-            self._scan = msg
+            self._scans.append(msg)
 
     def _camera_cb(self, msg: Image):
         if self._mode == 'person' and not self._want_debug():
@@ -260,12 +300,14 @@ class SensorFusionNode(Node):
                               self._lower2, self._upper2, self._min_area)
         self._fuse(box, msg.header, frame, 'ball')
 
-    def _bbox_cb(self, msg: Float32MultiArray):
-        box = tuple(msg.data[:4]) if len(msg.data) >= 4 else None
+    def _bbox_cb(self, msg: PolygonStamped):
+        box = polygon_to_box(msg.polygon.points)
         with self._lock:
             frame = self._frame
-        header = Header(stamp=self.get_clock().now().to_msg(),
-                        frame_id='camera_link_optical')
+        stamp = msg.header.stamp
+        if stamp_to_sec(stamp) is None:  # unstamped box: best guess is now
+            stamp = self.get_clock().now().to_msg()
+        header = Header(stamp=stamp, frame_id='camera_link_optical')
         self._fuse(box, header, frame, 'person')
 
     # ------------------------------------------------------------------
@@ -277,8 +319,15 @@ class SensorFusionNode(Node):
         if box is not None:
             x, _, w, _ = box
             bearing = compute_bearing(x + w / 2.0, self._cx, self._fx)
-            rng, source = self._range_for(box)
+            rng, source = self._range_for(box, stamp_to_sec(header.stamp))
 
+        target = Vector3Stamped()
+        target.header.stamp = header.stamp
+        target.header.frame_id = 'base_link'
+        target.vector.x = bearing
+        target.vector.y = float(rng) if rng else -1.0
+        target.vector.z = 0.0
+        self._target_pub.publish(target)
         self._bearing_pub.publish(Float32(data=bearing))
         self._range_pub.publish(Float32(data=float(rng) if rng else -1.0))
         if rng:
@@ -292,11 +341,15 @@ class SensorFusionNode(Node):
         if frame is not None and self._want_debug():
             self._publish_debug(frame, header, box, rng, bearing, source, label)
 
-    def _range_for(self, box: Box) -> Tuple[Optional[float], str]:
-        """Fused range to the boxed target and which sensor produced it."""
+    def _range_for(self, box: Box, t: Optional[float] = None
+                   ) -> Tuple[Optional[float], str]:
+        """Fused range to the boxed target and which sensor produced it.
+
+        ``t`` is the image's capture time; the scan closest to it is used.
+        """
         x, _, w, _ = box
         with self._lock:
-            scan = self._scan
+            scan = nearest_scan(self._scans, t)
         lidar = None
         if scan is not None:
             margin = math.radians(1.0)

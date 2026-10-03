@@ -77,6 +77,18 @@ class PointStamped(_Stamped):
         super().__init__(**fields)
 
 
+class Vector3Stamped(_Stamped):
+    def __init__(self, **fields):
+        self.vector = _Vec()
+        super().__init__(**fields)
+
+
+class PolygonStamped(_Stamped):
+    def __init__(self, **fields):
+        self.polygon = types.SimpleNamespace(points=[])
+        super().__init__(**fields)
+
+
 class PoseStamped(_Stamped):
     def __init__(self, **fields):
         self.pose = types.SimpleNamespace(position=_Vec(), orientation=_quat())
@@ -358,7 +370,9 @@ _module('builtin_interfaces')
 _module('builtin_interfaces.msg', Time=_Msg)
 _module('geometry_msgs')
 _module('geometry_msgs.msg', Twist=Twist, PoseStamped=PoseStamped,
-        TwistStamped=TwistStamped, PointStamped=PointStamped, **_plain('Pose'))
+        TwistStamped=TwistStamped, PointStamped=PointStamped,
+        Vector3Stamped=Vector3Stamped, PolygonStamped=PolygonStamped,
+        Point32=_Vec, **_plain('Pose'))
 _module('sensor_msgs')
 _module('sensor_msgs.msg', Image=Image, LaserScan=LaserScan)
 _module('std_msgs')

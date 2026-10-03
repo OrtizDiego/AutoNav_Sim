@@ -25,10 +25,10 @@ import types
 
 import cv2
 from diagnostic_msgs.msg import DiagnosticStatus
+from geometry_msgs.msg import PolygonStamped
 import numpy as np
 import pytest
 from sensor_msgs.msg import Image, LaserScan
-from std_msgs.msg import Float32MultiArray
 
 from my_bot import person_tracker as pt
 from my_bot import sensor_fusion as sf
@@ -76,7 +76,7 @@ class TestSensorFusionHsv:
     def test_interface(self, node):
         assert set(node.subscriptions) == {'/scan', '/camera/image_raw'}
         assert set(node.publishers) == {
-            '/target_position', '/target_range', '/target_bearing',
+            '/target', '/target_position', '/target_range', '/target_bearing',
             '/sensor_fusion/image'}
         assert 'hsv mode' in node.logger.messages('info')[0]
 
@@ -145,7 +145,9 @@ class TestSensorFusionPerson:
         return sf.SensorFusionNode()
 
     def _bbox(self, node, box):
-        node.subscriptions['/person_bbox'](Float32MultiArray(data=list(box)))
+        msg = PolygonStamped()
+        msg.polygon.points = pt.box_to_polygon(box)
+        node.subscriptions['/person_bbox'](msg)
         p = node.publishers
         return p['/target_bearing'].last.data, p['/target_range'].last.data
 
@@ -190,6 +192,29 @@ class TestSensorFusionPerson:
         bearing, rng = self._bbox(node, [])
         assert math.isnan(bearing)
         assert rng == -1.0
+
+    def test_target_carries_the_image_time_and_its_scan(self, node):
+        # The box was seen at t=20.0; scans arrive at 10 Hz meanwhile. The
+        # scan closest to the image ranges it, not the newest one.
+        for t, r in ((19.9, 5.0), (20.0, 3.05), (20.1, 9.0), (20.2, 9.0)):
+            scan = _scan(r)
+            scan.header.stamp = types.SimpleNamespace(sec=int(t), nanosec=round(t % 1 * 1e9))
+            node.subscriptions['/scan'](scan)
+        msg = PolygonStamped()
+        msg.header.stamp = types.SimpleNamespace(sec=20, nanosec=0)
+        msg.polygon.points = pt.box_to_polygon(self._full_body_box(node, 3.0, cx=200.0))
+        node.subscriptions['/person_bbox'](msg)
+        target = node.publishers['/target'].last
+        assert target.header.stamp.sec == 20
+        assert target.header.frame_id == 'base_link'
+        assert target.vector.x > 0.0                  # left of centre
+        assert target.vector.y == pytest.approx(3.05)
+        assert node.publishers['/target_position'].last.header.stamp.sec == 20
+
+    def test_unstamped_box_is_stamped_on_arrival(self, node):
+        node.clock.advance(7.0)
+        self._bbox(node, self._full_body_box(node, 3.0))
+        assert node.publishers['/target'].last.header.stamp.sec == 107
 
     def test_debug_view_uses_the_latest_frame(self, node):
         debug = node.publishers['/sensor_fusion/image']
@@ -280,10 +305,40 @@ def _see(node, n=1):
     for _ in range(n):
         node.subscriptions['/camera/image_raw'](_image(_frame()))
     p = node.publishers
-    return p['/person_detected'].last.data, list(p['/person_bbox'].last.data)
+    box = sf.polygon_to_box(p['/person_bbox'].last.polygon.points)
+    return p['/person_detected'].last.data, list(box) if box else []
 
 
 class TestPersonTrackerNode:
+
+    def test_box_keeps_the_image_timestamp(self, tracker_node):
+        img = _image(_frame())
+        img.header.stamp = types.SimpleNamespace(sec=42, nanosec=5)
+        tracker_node.subscriptions['/camera/image_raw'](img)
+        bbox = tracker_node.publishers['/person_bbox'].last
+        assert bbox.header is img.header
+        assert len(bbox.polygon.points) == 2
+
+    def test_stage_timings_are_logged_periodically(self, tracker_node, monkeypatch):
+        now = [1000.0]
+        monkeypatch.setattr(pt, 'time', types.SimpleNamespace(monotonic=lambda: now[0]))
+        tracker_node._stats_start = now[0]
+        _see(tracker_node, 4)                         # YOLO, then the tracker
+        assert not any('frames/s' in m for m in tracker_node.logger.messages('info'))
+        now[0] += tracker_node._stats_period
+        _see(tracker_node)
+        line = [m for m in tracker_node.logger.messages('info') if 'frames/s' in m][-1]
+        assert line.startswith('0.5 frames/s')
+        assert 'YOLO 0 ms x' in line and 'tracker 0 ms x' in line
+        assert tracker_node._frames == 0
+
+    def test_stage_timer_reports_and_resets(self):
+        timer = pt.StageTimer()
+        assert timer.report() == 'not run'
+        timer.add(0.02)
+        timer.add(0.04)
+        assert timer.report() == '30 ms x 2'
+        assert timer.report() == 'not run'
 
     def test_interface_and_missing_model(self, tmp_path, ros_params):
         ros_params['model_path'] = str(tmp_path / 'missing.onnx')

@@ -41,6 +41,7 @@ SCRIPTS = [
     'person_tracker.py',
     'security_guard_bt.py',
     'system_monitor.py',
+    'perf_monitor.py',
 ]
 
 PKG_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -140,11 +141,41 @@ def test_yolo_scenarios_need_the_model_and_make_image_provides_it():
     """
     targets = _make_targets()
     for target in ('person-sim', 'yolo-sim'):
-        assert '"$(NEED_YOLO) $(SOURCE) && ros2 launch' in targets[target]
+        assert '$(NEED_YOLO) $(SOURCE) && ros2 launch' in targets[target]
     with open(os.path.join(REPO_ROOT, 'Makefile')) as f:
         image = re.search(r'^image:\n((?:\t.*\n)+)', f.read(), re.M).group(1)
     assert 'docker compose build' in image
     assert 'docker compose up -d --force-recreate $(SERVICE)' in image
+
+
+def test_scenarios_stop_leftovers_first():
+    """A closed terminal leaves the old run going; it breaks the next one.
+
+    Its gzserver keeps Gazebo's port (the old world stays on screen) and its
+    nodes share names with the new ones (Nav2 bringup aborts: no map frame).
+    """
+    targets = _make_targets()
+    for target in SCENARIOS:
+        assert targets[target].startswith('$(EXEC) "$(STOP_LEFTOVERS) '), target
+    assert targets['stop'] == '$(EXEC) "$(STOP_LEFTOVERS)"'
+    script = os.path.join(REPO_ROOT, 'src', 'stop_sim.sh')
+    with open(script) as f:
+        src = f.read()
+    for name in ('gzserver', 'component_container', 'ros2 launch'):
+        assert name in src
+    assert 'skip' in src  # spares the scenario's own shell, which matches
+
+
+def test_compose_isolates_ros_and_gazebo():
+    """network_mode: host shares ports with every other container on the host."""
+    compose = os.path.join(REPO_ROOT, 'compose.yaml')
+    if not os.path.exists(compose):
+        pytest.skip('compose.yaml not available (only src/ is mounted)')
+    with open(compose) as f:
+        src = f.read()
+    assert 'ROS_DOMAIN_ID=${AUTONAV_ROS_DOMAIN_ID:-' in src
+    assert 'GAZEBO_MASTER_URI=http://localhost:${AUTONAV_GAZEBO_PORT:-' in src
+    assert ':-11345}' not in src  # Gazebo's default: what the others use
 
 
 def test_dockerfile_installs_pip_before_using_it():

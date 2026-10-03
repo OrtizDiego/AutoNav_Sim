@@ -14,8 +14,9 @@
 
 """Stand-off follow controller shared by ball_chaser and security_guard_bt.
 
-Both consume sensor_fusion's /target_bearing and /target_range, so the same
-proportional law follows a ball or a person:
+Both consume sensor_fusion's /target (via target_estimate, which compensates
+the detection latency with odometry), so the same proportional law follows
+a ball or a person:
 
   linear.x  = k_lin * (range - desired_distance), slowed while turning
   angular.z = k_yaw * bearing

@@ -67,6 +67,8 @@ person_tracker:
     max_yolo_misses: 2
     max_coast_frames: 10
     publish_debug_image: true
+    # Log frames/s and mean YOLO / tracker time every N wall seconds (0 = off)
+    stats_period: 10.0
 
 # --- person-sim -----------------------------------------------------------
 
@@ -95,7 +97,11 @@ security_guard_bt:
     # hold nested lists.
     waypoints: [3.28, 6.85, -0.92, 6.85, 5.13, -2.45, 0.23, -2.55, -4.52, 8.60, 0.0, 0.0]
     waypoint_dwell_secs: 2.0
-    target_timeout: 0.5
+    # Simulation seconds without a detection before the intruder counts as
+    # lost. The target is anchored in the odom frame (latency compensated),
+    # so following through a short tracker dropout is safe and avoids
+    # flapping between IntruderProtocol and SearchProtocol.
+    target_timeout: 1.0
     search_secs: 6.0
     search_angular_speed: 0.6
     # 2.5 m keeps the person's torso in view: the camera is ~0.10 m off the

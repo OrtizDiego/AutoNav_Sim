@@ -21,22 +21,26 @@ lidar. This node keeps the robot ``desired_distance`` metres from the ball's
 surface with the shared stand-off controller, and when the ball is lost it
 turns toward where it was last seen for ``search_secs``.
 
-Subscribes: /target_bearing, /target_range (std_msgs/Float32), /scan
+The fused target is stamped with the camera image's time; odometry turns it
+into a point (or direction) that stays put while the robot moves, so the
+controller steers on where the ball is now relative to the robot, not on a
+bearing that was already stale when it arrived (my_bot.target_estimate).
+
+Subscribes: /target (geometry_msgs/Vector3Stamped), /odom, /scan
 Publishes:  /cmd_vel
 """
 
-import math
 import threading
-from typing import Optional
 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Vector3Stamped
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Float32
 
 from my_bot.follow_control import compute_command, front_clearance, search_command
+from my_bot.target_estimate import TargetEstimate, stamp_to_sec, yaw_from_quaternion
 
 
 class BallChaser(Node):
@@ -72,27 +76,30 @@ class BallChaser(Node):
         self._search_speed = float(gp('search_angular_speed').value)
 
         self._lock = threading.Lock()
-        self._bearing = 0.0
-        self._range: Optional[float] = None
+        self._target = TargetEstimate()
         self._last_seen = -1.0e9
+        self._search_turn = None  # latched when the search starts
         self._front_clear = float('inf')
 
-        self.create_subscription(Float32, '/target_bearing', self._on_bearing, 10)
-        self.create_subscription(Float32, '/target_range', self._on_range, 10)
+        self.create_subscription(Vector3Stamped, '/target', self._on_target, 10)
+        self.create_subscription(Odometry, '/odom', self._on_odom, 10)
         self.create_subscription(
             LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
         self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_timer(0.05, self._tick)
 
-    def _on_bearing(self, msg: Float32):
-        if math.isfinite(msg.data):
-            with self._lock:
-                self._bearing = float(msg.data)
+    def _on_target(self, msg: Vector3Stamped):
+        with self._lock:
+            if self._target.update(stamp_to_sec(msg.header.stamp),
+                                   float(msg.vector.x), float(msg.vector.y)):
                 self._last_seen = self._now()
 
-    def _on_range(self, msg: Float32):
+    def _on_odom(self, msg: Odometry):
+        p = msg.pose.pose
         with self._lock:
-            self._range = float(msg.data) if msg.data > 0.0 else None
+            self._target.add_pose(stamp_to_sec(msg.header.stamp),
+                                  p.position.x, p.position.y,
+                                  yaw_from_quaternion(p.orientation))
 
     def _on_scan(self, msg: LaserScan):
         clear = front_clearance(msg.ranges, msg.angle_min, msg.angle_increment)
@@ -102,15 +109,21 @@ class BallChaser(Node):
     def _tick(self):
         with self._lock:
             lost_for = self._now() - self._last_seen
-            bearing, rng, front = self._bearing, self._range, self._front_clear
+            bearing, rng = self._target.relative() or (0.0, None)
+            front = self._front_clear
         cmd = Twist()
         if lost_for <= self._timeout:
+            self._search_turn = None
             cmd.linear.x, cmd.angular.z = compute_command(
                 bearing, rng, self._desired, self._k_lin, self._k_yaw,
                 self._max_lin, self._max_back, self._max_yaw,
                 self._deadband, front, self._safety)
         elif lost_for <= self._timeout + self._search_secs:
-            cmd.angular.z = search_command(bearing, self._search_speed)
+            # Latched: the compensated bearing follows the spin and would
+            # stop it once the robot faces the last-seen spot.
+            if self._search_turn is None:
+                self._search_turn = search_command(bearing, self._search_speed)
+            cmd.angular.z = self._search_turn
         self._cmd_pub.publish(cmd)
 
     def _now(self) -> float:

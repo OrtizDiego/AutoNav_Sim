@@ -33,25 +33,33 @@ Pipeline per camera frame
 
 Published topics
 ----------------
-/person_bbox           std_msgs/Float32MultiArray  [x, y, w, h] px, or empty
+/person_bbox           geometry_msgs/PolygonStamped  box corners (px):
+                       top-left then bottom-right, empty when nobody is
+                       tracked; header = the camera image's, so consumers
+                       know when the box was seen (latency compensation)
 /person_track          geometry_msgs/PointStamped  bbox centre (px)
 /person_detected       std_msgs/Bool               True while a track exists
 /person_tracker/image  sensor_msgs/Image           annotated debug view
+
+Every ``stats_period`` seconds (wall clock) the node logs its frame rate and
+the mean YOLO and tracker time per call, to tell CPU-bound inference from a
+slow simulator (Phase 0 of the security-guard plan).
 """
 
 import math
 import os
+import time
 from typing import Optional, Tuple
 
 import cv2
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import Point32, PointStamped, PolygonStamped
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, Float32MultiArray
+from std_msgs.msg import Bool
 
 from my_bot.object_detector import postprocess, preprocess
 
@@ -97,6 +105,34 @@ def select_person_box(detections: list,
         return None
     x1, y1, x2, y2, _, _ = max(people, key=lambda d: d[5])
     return (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+
+
+def box_to_polygon(box: Optional[Box]) -> list:
+    """Top-left and bottom-right corners of a box, or [] for no box."""
+    if not box:
+        return []
+    x, y, w, h = (float(v) for v in box)
+    return [Point32(x=x, y=y, z=0.0), Point32(x=x + w, y=y + h, z=0.0)]
+
+
+class StageTimer:
+    """Mean duration of a repeated stage, reset on every report."""
+
+    def __init__(self):
+        self.calls = 0
+        self.total = 0.0
+
+    def add(self, seconds: float) -> None:
+        """Record one call's duration."""
+        self.calls += 1
+        self.total += seconds
+
+    def report(self) -> str:
+        """'<mean> ms x <calls>' since the last report, then reset."""
+        text = (f'{1000.0 * self.total / self.calls:.0f} ms x {self.calls}'
+                if self.calls else 'not run')
+        self.calls, self.total = 0, 0.0
+        return text
 
 
 def make_tracker():
@@ -172,6 +208,7 @@ class PersonTrackerNode(Node):
         self.declare_parameter('max_yolo_misses', 2)
         self.declare_parameter('max_coast_frames', 10)
         self.declare_parameter('publish_debug_image', True)
+        self.declare_parameter('stats_period', 10.0)
 
         gp = self.get_parameter
         self._conf = float(gp('confidence_threshold').value)
@@ -181,6 +218,11 @@ class PersonTrackerNode(Node):
         self._max_misses = int(gp('max_yolo_misses').value)
         self._max_coast = int(gp('max_coast_frames').value)
         self._debug = bool(gp('publish_debug_image').value)
+        self._stats_period = float(gp('stats_period').value)
+        self._yolo_timer = StageTimer()
+        self._track_timer = StageTimer()
+        self._frames = 0
+        self._stats_start = time.monotonic()
 
         self._bridge = CvBridge()
         self._session = None
@@ -202,7 +244,7 @@ class PersonTrackerNode(Node):
                                   reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(
             Image, '/camera/image_raw', self._on_image, latest_frame)
-        self._bbox_pub = self.create_publisher(Float32MultiArray, '/person_bbox', 10)
+        self._bbox_pub = self.create_publisher(PolygonStamped, '/person_bbox', 10)
         self._track_pub = self.create_publisher(PointStamped, '/person_track', 10)
         self._detected_pub = self.create_publisher(Bool, '/person_detected', 10)
         self._debug_pub = self.create_publisher(Image, '/person_tracker/image', 1)
@@ -291,7 +333,9 @@ class PersonTrackerNode(Node):
             measured = detected
             self._seed_tracker(frame, detected)
         elif self._tracker is not None:
+            start = time.monotonic()
             ok, bb = self._tracker.update(frame)
+            self._track_timer.add(time.monotonic() - start)
             if ok:
                 measured = clip_box(tuple(int(v) for v in bb), w, h)
 
@@ -312,10 +356,24 @@ class PersonTrackerNode(Node):
                 self._box = clip_box(self._kf.predict(), w, h)
 
         self._publish(msg, frame)
+        self._log_stats()
+
+    def _log_stats(self) -> None:
+        self._frames += 1
+        elapsed = time.monotonic() - self._stats_start
+        if self._stats_period <= 0.0 or elapsed < self._stats_period:
+            return
+        self.get_logger().info(
+            f'{self._frames / elapsed:.1f} frames/s (wall); '
+            f'YOLO {self._yolo_timer.report()}, '
+            f'tracker {self._track_timer.report()}')
+        self._frames = 0
+        self._stats_start = time.monotonic()
 
     def _run_yolo(self, frame: np.ndarray) -> Optional[Box]:
         if self._session is None:
             return None
+        start = time.monotonic()
         try:
             blob = preprocess(frame)
             inp = self._session.get_inputs()[0].name
@@ -325,6 +383,8 @@ class PersonTrackerNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f'YOLO inference: {e}')
             return None
+        finally:
+            self._yolo_timer.add(time.monotonic() - start)
         box = select_person_box(dets, self._conf)
         if box is None:
             return None
@@ -345,9 +405,10 @@ class PersonTrackerNode(Node):
         box = self._box
         self._detected_pub.publish(Bool(data=box is not None))
 
-        bbox_msg = Float32MultiArray()
+        bbox_msg = PolygonStamped()
+        bbox_msg.header = img_msg.header
+        bbox_msg.polygon.points = box_to_polygon(box)
         if box is not None:
-            bbox_msg.data = [float(v) for v in box]
             pt = PointStamped()
             pt.header = img_msg.header
             pt.point.x = float(box[0] + box[2] / 2.0)

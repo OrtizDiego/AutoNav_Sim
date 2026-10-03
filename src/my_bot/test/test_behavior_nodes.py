@@ -20,14 +20,13 @@ Also covers every node's ``main()`` and ``__main__`` entry point.
 import math
 import os
 import runpy
-import time
 
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import Vector3Stamped
 from nav_msgs.msg import Odometry
 import py_trees
 import pytest
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool, Float32
+from std_msgs.msg import Bool
 
 from my_bot import person_controller as pc
 from my_bot import security_guard_bt as sg
@@ -143,8 +142,9 @@ def _tick(node, n=1):
 
 
 def _see(node, bearing=0.0, rng=3.0):
-    node.subscriptions['/target_bearing'](Float32(data=bearing))
-    node.subscriptions['/target_range'](Float32(data=rng))
+    msg = Vector3Stamped()
+    msg.vector.x, msg.vector.y = bearing, rng
+    node.subscriptions['/target'](msg)
 
 
 def _bb(key):
@@ -155,8 +155,7 @@ class TestSecurityGuardNode:
 
     def test_interface(self, guard):
         assert set(guard.subscriptions) == {
-            '/estop', '/target_bearing', '/target_range', '/target_position',
-            '/scan', '/odom'}
+            '/estop', '/target', '/scan', '/odom'}
         assert set(guard.publishers) == {
             '/cmd_vel', '/security_guard/state', '/security_guard/metrics',
             '/intruder_sightings'}
@@ -180,13 +179,12 @@ class TestSecurityGuardNode:
         assert _bb(sg.BB_FRONT_CLEAR) == math.inf
 
     def test_sensor_callbacks_fill_the_blackboard(self, guard):
-        guard.subscriptions['/target_bearing'](Float32(data=float('nan')))
+        _see(guard, float('nan'))
         assert _bb(sg.BB_LAST_SEEN) == -math.inf      # NaN is "no target"
-        before = time.monotonic()
         _see(guard, 0.3, 2.0)
         assert _bb(sg.BB_TARGET_BEARING) == pytest.approx(0.3)
         assert _bb(sg.BB_TARGET_RANGE) == pytest.approx(2.0)
-        assert _bb(sg.BB_LAST_SEEN) >= before
+        assert _bb(sg.BB_LAST_SEEN) == pytest.approx(guard.clock.seconds)  # sim time
         guard.subscriptions['/scan'](LaserScan(
             ranges=[0.5] * 360, angle_min=-math.pi, angle_increment=math.pi / 180))
         assert _bb(sg.BB_FRONT_CLEAR) == pytest.approx(0.5)
@@ -199,14 +197,20 @@ class TestSecurityGuardNode:
         assert guard._metrics['distance_traveled_m'] == pytest.approx(5.0)
         assert guard._robot_pose == pytest.approx((3.0, 4.0, 1.0))
 
-    def test_target_position_is_moved_into_odom(self, guard):
-        pos = PointStamped()
-        pos.point.x = 2.0
-        guard.subscriptions['/target_position'](pos)
-        assert guard._target_xy is None               # no robot pose yet
+    def test_target_is_anchored_in_odom(self, guard):
+        _see(guard, 0.0, 2.0)
+        assert guard._target.target_xy is None        # no robot pose yet
         guard.subscriptions['/odom'](_odom(1.0, 1.0, yaw=math.pi / 2))
-        guard.subscriptions['/target_position'](pos)
-        assert guard._target_xy == pytest.approx((1.0, 3.0))
+        _see(guard, 0.0, 2.0)
+        assert guard._target.target_xy == pytest.approx((1.0, 3.0))
+
+    def test_blackboard_target_follows_the_robot_between_detections(self, guard):
+        guard.subscriptions['/odom'](_odom(0.0, 0.0))
+        _see(guard, 0.5, 3.0)
+        guard.subscriptions['/odom'](_odom(0.0, 0.0, yaw=0.5))  # turned to it
+        _tick(guard)
+        assert _bb(sg.BB_TARGET_BEARING) == pytest.approx(0.0, abs=1e-9)
+        assert _bb(sg.BB_TARGET_RANGE) == pytest.approx(3.0)
 
     def test_patrols_and_counts_waypoints(self, guard):
         assert _tick(guard) == 'PatrolProtocol'
@@ -218,9 +222,6 @@ class TestSecurityGuardNode:
 
     def test_intruder_is_followed_and_marked(self, guard):
         guard.subscriptions['/odom'](_odom(0.0, 0.0))
-        pos = PointStamped()
-        pos.point.x = 3.0
-        guard.subscriptions['/target_position'](pos)
         _tick(guard)
         _see(guard, 0.0, 4.0)
         assert _tick(guard) == 'IntruderProtocol'
@@ -232,14 +233,14 @@ class TestSecurityGuardNode:
         assert guard._metrics['time_following_sec'] == pytest.approx(0.2)
         markers = guard.publishers['/intruder_sightings'].last.markers
         sphere, label = markers
-        assert (sphere.pose.position.x, sphere.pose.position.y) == (3.0, 0.0)
+        assert (sphere.pose.position.x, sphere.pose.position.y) == (4.0, 0.0)
         assert sphere.type == sphere.SPHERE
         assert label.text.startswith('#1 ')
         assert 'PatrolProtocol -> IntruderProtocol' in guard.logger.messages('info')
 
     def test_sighting_falls_back_to_the_robot_pose(self, guard):
         guard.subscriptions['/odom'](_odom(2.0, -1.0))
-        _see(guard)
+        _see(guard, 0.0, -1.0)                        # seen but not ranged
         _tick(guard)
         sphere = guard.publishers['/intruder_sightings'].last.markers[0]
         assert (sphere.pose.position.x, sphere.pose.position.y) == (2.0, -1.0)
@@ -253,9 +254,10 @@ class TestSecurityGuardNode:
     def test_searches_after_losing_the_intruder(self, guard):
         _see(guard, -0.5)
         _tick(guard)
-        py_trees.blackboard.Blackboard.set(sg.BB_LAST_SEEN, time.monotonic() - 1.0)
+        guard.clock.advance(1.0)                      # sim time, not wall time
         assert _tick(guard) == 'SearchProtocol'
         assert guard.publishers['/cmd_vel'].last.angular.z < 0.0
+        assert guard._metrics['track_losses'] == 1
 
     def test_estop_halts(self, guard):
         _tick(guard)
@@ -277,6 +279,16 @@ class TestSecurityGuardNode:
         assert values['state'] == 'PatrolProtocol'
         assert values['distance_traveled_m'] == '1.50'
         assert values['session_elapsed_sec'] == '12.0'
+        assert values['track_losses'] == '0'
+        assert values['follow_bearing_rms_deg'] == '0.0'
+
+    def test_follow_quality_metrics(self, guard):
+        guard.subscriptions['/odom'](_odom(0.0, 0.0))
+        _see(guard, 0.1, 3.5)                         # 1 m beyond the stand-off
+        _tick(guard, 2)
+        bearing_rms, range_rms = guard._follow_rms()
+        assert bearing_rms == pytest.approx(math.degrees(0.1))
+        assert range_rms == pytest.approx(1.0)
 
 
 def test_active_protocol_is_idle_before_the_first_tick(fresh_blackboard):
@@ -297,6 +309,7 @@ NODES = {
     'person_tracker': 'PersonTrackerNode',
     'security_guard_bt': 'SecurityGuardBTNode',
     'system_monitor': 'SystemMonitorNode',
+    'perf_monitor': 'PerfMonitorNode',
 }
 
 

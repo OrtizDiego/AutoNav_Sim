@@ -62,7 +62,13 @@ make teleop-ball     # drive the ball in ball-sim (hold keys; robot-relative or 
 make slam            # SLAM (with sim + teleop), then make save-map NAME=x
 make nav             # Nav2 only, next to a running sim
 make system-monitor  # watchdog + /trigger_estop, /clear_estop (already in person-sim)
+make perf            # real-time factor, topic rates (sim Hz), message ages (latency)
+make stop            # stop every scenario process in the container (src/stop_sim.sh)
 ```
+Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not stop a `docker exec`, and gzserver can outlive Ctrl+C. Leftovers hold Gazebo's port (the old world stays on screen) and share node names with the new run (Nav2 bringup aborts → "Frame [map] does not exist"; doubled /cmd_vel).
+
+### Isolation
+`compose.yaml` sets `ROS_DOMAIN_ID` (default 42) and `GAZEBO_MASTER_URI` (port 11346; Gazebo's default is 11345). The container uses `network_mode: host`, so on the defaults another simulation on the host merges with this one (shared gzserver, mixed topics). Override with `AUTONAV_ROS_DOMAIN_ID` / `AUTONAV_GAZEBO_PORT`; changing them needs `make down && make up && make build`.
 
 ## Architecture
 
@@ -86,14 +92,16 @@ make system-monitor  # watchdog + /trigger_estop, /clear_estop (already in perso
 - Configuration: `src/my_bot/config/nav2_params.yaml`
 
 **Custom Behavior Nodes (Python)**
-- **sensor_fusion.py**: `mode` `hsv` (largest red blob in the camera) or `person` (`/person_bbox` from person_tracker). Range = low percentile of lidar beams across the box's angular span; in person mode cross-checked against a monocular estimate (person height, or feet ground contact). Image bearings are positive-right, so they are negated for ROS angles. Publishes `/target_range` (Float32, -1 unknown), `/target_bearing` (Float32 rad positive-left, NaN when no target), `/target_position` (PointStamped base_link), `/sensor_fusion/image` (annotated debug).
+- **sensor_fusion.py**: `mode` `hsv` (largest red blob in the camera) or `person` (`/person_bbox` from person_tracker). Range = low percentile of lidar beams across the box's angular span; in person mode cross-checked against a monocular estimate (person height, or feet ground contact). Image bearings are positive-right, so they are negated for ROS angles. Every output carries the camera image's stamp and is ranged with the scan closest to it. Publishes `/target` (Vector3Stamped base_link: x = bearing rad positive-left or NaN, y = range m or -1; what the followers use), `/target_range` + `/target_bearing` (Float32, for humans), `/target_position` (PointStamped base_link), `/sensor_fusion/image` (annotated debug).
+- **target_estimate.py** (library): latency compensation. Anchors each stamped `/target` in the odom frame at the robot pose of the image's time (interpolated odometry history), then gives bearing/range relative to the pose *now*. Steering on the raw, already-stale bearing made the followers overshoot. Target assumed static between detections (a world-frame KF with velocity is the next step).
 - **follow_control.py** (library): stand-off P-control on range + bearing with a front safety stop, used by ball_chaser and the BT.
 - **ball_chaser.py**: follows the fused target at 1 m; turns toward the last-seen side when lost.
 - **ball_controller.py**: drives the ball (`/ball/cmd_vel`, planar_move plugin, body frame, yaw held at 0) on a figure-eight checked against the map; flees a close robot, waits for a far one, pauses/reverses at random. `/ball/teleop` (TwistStamped, frame_id `robot`|`world`) overrides it while messages arrive.
 - **ball_teleop.py**: hold-to-move keyboard teleop for the ball.
-- **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`) + OpenCV tracker (CSRT → KCF → MIL fallback) + constant-velocity Kalman filter. Publishes `/person_bbox` (Float32MultiArray [x,y,w,h]), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
+- **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`) + OpenCV tracker (CSRT → KCF → MIL fallback) + constant-velocity Kalman filter. Publishes `/person_bbox` (PolygonStamped: top-left + bottom-right px, empty = none; header = the image's), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
 - **person_controller.py**: Pedestrian behaviour (WALK / RUN / EXHAUSTED) publishing `/person/cmd_vel` for the actor plugin. Pure `PersonBrain` steers on `clearance_map.py` (distance transform of `maps/my_map`, passed as `map_yaml`): line-of-sight wander targets, `safe_heading` fan search, speed capped to stop before walls. A `/person_detected` lock within `notice_radius` triggers a stamina-limited sprint away from the robot.
-- **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m), SearchProtocol (turn to last-seen side), PatrolProtocol (Nav2 waypoints)]. Detector-agnostic: reads sensor_fusion topics. Publishes `/security_guard/state`, `/security_guard/metrics`, `/intruder_sightings`.
+- **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m), SearchProtocol (turn to last-seen side), PatrolProtocol (Nav2 waypoints)]. Detector-agnostic: reads sensor_fusion topics. Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses and follow bearing/range RMS), `/intruder_sightings` (one sphere per re-acquisition, not a goal). All timing runs on the node clock (sim time).
+- **perf_monitor.py**: `make perf`: real-time factor, per-topic sim-Hz and message age (now - stamp) on `/perf_monitor` + log. person_tracker also logs frames/s and mean YOLO/tracker ms every `stats_period`.
 - **system_monitor.py**: heartbeats → `/system_health`; `/trigger_estop` latches `/estop` (Bool, transient local) which the BT obeys; `/clear_estop` releases.
 
 **RViz Visualization**
@@ -107,6 +115,8 @@ src/my_bot/
 ├── my_bot/                    # Python nodes + pure libraries
 │   ├── sensor_fusion.py       # camera box + lidar → range/bearing (hsv | person)
 │   ├── follow_control.py      # stand-off follow law (library)
+│   ├── target_estimate.py     # latency compensation with odometry (library)
+│   ├── perf_monitor.py        # real-time factor, rates, latencies
 │   ├── ball_chaser.py         # ball-sim follower
 │   ├── ball_controller.py     # ball autopilot + teleop arbitration
 │   ├── ball_teleop.py         # keyboard teleop for the ball
@@ -201,7 +211,7 @@ ros2 topic pub -1 /initialpose geometry_msgs/PoseWithCovarianceStamped "{ header
 ## Entry Points (Console Scripts)
 
 Defined in `setup.py` (test_scripts.py checks they match the modules):
-`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`.
+`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`, `perf_monitor`.
 
 Run with `ros2 run my_bot <script_name>`, but prefer the scenario make targets, which load `behavior_params.yaml` and `use_sim_time`.
 

@@ -11,6 +11,13 @@ services:
     environment:
       - DISPLAY=${DISPLAY:-:0}
       - QT_X11_NO_MITSHM=1
+      # network_mode: host shares the host's ports with every other container,
+      # so on the defaults (ROS domain 0, Gazebo master port 11345) another
+      # simulation on this machine merges with this one: its gzserver takes
+      # the port (Gazebo shows both worlds) and its topics mix with ours.
+      # Own domain and port; override from the host environment if needed.
+      - ROS_DOMAIN_ID=${AUTONAV_ROS_DOMAIN_ID:-42}
+      - GAZEBO_MASTER_URI=http://localhost:${AUTONAV_GAZEBO_PORT:-11346}
     volumes:
       - ./src:/root/dev_ws/src
       - /tmp/.X11-unix:/tmp/.X11-unix

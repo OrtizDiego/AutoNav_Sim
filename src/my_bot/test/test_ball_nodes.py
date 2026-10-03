@@ -27,16 +27,31 @@ import termios
 import tty
 import types
 
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import TwistStamped, Vector3Stamped
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Float32
 
 from my_bot import ball_chaser as bch
 from my_bot import ball_controller as bc
 from my_bot import ball_teleop as bt
+
+
+def _target(node, bearing, rng=-1.0, stamp=None):
+    msg = Vector3Stamped()
+    msg.header.stamp = stamp
+    msg.vector.x, msg.vector.y = bearing, rng
+    node.subscriptions['/target'](msg)
+
+
+def _odom_at(t, x, y, yaw):
+    msg = Odometry()
+    msg.header.stamp = types.SimpleNamespace(sec=int(t), nanosec=int((t % 1) * 1e9))
+    p = msg.pose.pose
+    p.position.x, p.position.y = x, y
+    p.orientation.z, p.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+    return msg
 
 
 def _scan(value=5.0, n=360):
@@ -74,7 +89,7 @@ class TestBallChaser:
         return node.publishers['/cmd_vel'].last
 
     def test_interface(self, node):
-        assert set(node.subscriptions) == {'/target_bearing', '/target_range', '/scan'}
+        assert set(node.subscriptions) == {'/target', '/odom', '/scan'}
         assert set(node.publishers) == {'/cmd_vel'}
         assert node.timers[0].period == pytest.approx(0.05)
         assert node.parameters['desired_distance'] == 1.0
@@ -90,20 +105,18 @@ class TestBallChaser:
         assert (cmd.linear.x, cmd.angular.z) == (0.0, 0.0)
 
     def test_drives_toward_a_far_target(self, node):
-        node.subscriptions['/target_bearing'](Float32(data=0.2))
-        node.subscriptions['/target_range'](Float32(data=3.0))
+        _target(node, 0.2, 3.0)
         cmd = self._tick(node)
         assert cmd.linear.x > 0.0
         assert cmd.angular.z > 0.0
 
     def test_nan_bearing_is_not_a_sighting(self, node):
-        node.subscriptions['/target_bearing'](Float32(data=float('nan')))
+        _target(node, float('nan'))
         assert node._last_seen < 0.0
 
     def test_unknown_range_only_turns(self, node):
-        node.subscriptions['/target_bearing'](Float32(data=-0.3))
-        node.subscriptions['/target_range'](Float32(data=-1.0))
-        assert node._range is None
+        _target(node, -0.3, -1.0)
+        assert node._target.relative() == (pytest.approx(-0.3), None)
         cmd = self._tick(node)
         assert cmd.linear.x == 0.0
         assert cmd.angular.z < 0.0
@@ -111,12 +124,21 @@ class TestBallChaser:
     def test_obstacle_ahead_stops_forward_motion(self, node):
         node.subscriptions['/scan'](_scan(0.2))
         assert node._front_clear == pytest.approx(0.2)
-        node.subscriptions['/target_bearing'](Float32(data=0.0))
-        node.subscriptions['/target_range'](Float32(data=4.0))
+        _target(node, 0.0, 4.0)
         assert self._tick(node).linear.x == 0.0
 
+    def test_steers_on_where_the_ball_is_now_not_where_it_was(self, node):
+        # Image taken at t=10 s with the ball 0.4 rad left; by the time the
+        # detection arrives the robot has already turned 0.4 rad left.
+        node.subscriptions['/odom'](_odom_at(10.0, 0.0, 0.0, 0.0))
+        node.subscriptions['/odom'](_odom_at(10.3, 0.0, 0.0, 0.4))
+        _target(node, 0.4, 3.0, stamp=types.SimpleNamespace(sec=10, nanosec=0))
+        cmd = self._tick(node)
+        assert cmd.angular.z == pytest.approx(0.0, abs=1e-6)  # no overshoot
+        assert cmd.linear.x > 0.0
+
     def test_searches_toward_last_seen_side_then_gives_up(self, node):
-        node.subscriptions['/target_bearing'](Float32(data=0.4))
+        _target(node, 0.4)
         node.clock.advance(1.0)                       # lost, searching
         cmd = self._tick(node)
         assert cmd.linear.x == 0.0
