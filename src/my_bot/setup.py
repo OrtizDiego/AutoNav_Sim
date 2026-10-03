@@ -37,6 +37,7 @@ setup(
             'person_tracker = my_bot.person_tracker:main',
             'security_guard_bt = my_bot.security_guard_bt:main',
             'system_monitor = my_bot.system_monitor:main',
+            'perf_monitor = my_bot.perf_monitor:main',
         ],
     },
 )

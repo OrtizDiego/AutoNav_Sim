@@ -35,9 +35,17 @@ Tree structure (highest priority first):
         ├── Action("WaitAtWaypoint")        timed dwell
         └── Action("IncrementWaypoint")     advance bb.waypoint_index
 
-The intruder comes from sensor_fusion (/target_bearing, /target_range), so
-the tree is detector-agnostic: in person-sim that is the YOLO person
-tracker. The follow law is the same one ball_chaser uses (follow_control).
+The intruder comes from sensor_fusion's /target, so the tree is
+detector-agnostic: in person-sim that is the YOLO person tracker. /target is
+stamped with the camera image's time; odometry anchors it in the odom frame
+(my_bot.target_estimate) and every tick the blackboard gets the target
+relative to the robot's pose *now*. Steering on the raw, already-stale
+bearing made the robot overshoot. The follow law is the same one
+ball_chaser uses (follow_control).
+
+All timing (target timeout, search, dwell) runs on the node clock, i.e.
+simulation time under use_sim_time, so a simulator running slower than real
+time does not make the intruder look lost.
 
 Publishes /cmd_vel (follow, search, halt), /security_guard/state (the active
 protocol), /security_guard/metrics and /intruder_sightings markers.
@@ -49,34 +57,34 @@ import time
 from typing import Callable
 
 from builtin_interfaces.msg import Time
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, Twist, Vector3Stamped
 from nav2_simple_commander.robot_navigator import BasicNavigator
 import py_trees
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool, Float32, String
+from std_msgs.msg import Bool, String
 
 from my_bot.follow_control import compute_command, front_clearance, search_command
+from my_bot.target_estimate import TargetEstimate, stamp_to_sec, yaw_from_quaternion
 
 # Message types only needed by the running node (metrics, markers). Guarded
 # so the unit tests can import the leaves with stubbed ROS packages.
 try:
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-    from geometry_msgs.msg import PointStamped
     from nav_msgs.msg import Odometry
     from visualization_msgs.msg import Marker, MarkerArray
 except ImportError:  # pragma: no cover — only missing outside a ROS install
     DiagnosticArray = DiagnosticStatus = KeyValue = None
-    PointStamped = Odometry = Marker = MarkerArray = None
+    Odometry = Marker = MarkerArray = None
 
 
 # ---------------------------------------------------------------------------
 # Blackboard key constants
 # ---------------------------------------------------------------------------
 BB_ESTOP = 'estop'
-BB_LAST_SEEN = 'target_last_seen'      # time.monotonic() of last sighting
+BB_LAST_SEEN = 'target_last_seen'      # clock time (s) of the last sighting
 BB_TARGET_RANGE = 'target_range'       # metres, -1.0 if unknown
 BB_TARGET_BEARING = 'target_bearing'   # rad, positive left
 BB_FRONT_CLEAR = 'front_clear'         # closest lidar return ahead (m)
@@ -212,17 +220,27 @@ class FollowIntruder(py_trees.behaviour.Behaviour):
 
 
 class SearchLastSeen(py_trees.behaviour.Behaviour):
-    """Rotate toward the side where the intruder was last seen (RUNNING)."""
+    """Rotate toward the side where the intruder was last seen (RUNNING).
+
+    The direction is latched when the search starts: the blackboard bearing
+    follows the robot's turn, and re-reading it would stop the spin once
+    the robot faces the last-seen spot.
+    """
 
     def __init__(self, publish: Publish, speed: float = 0.6,
                  name: str = 'SearchLastSeen'):
         super().__init__(name)
         self._publish = publish
         self._speed = speed
+        self._turn = None
+
+    def initialise(self) -> None:
+        self._turn = None
 
     def update(self) -> Status:
-        bearing = _bb_get(BB_TARGET_BEARING, 0.0)
-        self._publish(_twist(0.0, search_command(bearing, self._speed)))
+        if self._turn is None:
+            self._turn = search_command(_bb_get(BB_TARGET_BEARING, 0.0), self._speed)
+        self._publish(_twist(0.0, self._turn))
         return Status.RUNNING
 
 
@@ -260,14 +278,16 @@ class NavigateToWaypoint(py_trees.behaviour.Behaviour):
 class WaitAtWaypoint(py_trees.behaviour.Behaviour):
     """Dwell at the current waypoint for a configured duration."""
 
-    def __init__(self, dwell_secs: float = 2.0, name: str = 'WaitAtWaypoint'):
+    def __init__(self, dwell_secs: float = 2.0, clock=time.monotonic,
+                 name: str = 'WaitAtWaypoint'):
         super().__init__(name)
         self._dwell = dwell_secs
+        self._clock = clock
 
     def update(self) -> Status:
         bb = py_trees.blackboard.Blackboard()
         start = _bb_get(BB_DWELL_START, None)
-        now = time.monotonic()
+        now = self._clock()
         if start is None:
             bb.set(BB_DWELL_START, now)
             return Status.RUNNING
@@ -304,21 +324,25 @@ def build_security_guard_tree(
         search_speed: float = 0.6,
         dwell_secs: float = 2.0,
         log=None,
+        clock=time.monotonic,
 ) -> py_trees.trees.BehaviourTree:
-    """Construct and return the security guard behaviour tree."""
+    """Construct and return the security guard behaviour tree.
+
+    ``clock`` returns seconds; the node passes its (sim-time) clock.
+    """
     estop = py_trees.composites.Sequence('EmergencyStop', memory=False)
     estop.add_children([EStopActive(), HaltRobot(navigator, publish)])
 
     intruder = py_trees.composites.Sequence('IntruderProtocol', memory=False)
     intruder.add_children([
-        IntruderVisible(target_timeout),
+        IntruderVisible(target_timeout, clock),
         CancelPatrol(navigator),
         FollowIntruder(publish, gains),
     ])
 
     search = py_trees.composites.Sequence('SearchProtocol', memory=False)
     search.add_children([
-        IntruderRecentlyLost(target_timeout, search_secs),
+        IntruderRecentlyLost(target_timeout, search_secs, clock),
         CancelPatrol(navigator),
         SearchLastSeen(publish, search_speed),
     ])
@@ -326,7 +350,7 @@ def build_security_guard_tree(
     patrol = py_trees.composites.Sequence('PatrolProtocol', memory=True)
     patrol.add_children([
         NavigateToWaypoint(navigator, waypoints, log),
-        WaitAtWaypoint(dwell_secs),
+        WaitAtWaypoint(dwell_secs, clock),
         IncrementWaypoint(len(waypoints)),
     ])
 
@@ -383,12 +407,12 @@ class SecurityGuardBTNode(Node):
         self._sighting_pub = self.create_publisher(
             MarkerArray, '/intruder_sightings', 10)
 
+        # Fed by /odom and /target: the intruder anchored in the odom frame
+        self._target = TargetEstimate()
+
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Bool, '/estop', self._estop_cb, latched)
-        self.create_subscription(Float32, '/target_bearing', self._bearing_cb, 10)
-        self.create_subscription(Float32, '/target_range', self._range_cb, 10)
-        self.create_subscription(
-            PointStamped, '/target_position', self._position_cb, 10)
+        self.create_subscription(Vector3Stamped, '/target', self._target_cb, 10)
         self.create_subscription(
             LaserScan, '/scan', self._scan_cb, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self._odom_cb, 10)
@@ -414,7 +438,7 @@ class SecurityGuardBTNode(Node):
             search_secs=float(gp('search_secs').value),
             search_speed=float(gp('search_angular_speed').value),
             dwell_secs=float(gp('waypoint_dwell_secs').value),
-            log=self.get_logger().info)
+            log=self.get_logger().info, clock=self._now)
         self._bt.setup()
         self.get_logger().info(
             'behaviour tree:\n' + py_trees.display.unicode_tree(self._bt.root))
@@ -422,12 +446,16 @@ class SecurityGuardBTNode(Node):
         self._metrics = {
             'waypoints_visited': 0,
             'intruder_detections': 0,
+            'track_losses': 0,
             'time_following_sec': 0.0,
             'distance_traveled_m': 0.0,
         }
+        # Follow quality while IntruderProtocol runs (Phase 0 baseline):
+        # sums of squared bearing and stand-off range errors.
+        self._desired = gains.desired_distance
+        self._follow_err = {'n': 0, 'bearing_sq': 0.0, 'ranged': 0, 'range_sq': 0.0}
         self._session_start = self.get_clock().now()
         self._robot_pose = None  # (x, y, yaw) in odom
-        self._target_xy = None   # intruder position in odom
         self._sightings = MarkerArray()
         self._state = ''
         self._prev_wp_idx = 0
@@ -440,22 +468,24 @@ class SecurityGuardBTNode(Node):
     def _estop_cb(self, msg: Bool):
         py_trees.blackboard.Blackboard().set(BB_ESTOP, bool(msg.data))
 
-    def _bearing_cb(self, msg: Float32):
-        if math.isfinite(msg.data):
-            bb = py_trees.blackboard.Blackboard()
-            bb.set(BB_TARGET_BEARING, float(msg.data))
-            bb.set(BB_LAST_SEEN, time.monotonic())
+    def _now(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
 
-    def _range_cb(self, msg: Float32):
-        py_trees.blackboard.Blackboard().set(BB_TARGET_RANGE, float(msg.data))
+    def _target_cb(self, msg: Vector3Stamped):
+        if self._target.update(stamp_to_sec(msg.header.stamp),
+                               float(msg.vector.x), float(msg.vector.y)):
+            py_trees.blackboard.Blackboard().set(BB_LAST_SEEN, self._now())
+            self._refresh_target()
 
-    def _position_cb(self, msg):
-        if self._robot_pose is None:
+    def _refresh_target(self):
+        """Blackboard target = the estimate relative to the robot now."""
+        rel = self._target.relative()
+        if rel is None:
             return
-        x, y, yaw = self._robot_pose
-        px, py = msg.point.x, msg.point.y
-        self._target_xy = (x + px * math.cos(yaw) - py * math.sin(yaw),
-                           y + px * math.sin(yaw) + py * math.cos(yaw))
+        bearing, rng = rel
+        bb = py_trees.blackboard.Blackboard()
+        bb.set(BB_TARGET_BEARING, bearing)
+        bb.set(BB_TARGET_RANGE, rng if rng is not None else -1.0)
 
     def _scan_cb(self, msg: LaserScan):
         py_trees.blackboard.Blackboard().set(
@@ -463,9 +493,9 @@ class SecurityGuardBTNode(Node):
             front_clearance(msg.ranges, msg.angle_min, msg.angle_increment))
 
     def _odom_cb(self, msg):
-        p, q = msg.pose.pose.position, msg.pose.pose.orientation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        p = msg.pose.pose.position
+        yaw = yaw_from_quaternion(msg.pose.pose.orientation)
+        self._target.add_pose(stamp_to_sec(msg.header.stamp), p.x, p.y, yaw)
         if self._robot_pose is not None:
             self._metrics['distance_traveled_m'] += math.hypot(
                 p.x - self._robot_pose[0], p.y - self._robot_pose[1])
@@ -474,6 +504,7 @@ class SecurityGuardBTNode(Node):
     # ------------------------------------------------------------------
 
     def _tick(self):
+        self._refresh_target()
         self._bt.tick()
         state = active_protocol(self._bt)
         if state != self._state:
@@ -481,18 +512,38 @@ class SecurityGuardBTNode(Node):
             if state == 'IntruderProtocol':
                 self._metrics['intruder_detections'] += 1
                 self._add_sighting_marker()
+            elif self._state == 'IntruderProtocol' and state == 'SearchProtocol':
+                self._metrics['track_losses'] += 1
             self._state = state
         self._state_pub.publish(String(data=state))
 
         if state == 'IntruderProtocol':
             self._metrics['time_following_sec'] += 0.1
+            self._record_follow_error()
         wp_now = _bb_get(BB_WP_INDEX, 0)
         if wp_now != self._prev_wp_idx:
             self._metrics['waypoints_visited'] += 1
             self._prev_wp_idx = wp_now
 
+    def _record_follow_error(self):
+        err = self._follow_err
+        err['n'] += 1
+        err['bearing_sq'] += _bb_get(BB_TARGET_BEARING, 0.0) ** 2
+        rng = _bb_get(BB_TARGET_RANGE, -1.0)
+        if rng > 0.0:
+            err['ranged'] += 1
+            err['range_sq'] += (rng - self._desired) ** 2
+
+    def _follow_rms(self):
+        """(bearing RMS in degrees, stand-off range RMS in m) while following."""
+        err = self._follow_err
+        bearing = math.degrees(math.sqrt(err['bearing_sq'] / err['n'])) if err['n'] else 0.0
+        rng = math.sqrt(err['range_sq'] / err['ranged']) if err['ranged'] else 0.0
+        return bearing, rng
+
     def _publish_metrics(self):
         elapsed = (self.get_clock().now() - self._session_start).nanoseconds / 1e9
+        bearing_rms, range_rms = self._follow_rms()
         diag = DiagnosticArray()
         diag.header.stamp = self.get_clock().now().to_msg()
         status = DiagnosticStatus()
@@ -506,6 +557,10 @@ class SecurityGuardBTNode(Node):
                      value=str(self._metrics['waypoints_visited'])),
             KeyValue(key='intruder_detections',
                      value=str(self._metrics['intruder_detections'])),
+            KeyValue(key='track_losses',
+                     value=str(self._metrics['track_losses'])),
+            KeyValue(key='follow_bearing_rms_deg', value=f'{bearing_rms:.1f}'),
+            KeyValue(key='follow_range_rms_m', value=f'{range_rms:.2f}'),
             KeyValue(key='time_following_sec',
                      value=f"{self._metrics['time_following_sec']:.1f}"),
             KeyValue(key='distance_traveled_m',
@@ -517,7 +572,8 @@ class SecurityGuardBTNode(Node):
 
     def _add_sighting_marker(self):
         """Mark where the intruder was seen (or the robot, if not ranged)."""
-        where = self._target_xy or (self._robot_pose[:2] if self._robot_pose else None)
+        where = self._target.target_xy or (
+            self._robot_pose[:2] if self._robot_pose else None)
         if where is None:
             return
         stamp = self.get_clock().now().to_msg()

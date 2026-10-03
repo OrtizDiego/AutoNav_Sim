@@ -41,6 +41,7 @@ SCRIPTS = [
     'person_tracker.py',
     'security_guard_bt.py',
     'system_monitor.py',
+    'perf_monitor.py',
 ]
 
 PKG_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

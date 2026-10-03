@@ -24,7 +24,7 @@ NEED_YOLO := test -s $(YOLO_MODEL) || { \
 
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
-        ball-sim teleop-ball person-sim yolo-sim
+        ball-sim teleop-ball person-sim yolo-sim perf
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -58,6 +58,7 @@ help:
 	@echo "  save-map NAME=x - Save the current SLAM map (default: my_map)"
 	@echo "  nav             - Nav2 only (with an already running sim)"
 	@echo "  system-monitor  - Sensor watchdog + /trigger_estop (built into person-sim)"
+	@echo "  perf            - Real-time factor, topic rates and latencies of a running scenario"
 
 # --- DOCKER MANAGEMENT ---
 
@@ -140,3 +141,6 @@ nav:
 
 system-monitor:
 	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) system_monitor --ros-args --params-file src/$(PACKAGE_NAME)/config/behavior_params.yaml -p use_sim_time:=true"
+
+perf:
+	$(EXEC) "$(SOURCE) && ros2 run $(PACKAGE_NAME) perf_monitor --ros-args -p use_sim_time:=true"

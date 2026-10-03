@@ -53,8 +53,8 @@ Everything is grouped into four one-command scenarios. Each opens Gazebo and an 
 ### `make ball-sim`: chase the ball
 
 ```
-ball.world ──▶ camera ──▶ sensor_fusion (mode hsv) ──▶ /target_range, /target_bearing ──▶ ball_chaser ──▶ /cmd_vel
-                  lidar ──┘                                                          ball_controller ──▶ /ball/cmd_vel
+ball.world ──▶ camera ──▶ sensor_fusion (mode hsv) ──▶ /target (stamped) ──▶ ball_chaser ──▶ /cmd_vel
+                  lidar ──┘                                 /odom ──┘   ball_controller ──▶ /ball/cmd_vel
 ```
 
 * **ball_controller** drives the ball on a figure-eight through the U where the robot starts and the hall to its right. The path is checked against the map to keep the ball over 1 m from every wall. The ball plays with the robot: it runs when the robot gets close, waits when the robot falls behind, pauses now and then, and sometimes turns back.
@@ -70,8 +70,9 @@ graph LR
     CAM[/camera/image_raw/] --> PT[person_tracker<br/>YOLOv8n + CSRT + Kalman]
     PT -->|/person_bbox| SF[sensor_fusion<br/>mode person]
     SCAN[/scan/] --> SF
-    SF -->|/target_range<br/>/target_bearing| BT[security_guard_bt]
+    SF -->|/target<br/>stamped| BT[security_guard_bt]
     SCAN --> BT
+    ODOM[/odom/] --> BT
     NAV[Nav2 + AMCL] <-->|goToPose| BT
     BT -->|/cmd_vel| ROBOT[Robot]
     NAV -->|/cmd_vel| ROBOT
@@ -174,6 +175,7 @@ src/my_bot/
 ├── my_bot/
 │   ├── sensor_fusion.py                 # camera box + lidar → range / bearing (hsv | person)
 │   ├── follow_control.py                # stand-off follow law (ball_chaser + BT)
+│   ├── target_estimate.py               # detection-latency compensation with odometry
 │   ├── ball_chaser.py                   # ball-sim: follow the fused ball
 │   ├── ball_controller.py               # ball-sim: ball autopilot + teleop arbitration
 │   ├── ball_teleop.py                   # make teleop-ball
@@ -182,7 +184,8 @@ src/my_bot/
 │   ├── person_controller.py             # pedestrian WALK / RUN / EXHAUSTED on the map
 │   ├── clearance_map.py                 # distance-to-wall lookups on the saved map
 │   ├── security_guard_bt.py             # py_trees security guard
-│   └── system_monitor.py                # watchdog + e-stop
+│   ├── system_monitor.py                # watchdog + e-stop
+│   └── perf_monitor.py                  # make perf: real-time factor, rates, latencies
 ├── test/                                # unit tests (no ROS runtime needed)
 ├── meshes/                              # TurtleBot3 Waffle Pi STL meshes (Apache-2.0)
 ├── urdf/                                # Xacro robot description (lidar + camera noise)
@@ -215,6 +218,7 @@ src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walkin
 | `make slam` / `make save-map NAME=x` | SLAM mapping / save the map |
 | `make nav` | Nav2 only, next to an already running sim |
 | `make system-monitor` | Watchdog + e-stop services (already part of person-sim) |
+| `make perf` | Real-time factor, topic rates and detection latency of a running scenario |
 
 ---
 
