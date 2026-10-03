@@ -175,7 +175,8 @@ class StaticTracker:
 @pytest.fixture
 def person_sim(monkeypatch, ros_params, fresh_blackboard):
     monkeypatch.setattr(pt, 'make_tracker', StaticTracker)
-    ros_params.update(mode='person', waypoint_dwell_secs=0.0)
+    ros_params.update(mode='person', waypoint_dwell_secs=0.0,
+                      model_path='/nonexistent/yolov8n.onnx')
     tracker = pt.PersonTrackerNode()
     tracker._session = FakeYolo()
     nodes = types.SimpleNamespace(

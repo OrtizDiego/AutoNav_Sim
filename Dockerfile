@@ -1,3 +1,18 @@
+# 0. YOLOv8n ONNX export (throwaway stage, keeps torch out of the image)
+# Ultralytics only publishes the .pt weights; the ONNX file person_tracker
+# loads has to be exported. The build fails here rather than shipping an
+# image without a model.
+FROM ubuntu:22.04 AS yolo_export
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip3 install --no-cache-dir ultralytics==8.4.172 onnx
+WORKDIR /export
+RUN yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12 \
+    && python3 -c "import onnx; onnx.checker.check_model('yolov8n.onnx')"
+
 # 1. Base Image: ROS 2 Humble (Desktop version includes visualization tools)
 FROM osrf/ros:humble-desktop-full
 
@@ -8,6 +23,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TERM xterm-256color
 
 # 3. Update and Install Essential Robotics Tools
+# numpy<2: onnxruntime would otherwise pull NumPy 2, which breaks the
+# system cv2 and cv_bridge (built against NumPy 1.x) for every vision node.
 RUN apt-get update && apt-get install -y \
     python3-colcon-common-extensions \
     ros-humble-gazebo-ros-pkgs \
@@ -23,11 +40,10 @@ RUN apt-get update && apt-get install -y \
     wget \
     git \
     nano \
-    && pip3 install onnxruntime-gpu \
-    && mkdir -p /root/models \
-    && wget -q "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx" \
-         -O /root/models/yolov8n.onnx 2>/dev/null || true \
+    && pip3 install "numpy<2" onnxruntime-gpu \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=yolo_export /export/yolov8n.onnx /root/models/yolov8n.onnx
 
 # 4. Create the Workspace
 WORKDIR /root/dev_ws

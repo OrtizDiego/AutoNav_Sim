@@ -267,7 +267,9 @@ PERSON = (320.0, 240.0, 100.0, 200.0, 0, 0.9)   # box (270, 140, 100, 200)
 def tracker_node(monkeypatch, ros_params):
     FakeTracker.instances = []
     monkeypatch.setattr(pt, 'make_tracker', FakeTracker)
-    ros_params.update(redetect_every=3, max_yolo_misses=2, max_coast_frames=2)
+    # Never the image's real /root/models/yolov8n.onnx: FakeSession instead.
+    ros_params.update(redetect_every=3, max_yolo_misses=2, max_coast_frames=2,
+                      model_path='/nonexistent/yolov8n.onnx')
     node = pt.PersonTrackerNode()
     node._session = FakeSession()
     node._session.boxes = [PERSON]
@@ -283,7 +285,8 @@ def _see(node, n=1):
 
 class TestPersonTrackerNode:
 
-    def test_interface_and_missing_model(self):
+    def test_interface_and_missing_model(self, tmp_path, ros_params):
+        ros_params['model_path'] = str(tmp_path / 'missing.onnx')
         node = pt.PersonTrackerNode()
         assert set(node.subscriptions) == {'/camera/image_raw'}
         assert set(node.publishers) == {
@@ -319,6 +322,19 @@ class TestPersonTrackerNode:
         assert node._session is None
         assert 'bad model' in node.logger.messages('error')[0]
 
+    def test_empty_model_file_is_reported(self, tmp_path, ros_params):
+        # What a failed download at image build time used to leave behind.
+        model = tmp_path / 'yolo.onnx'
+        model.write_bytes(b'')
+        ros_params['model_path'] = str(model)
+        node = pt.PersonTrackerNode()
+        assert node._session is None
+        assert 'empty' in node.logger.messages('error')[0]
+        debug = node.publishers['/person_tracker/image']
+        debug.subscribers = 1
+        _see(node)
+        assert not np.array_equal(debug.last.frame, _frame())   # warning drawn
+
     def test_detection_starts_a_track(self, tracker_node):
         detected, box = _see(tracker_node)
         assert detected
@@ -336,17 +352,23 @@ class TestPersonTrackerNode:
         assert tracker_node._session.calls == 1       # tracker, not YOLO
         assert tracker_node._box[0] > 270             # moved toward tracker
 
-    def test_redetection_keeps_a_tracker_that_agrees(self, tracker_node):
-        _see(tracker_node, 4)
-        assert tracker_node._session.calls == 2       # frames 1 and 4
-        assert len(FakeTracker.instances) == 1
-
-    def test_redetection_reseeds_a_drifted_tracker(self, tracker_node):
+    def test_every_detection_reseeds_the_tracker(self, tracker_node):
         _see(tracker_node)
-        FakeTracker.instances[0].box = (500, 10, 50, 50)
+        # CSRT grew the box a little: still overlapping, but YOLO wins.
+        FakeTracker.instances[0].box = (265, 130, 115, 230)
         _see(tracker_node, 3)
+        assert tracker_node._session.calls == 2       # frames 1 and 4
         assert len(FakeTracker.instances) == 2
         assert FakeTracker.instances[1].box == (270, 140, 100, 200)
+
+    def test_slow_camera_redetects_by_time(self, tracker_node):
+        _see(tracker_node)
+        tracker_node.clock.advance(0.1)
+        _see(tracker_node)
+        assert tracker_node._session.calls == 1       # frame 2: tracker
+        tracker_node.clock.advance(0.5)
+        _see(tracker_node)
+        assert tracker_node._session.calls == 2       # 0.6 s later: YOLO
 
     def test_yolo_misses_drop_the_track(self, tracker_node):
         _see(tracker_node)

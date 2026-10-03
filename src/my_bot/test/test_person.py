@@ -208,11 +208,6 @@ class TestTrackerHelpers:
         assert pt.select_person_box([(0, 0, 10, 10, 32, 0.95)]) is None
         assert pt.select_person_box([(0, 0, 10, 10, 0, 0.2)], 0.4) is None
 
-    def test_box_iou(self):
-        assert pt.box_iou((0, 0, 10, 10), (0, 0, 10, 10)) == pytest.approx(1.0)
-        assert pt.box_iou((0, 0, 10, 10), (100, 100, 10, 10)) == 0.0
-        assert pt.box_iou((0, 0, 10, 10), (5, 0, 10, 10)) == pytest.approx(1 / 3)
-
     def test_letterbox_shape_is_square(self):
         assert pt.letterbox_shape((480, 640, 3)) == (640, 640)
         assert pt.letterbox_shape((720, 1280, 3)) == (1280, 1280)
@@ -432,6 +427,18 @@ def test_yolo_person_stands_in_front_of_the_camera():
     assert 2.0 <= math.hypot(x, y) <= 4.0
     assert abs(bearing) < 1.089 / 2.0           # inside the camera's FOV
     assert math.cos(yaw - (bearing + math.pi)) > 0.9  # facing the robot
+
+
+@pytest.mark.parametrize('world', ['room.world', 'ball.world', 'person.world',
+                                   'yolo.world'])
+def test_world_has_its_own_floor_and_sun(world):
+    # An <include> of model://ground_plane only resolves with Gazebo's model
+    # path set; without it the world has no floor and the robot falls.
+    root = ET.parse(os.path.join(PKG_DIR, 'worlds', world)).getroot()
+    assert root.find('./world/include') is None
+    plane = root.find('./world/model[@name="ground_plane"]')
+    assert plane.find('.//collision/geometry/plane') is not None
+    assert root.find('./world/light[@type="directional"]') is not None
 
 
 def test_person_sim_gives_the_controller_the_museum_map():

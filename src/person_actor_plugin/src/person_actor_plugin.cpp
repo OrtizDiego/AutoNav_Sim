@@ -31,8 +31,18 @@
 //   <run_threshold>      speed (m/s) above which the run clip plays (1.6)
 //   <walk_animation_factor> clip seconds per metre for walking   (4.15)
 //   <run_animation_factor>  clip seconds per metre for running   (1.71)
-//   <height>             z of the hip (root bone) frame          (1.2138)
+//   <height>             z of the hip (root bone) frame          (0.98)
 //   <cmd_timeout>        stop if no command for this long (s)    (0.5)
+//   <collision_width>    thickness of the bone collision boxes   (0.12)
+//                        so the lidar sees the person; 0 = off
+//
+// The hip height was measured in the camera image: at 1.2138 (the value in
+// Gazebo's ActorPlugin) the walk.dae skin floats ~0.2 m above the floor
+// and the lidar scan plane passes under its feet.
+//
+// Gazebo gives every bone a 2 cm box collision but only enables them once
+// the links are Init()ed (as Gazebo's ActorCollisionsPlugin does); even
+// then 2 cm slips between 1-degree lidar beams, so the boxes are thickened.
 //
 // The animation factors were measured from Gazebo's walk.dae (5.75 s clip,
 // 1.38 m of hip travel) and run.dae (7.83 s clip, 4.59 m of hip travel).
@@ -49,6 +59,9 @@
 #include <gazebo/common/Events.hh>
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/physics/Actor.hh>
+#include <gazebo/physics/BoxShape.hh>
+#include <gazebo/physics/Collision.hh>
+#include <gazebo/physics/Link.hh>
 #include <gazebo/physics/World.hh>
 #include <gazebo_ros/node.hpp>
 #include <geometry_msgs/msg/twist.hpp>
@@ -76,8 +89,12 @@ public:
     run_threshold_ = sdf->Get<double>("run_threshold", 1.6).first;
     walk_factor_ = sdf->Get<double>("walk_animation_factor", 4.15).first;
     run_factor_ = sdf->Get<double>("run_animation_factor", 1.71).first;
-    height_ = sdf->Get<double>("height", 1.2138).first;
+    height_ = sdf->Get<double>("height", 0.98).first;
     cmd_timeout_ = sdf->Get<double>("cmd_timeout", 0.5).first;
+    const double collision_width = sdf->Get<double>("collision_width", 0.12).first;
+    if (collision_width > 0.0) {
+      EnableCollisions(collision_width);
+    }
 
     const auto anims = actor_->SkeletonAnimations();
     if (anims.find(walk_anim_) == anims.end()) {
@@ -128,6 +145,21 @@ public:
   }
 
 private:
+  void EnableCollisions(double width)
+  {
+    for (const auto & link : actor_->GetLinks()) {
+      link->Init();
+      for (const auto & collision : link->GetCollisions()) {
+        auto box = boost::dynamic_pointer_cast<gazebo::physics::BoxShape>(
+          collision->GetShape());
+        if (box) {
+          // Bone boxes are 2 cm x 2 cm x bone length, length along z.
+          box->SetSize(ignition::math::Vector3d(width, width, box->Size().Z()));
+        }
+      }
+    }
+  }
+
   void SetAnimation(const std::string & name)
   {
     if (name == current_anim_) {
@@ -223,7 +255,7 @@ private:
   double run_threshold_{1.6};
   double walk_factor_{4.15};
   double run_factor_{1.71};
-  double height_{1.2138};
+  double height_{0.98};
   double cmd_timeout_{0.5};
 
   double x_{0.0};

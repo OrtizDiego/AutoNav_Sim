@@ -350,7 +350,9 @@ _module('rclpy', ok=lambda: True, init=lambda **kw: None,
         spin=lambda node: None, shutdown=lambda: None)
 _module('rclpy.node', Node=Node)
 _module('rclpy.qos', qos_profile_sensor_data=None, QoSProfile=_Msg,
-        DurabilityPolicy=types.SimpleNamespace(TRANSIENT_LOCAL=1, VOLATILE=2))
+        DurabilityPolicy=types.SimpleNamespace(TRANSIENT_LOCAL=1, VOLATILE=2),
+        HistoryPolicy=types.SimpleNamespace(KEEP_LAST=1, KEEP_ALL=2),
+        ReliabilityPolicy=types.SimpleNamespace(RELIABLE=1, BEST_EFFORT=2))
 _module('cv_bridge', CvBridge=CvBridge)
 _module('builtin_interfaces')
 _module('builtin_interfaces.msg', Time=_Msg)
