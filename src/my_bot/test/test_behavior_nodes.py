@@ -348,3 +348,18 @@ def test_main_shuts_down_even_if_spin_fails(monkeypatch):
     with pytest.raises(RuntimeError):
         pc.main()
     assert calls == ['shutdown']
+
+
+@pytest.mark.parametrize('module', sorted(NODES))
+def test_ctrl_c_exits_cleanly(monkeypatch, fresh_blackboard, module):
+    """Ctrl+C: rclpy shuts the context down itself; a second shutdown raised."""
+    import rclpy
+    calls = []
+
+    def interrupted(node):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(rclpy, 'spin', interrupted)
+    monkeypatch.setattr(rclpy, 'ok', lambda: False)
+    monkeypatch.setattr(rclpy, 'shutdown', lambda: calls.append('shutdown'))
+    __import__(f'my_bot.{module}', fromlist=['main']).main()
+    assert calls == []

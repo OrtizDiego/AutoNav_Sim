@@ -101,7 +101,7 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 - **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`) + OpenCV tracker (CSRT → KCF → MIL fallback) + constant-velocity Kalman filter. Publishes `/person_bbox` (PolygonStamped: top-left + bottom-right px, empty = none; header = the image's), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
 - **person_controller.py**: Pedestrian behaviour (WALK / RUN / EXHAUSTED) publishing `/person/cmd_vel` for the actor plugin. Pure `PersonBrain` steers on `clearance_map.py` (distance transform of `maps/my_map`, passed as `map_yaml`): line-of-sight wander targets, `safe_heading` fan search, speed capped to stop before walls. A `/person_detected` lock within `notice_radius` triggers a stamina-limited sprint away from the robot.
 - **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m), SearchProtocol (turn to last-seen side), PatrolProtocol (Nav2 waypoints)]. Detector-agnostic: reads sensor_fusion topics. Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses and follow bearing/range RMS), `/intruder_sightings` (one sphere per re-acquisition, not a goal). All timing runs on the node clock (sim time).
-- **perf_monitor.py**: `make perf`: real-time factor, per-topic sim-Hz and message age (now - stamp) on `/perf_monitor` + log. person_tracker also logs frames/s and mean YOLO/tracker ms every `stats_period`.
+- **perf_monitor.py**: `make perf`: real-time factor, per-topic publisher count, sim-Hz and message age (now - stamp) on `/perf_monitor` + log. person_tracker also logs frames/s and mean YOLO/tracker ms every `stats_period`. Nav2's velocity_smoother publishes /cmd_vel on a 20 Hz wall timer, so it reads 20 / RTF sim Hz (~30 at RTF 0.67) from one publisher.
 - **system_monitor.py**: heartbeats → `/system_health`; `/trigger_estop` latches `/estop` (Bool, transient local) which the BT obeys; `/clear_estop` releases.
 
 **RViz Visualization**
@@ -203,6 +203,10 @@ The same map drives person_controller's wall avoidance and is checked by the bal
 ```bash
 ros2 topic pub -1 /initialpose geometry_msgs/PoseWithCovarianceStamped "{ header: { frame_id: 'map' }, pose: { pose: { position: { x: 0.0, y: 0.0, z: 0.0 }, orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } } } }"
 ```
+
+**"Frame [map] does not exist" right after launch** → normal until AMCL is active and has processed a scan; on a CPU-only machine person-sim takes a while (Gazebo, YOLO and Nav2 start together). If it persists, look for leftovers (`make stop`) or a failed Nav2 bringup in the launch output (`Failed to change state`, `heartbeat`).
+
+**Debug images** (`/sensor_fusion/image`, `/person_tracker/image`) are published best effort: reliable, a slow RViz stalled sensor_fusion (/target up to 2 s late with the panel open). An RViz Image display on them must use Reliability Policy "Best Effort".
 
 **Ball not detected** → Check the `sensor_fusion` HSV thresholds in `config/behavior_params.yaml`; open the "Sensor fusion" image in RViz to see what it sees
 

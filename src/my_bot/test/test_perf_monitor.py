@@ -18,6 +18,7 @@ import types
 
 from geometry_msgs.msg import Twist, Vector3Stamped
 import pytest
+from rclpy.node import Node
 from sensor_msgs.msg import Image
 
 from my_bot import perf_monitor as pm
@@ -48,10 +49,11 @@ def test_real_time_factor():
 def test_report_table():
     text = pm.format_report(0.5, {
         '/target': {'hz': 4.0, 'age_mean_ms': 310.0, 'age_max_ms': 480.0},
-        '/cmd_vel': {'hz': 10.0}})
+        '/cmd_vel': {'hz': 10.0, 'publishers': 2}})
     assert text.splitlines()[0] == 'real-time factor 0.50'
     assert '310/480' in text
-    assert text.splitlines()[-1].split() == ['/cmd_vel', '10.0', '-']
+    assert text.splitlines()[-2].split() == ['/target', '-', '4.0', '310/480']
+    assert text.splitlines()[-1].split() == ['/cmd_vel', '2', '10.0', '-']
 
 
 class TestPerfMonitorNode:
@@ -88,7 +90,8 @@ class TestPerfMonitorNode:
         node.timers[0]()
         assert node.publishers['/perf_monitor'].last.status[0].message == '1.00'
 
-    def test_reports_rtf_rates_and_ages(self, node):
+    def test_reports_rtf_rates_and_ages(self, node, monkeypatch):
+        monkeypatch.setattr(Node, 'publisher_counts', {'/target': 1, '/cmd_vel': 1})
         # 2 s of simulation take 4 s of wall time: the sim runs at half speed
         for i in range(4):
             node.clock.advance(0.5)
@@ -104,6 +107,7 @@ class TestPerfMonitorNode:
         assert rtf.message == '0.50'
         assert rtf.level == rtf.WARN
         target = {kv.key: kv.value for kv in status['perf_monitor: /target'].values}
-        assert target == {'hz': '2.0', 'age_mean_ms': '300.0', 'age_max_ms': '300.0'}
+        assert target == {'hz': '2.0', 'age_mean_ms': '300.0', 'age_max_ms': '300.0',
+                          'publishers': '1'}
         assert status['perf_monitor: /cmd_vel'].message == '2.0 Hz'
         assert 'real-time factor 0.50' in node.logger.messages('info')[0]

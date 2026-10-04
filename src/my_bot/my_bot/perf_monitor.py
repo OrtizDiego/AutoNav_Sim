@@ -30,6 +30,9 @@ Every ``report_period`` seconds this node logs, and publishes on
 
 Watched: /camera/image_raw (``watch_camera``; subscribing to raw images
 costs transport itself), /scan, /odom, /person_bbox, /target, /cmd_vel.
+The ``pubs`` column counts each topic's publishers. Nav2's
+velocity_smoother publishes /cmd_vel on a 20 Hz *wall* timer, so one
+publisher shows 20 / RTF sim Hz (~30 Hz at RTF 0.67) while Nav2 drives.
 Run with use_sim_time:=true so ages and rates are in simulation time.
 gazebo_ros publishes /clock at 10 Hz, so this node's clock trails the
 sensors' stamps by 0-100 ms: ages read about 50 ms low, and a sensor
@@ -81,11 +84,12 @@ def real_time_factor(sim_elapsed: float, wall_elapsed: float) -> float:
 def format_report(rtf: float, rows: dict) -> str:
     """Format the real-time factor, then one line per topic."""
     lines = [f'real-time factor {rtf:.2f}',
-             f'  {"topic":<20} {"Hz (sim)":>9} {"age ms mean/max":>16}']
+             f'  {"topic":<20} {"pubs":>4} {"Hz (sim)":>9} {"age ms mean/max":>16}']
     for topic, s in rows.items():
         age = (f'{s["age_mean_ms"]:.0f}/{s["age_max_ms"]:.0f}'
                if 'age_mean_ms' in s else '-')
-        lines.append(f'  {topic:<20} {s["hz"]:>9.1f} {age:>16}')
+        pubs = s.get('publishers', '-')
+        lines.append(f'  {topic:<20} {pubs:>4} {s["hz"]:>9.1f} {age:>16}')
     return '\n'.join(lines)
 
 
@@ -141,7 +145,8 @@ class PerfMonitorNode(Node):
         sim_elapsed = sim_now - self._window[0]
         rtf = real_time_factor(sim_elapsed, wall_now - self._window[1])
         self._window = (sim_now, wall_now)
-        rows = {t: s.summary(sim_elapsed) for t, s in self._stats.items()}
+        rows = {t: dict(s.summary(sim_elapsed), publishers=self.count_publishers(t))
+                for t, s in self._stats.items()}
         self.get_logger().info(format_report(rtf, rows))
 
         diag = DiagnosticArray()
@@ -155,7 +160,9 @@ class PerfMonitorNode(Node):
             status = DiagnosticStatus(
                 name=f'perf_monitor: {topic}', hardware_id='autonav_sim',
                 message=f'{s["hz"]:.1f} Hz')
-            status.values = [KeyValue(key=k, value=f'{v:.1f}') for k, v in s.items()]
+            status.values = [
+                KeyValue(key=k, value=str(v) if isinstance(v, int) else f'{v:.1f}')
+                for k, v in s.items()]
             diag.status.append(status)
         self._pub.publish(diag)
 
@@ -166,9 +173,12 @@ def main(args=None):
     node = PerfMonitorNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Ctrl+C: rclpy has already shut the context down
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

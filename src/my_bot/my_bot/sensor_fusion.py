@@ -68,7 +68,7 @@ from geometry_msgs.msg import PointStamped, PolygonStamped, Vector3Stamped
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Float32, Header
 
@@ -275,7 +275,13 @@ class SensorFusionNode(Node):
         self._pos_pub = self.create_publisher(PointStamped, '/target_position', 10)
         self._range_pub = self.create_publisher(Float32, '/target_range', 10)
         self._bearing_pub = self.create_publisher(Float32, '/target_bearing', 10)
-        self._debug_pub = self.create_publisher(Image, '/sensor_fusion/image', 1)
+        # Best effort: published reliably, the debug image stalled this node
+        # while RViz (software rendering) acknowledged it, and /target came
+        # out in bursts up to 2 s late with the RViz panel open.
+        self._debug_pub = self.create_publisher(
+            Image, '/sensor_fusion/image',
+            QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                       reliability=ReliabilityPolicy.BEST_EFFORT))
         self.get_logger().info(f'sensor_fusion running in {self._mode} mode')
 
     # ------------------------------------------------------------------
@@ -397,9 +403,12 @@ def main(args=None):
     node = SensorFusionNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Ctrl+C: rclpy has already shut the context down
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
