@@ -19,6 +19,8 @@ import os
 import subprocess
 import xml.etree.ElementTree as ET
 
+import yaml
+
 
 def _urdf_dir():
     urdf_dir = os.environ.get('URDF_DIR')
@@ -80,15 +82,28 @@ def test_camera_xacro_has_noise():
     assert len(gaussian) > 0, "No Gaussian noise model found in camera.xacro"
 
 
-def test_camera_update_rate_is_30():
-    """camera.xacro must have update_rate of 30 Hz."""
+def test_camera_update_rate_is_15():
+    """camera.xacro must have update_rate of 15 Hz (Phase 1: render less)."""
     path = os.path.join(_urdf_dir(), 'camera.xacro')
     tree = ET.parse(path)
     root = tree.getroot()
     rate_elems = root.findall('.//{*}update_rate') + root.findall('.//update_rate')
     assert len(rate_elems) > 0, "No <update_rate> element in camera.xacro"
-    assert rate_elems[0].text.strip() == '30', (
-        f"Expected update_rate=30, got {rate_elems[0].text}")
+    assert rate_elems[0].text.strip() == '15', (
+        f"Expected update_rate=15, got {rate_elems[0].text}")
+
+
+def test_camera_model_matches_sensor_fusion_params():
+    """sensor_fusion's camera model must describe the simulated camera."""
+    root = ET.parse(os.path.join(_urdf_dir(), 'camera.xacro')).getroot()
+    camera = root.find('.//camera')
+    params_path = os.path.join(
+        os.path.dirname(_urdf_dir()), 'config', 'behavior_params.yaml')
+    with open(params_path) as f:
+        fusion = yaml.safe_load(f)['sensor_fusion']['ros__parameters']
+    assert int(camera.find('image/width').text) == fusion['image_width']
+    assert int(camera.find('image/height').text) == fusion['image_height']
+    assert float(camera.find('horizontal_fov').text) == fusion['horizontal_fov']
 
 
 def test_gazebo_control_xacro_has_wheel_friction():

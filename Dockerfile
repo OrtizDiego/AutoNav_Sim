@@ -1,7 +1,8 @@
 # 0. YOLOv8n ONNX export (throwaway stage, keeps torch out of the image)
 # Ultralytics only publishes the .pt weights; the ONNX file person_tracker
 # loads has to be exported. The build fails here rather than shipping an
-# image without a model.
+# image without a model. 320 px input: a quarter of the 640 px work, and the
+# camera is 320x240; person_tracker reads the size from the model.
 FROM ubuntu:22.04 AS yolo_export
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip3 install --no-cache-dir ultralytics==8.4.172 onnx
 WORKDIR /export
-RUN yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12 \
+RUN yolo export model=yolov8n.pt format=onnx imgsz=320 opset=12 \
     && python3 -c "import onnx; onnx.checker.check_model('yolov8n.onnx')"
 
 # 1. Base Image: ROS 2 Humble (Desktop version includes visualization tools)

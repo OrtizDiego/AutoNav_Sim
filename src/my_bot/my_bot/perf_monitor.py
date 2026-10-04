@@ -23,7 +23,7 @@ Every ``report_period`` seconds this node logs, and publishes on
   the simulator (rendering, physics) is the bottleneck.
 - per topic: rate in simulation Hz, and for stamped topics the age of each
   message on arrival (now - header.stamp, simulation ms). Sensor rates
-  below their configured value (camera 30 Hz, lidar 10 Hz) mean Gazebo
+  below their configured value (camera 15 Hz, lidar 10 Hz) mean Gazebo
   cannot render them in time; a large /person_bbox or /target age means
   the detection pipeline is slow; /target age is the dead time the
   follow controller has to compensate.

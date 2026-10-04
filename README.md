@@ -48,6 +48,8 @@ Everything is grouped into four one-command scenarios. Each opens Gazebo and an 
 | `make person-sim` | **The full demo:** a security guard that patrols, spots a running person with YOLO, follows them, searches when they escape and resumes the patrol. |
 | `make yolo-sim` | A person standing in front of the robot: proof of YOLO detection + LiDAR fusion. |
 
+> **Slow machine?** Add `GUI=false` to any scenario (`make person-sim GUI=false`): Gazebo runs without its window and RViz shows the robot, scan, map and camera. With software rendering the Gazebo window costs CPU the simulation needs.
+
 > **Why does `make sim` show no map?** `make sim` opens the navigation RViz layout, but nothing publishes `/map` (or the `map → odom` transform) until Nav2's map_server and AMCL run. Start them with `make nav` in a second terminal, or use `make nav-sim`, which starts both. AMCL's initial pose is the spawn point (`nav2_params.yaml`), so no "2D Pose Estimate" click is needed.
 
 ### `make ball-sim`: chase the ball
@@ -67,7 +69,7 @@ ball.world ──▶ camera ──▶ sensor_fusion (mode hsv) ──▶ /target
 
 ```mermaid
 graph LR
-    CAM[/camera/image_raw/] --> PT[person_tracker<br/>YOLOv8n + CSRT + Kalman]
+    CAM[/camera/image_raw/] --> PT[person_tracker<br/>YOLOv8n + KCF + Kalman]
     PT -->|/person_bbox| SF[sensor_fusion<br/>mode person]
     SCAN[/scan/] --> SF
     SF -->|/target<br/>stamped| BT[security_guard_bt]
@@ -92,7 +94,7 @@ Selector("SecurityGuard")
 ```
 
 * **person_controller** animates the pedestrian: it **walks** between random spots, **runs** away once the robot's tracker locks on, and is **exhausted** after a sprint. Gazebo actors have no physics, so it steers on the saved museum map. It only picks targets in line of sight, takes the heading closest to its goal that has free floor ahead, and caps its speed so it can always stop before a wall. A test simulates minutes of walking and fleeing on the real map and checks the person never gets within 0.5 m of a wall.
-* **person_tracker**: YOLOv8n reseeds an OpenCV tracker every 10 frames or 0.5 s, whichever comes first; a Kalman filter smooths the box and coasts through short dropouts.
+* **person_tracker**: YOLOv8n (320 px input) reseeds an OpenCV KCF tracker every 10 frames or 0.5 s, whichever comes first; a Kalman filter smooths the box and coasts through short dropouts. YOLO runs in a worker thread, so every camera frame is tracked and published without waiting for inference; its result is replayed through the frames that arrived meanwhile.
 * **sensor_fusion** (mode `person`) ranges the box with the LiDAR and falls back to a monocular estimate (person height / feet ground contact) when the beams miss the legs.
 * **security_guard_bt** publishes its active protocol on `/security_guard/state`, mission metrics on `/security_guard/metrics` and sighting markers on `/intruder_sightings`.
 * **E-stop:** `ros2 service call /trigger_estop std_srvs/srv/Trigger` latches it (the robot halts and Nav2 is cancelled). `ros2 service call /clear_estop std_srvs/srv/Trigger` releases it.
@@ -106,7 +108,7 @@ A person stands 3 m in front of the robot, with a crate and a barrel to either s
 ## 🛠️ Other Features
 
 * **Mapping:** `make slam` (with `make sim` + `make teleop`), then `make save-map`.
-* **Realistic sensor noise** in the Xacro URDF: LiDAR range σ = 0.01 m, camera pixel σ = 0.007.
+* **Realistic sensor noise** in the Xacro URDF: LiDAR range σ = 0.01 m, camera pixel σ = 0.007. The camera is 320×240 at 15 Hz, which is cheap enough to render in software.
 * **System watchdog** (`make system-monitor`, built into `person-sim`): `/system_health` diagnostics from `/scan` and camera heartbeats, plus the e-stop services.
 * **CI/CD:** GitHub Actions builds the workspace, runs the tests (launch files are built against a real ROS install) and uploads coverage.
 
@@ -208,7 +210,7 @@ src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walkin
 | `make image` | Rebuild the image and recreate the container on it (after `Dockerfile` changes) |
 | `make build` / `make clean` | Build the workspace / remove build artifacts |
 | `make test` / `make lint` | Unit tests / linters |
-| `make sim` | Robot in the museum, Gazebo + RViz |
+| `make sim` | Robot in the museum, Gazebo + RViz (any scenario: `GUI=false` for no Gazebo window) |
 | `make nav-sim` | `sim` + Nav2 in one command |
 | `make ball-sim` | Ball chase (fusion + chaser + ball autopilot) |
 | `make person-sim` | Security guard demo (Nav2 + YOLO + fusion + BT + watchdog) |

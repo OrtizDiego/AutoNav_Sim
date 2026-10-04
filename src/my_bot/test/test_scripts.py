@@ -114,6 +114,19 @@ def test_scenario_wiring(target):
     assert f'ros2 launch $(PACKAGE_NAME) {launch}' in _make_targets()[target]
 
 
+def test_scenarios_can_run_without_the_gazebo_window():
+    """make <scenario> GUI=false reaches gazebo.launch.py's gui argument."""
+    targets = _make_targets()
+    for target in SCENARIOS:
+        assert targets[target].endswith('.launch.py $(SCENARIO_ARGS)"'), target
+    with open(os.path.join(REPO_ROOT, 'Makefile')) as f:
+        assert 'SCENARIO_ARGS := gui:=$(GUI)' in f.read()
+    with open(os.path.join(PKG_PATH, 'launch', 'sim.launch.py')) as f:
+        src = f.read()
+    assert "'gui', default_value='true'" in src
+    assert "'gui': LaunchConfiguration('gui')" in src
+
+
 def test_gazebo_launch_arguments_do_not_leak():
     """Gazebo's params_file:='' must not reach Nav2 (make nav-sim crashed on it)."""
     with open(os.path.join(PKG_PATH, 'launch', 'sim.launch.py')) as f:
