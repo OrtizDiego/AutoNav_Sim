@@ -315,9 +315,12 @@ def main(args=None):
     node = BallControllerNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Ctrl+C: rclpy has already shut the context down
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

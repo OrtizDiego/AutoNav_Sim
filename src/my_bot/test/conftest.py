@@ -262,6 +262,7 @@ class Node:
     """
 
     overrides = {}
+    publisher_counts = {}  # topic -> what count_publishers() reports
 
     def __init__(self, node_name='node', *args, **kwargs):
         self.node_name = node_name
@@ -288,6 +289,9 @@ class Node:
     def create_subscription(self, msg_type, topic, callback, qos):
         self.subscriptions[topic] = callback
         return callback
+
+    def count_publishers(self, topic):
+        return Node.publisher_counts.get(topic, 0)
 
     def create_service(self, srv_type, name, callback):
         self.services[name] = callback

@@ -247,7 +247,10 @@ class PersonTrackerNode(Node):
         self._bbox_pub = self.create_publisher(PolygonStamped, '/person_bbox', 10)
         self._track_pub = self.create_publisher(PointStamped, '/person_track', 10)
         self._detected_pub = self.create_publisher(Bool, '/person_detected', 10)
-        self._debug_pub = self.create_publisher(Image, '/person_tracker/image', 1)
+        # Best effort: a reliable debug image stalls this node while a slow
+        # RViz (software rendering) acknowledges it.
+        self._debug_pub = self.create_publisher(
+            Image, '/person_tracker/image', latest_frame)
 
     # ------------------------------------------------------------------
 
@@ -440,9 +443,12 @@ def main(args=None):
     node = PersonTrackerNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Ctrl+C: rclpy has already shut the context down
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
