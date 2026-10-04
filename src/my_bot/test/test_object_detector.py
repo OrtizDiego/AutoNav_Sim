@@ -23,7 +23,7 @@ postprocess(), which depend only on numpy and OpenCV.
 import numpy as np
 import pytest
 
-from my_bot.object_detector import preprocess, postprocess, _INPUT_SIZE
+from my_bot.object_detector import DEFAULT_INPUT_SIZE, postprocess, preprocess
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ class TestPreprocess:
     def test_output_shape(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         blob = preprocess(frame)
-        assert blob.shape == (1, 3, _INPUT_SIZE, _INPUT_SIZE)
+        assert blob.shape == (1, 3, DEFAULT_INPUT_SIZE, DEFAULT_INPUT_SIZE)
 
     def test_output_dtype(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -64,7 +64,15 @@ class TestPreprocess:
         # Tall image (480x240) — should still produce 640x640 output
         frame = np.zeros((480, 240, 3), dtype=np.uint8)
         blob = preprocess(frame)
-        assert blob.shape == (1, 3, _INPUT_SIZE, _INPUT_SIZE)
+        assert blob.shape == (1, 3, DEFAULT_INPUT_SIZE, DEFAULT_INPUT_SIZE)
+
+    def test_320_model_input_keeps_the_camera_frame_unscaled(self):
+        # The image's model is exported at 320 px; the camera is 320x240.
+        frame = np.full((240, 320, 3), 200, dtype=np.uint8)
+        blob = preprocess(frame, 320)
+        assert blob.shape == (1, 3, 320, 320)
+        assert float(blob[0, 0, 239, 319]) == pytest.approx(200 / 255.0)
+        assert float(blob[0, 0, 240, 0]) == 0.0           # bottom padding
 
     def test_values_in_unit_range(self):
         frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
@@ -77,9 +85,9 @@ class TestPreprocess:
 # postprocess() tests
 # ---------------------------------------------------------------------------
 
-def _make_output(cx, cy, w, h, class_id, score, n_classes=80):
-    """Build a minimal [1, 84, 8400] array with one detection."""
-    output = np.zeros((1, 4 + n_classes, 8400), dtype=np.float32)
+def _make_output(cx, cy, w, h, class_id, score, n_classes=80, anchors=8400):
+    """Build a minimal [1, 84, anchors] array with one detection."""
+    output = np.zeros((1, 4 + n_classes, anchors), dtype=np.float32)
     output[0, 0, 0] = cx
     output[0, 1, 0] = cy
     output[0, 2, 0] = w
@@ -162,3 +170,21 @@ class TestPostprocess:
         assert output.shape == (1, 84, 8400)
         results = postprocess(output, orig_shape=(640, 640), conf_threshold=0.5)
         assert len(results) == 1
+
+    def test_320_model_output_maps_back_to_the_camera(self):
+        """A 320 px model on a 320x240 frame: input pixels are image pixels."""
+        output = _make_output(160, 120, 40, 80, class_id=0, score=0.9,
+                              anchors=2100)
+        results = postprocess(output, orig_shape=(240, 320),
+                              conf_threshold=0.5, input_size=320)
+        assert len(results) == 1
+        x1, y1, x2, y2 = results[0][:4]
+        assert (x1, y1, x2, y2) == pytest.approx((140.0, 80.0, 180.0, 160.0))
+
+    def test_640_model_on_a_320_camera(self):
+        """An older 640 px model still decodes against a 320x240 frame."""
+        output = _make_output(320, 240, 80, 160, class_id=0, score=0.9)
+        results = postprocess(output, orig_shape=(240, 320),
+                              conf_threshold=0.5, input_size=640)
+        x1, y1, x2, y2 = results[0][:4]
+        assert (x1, y1, x2, y2) == pytest.approx((140.0, 80.0, 180.0, 160.0))

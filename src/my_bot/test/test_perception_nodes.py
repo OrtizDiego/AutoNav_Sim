@@ -19,8 +19,10 @@ conftest.py); YOLO is a fake onnxruntime session and the OpenCV tracker a
 scripted fake, so every branch of the tracking pipeline is deterministic.
 """
 
+from collections import deque
 import math
 import sys
+import threading
 import types
 
 import cv2
@@ -34,7 +36,7 @@ from my_bot import person_tracker as pt
 from my_bot import sensor_fusion as sf
 from my_bot import system_monitor as sm
 
-W, H = 640, 480
+W, H = 320, 240   # camera.xacro
 
 
 def _scan(value=2.0, n=360):
@@ -46,7 +48,7 @@ def _frame():
     return np.full((H, W, 3), 90, dtype=np.uint8)
 
 
-def _ball_frame(cx=W // 2, cy=H // 2, radius=40):
+def _ball_frame(cx=W // 2, cy=H // 2, radius=20):
     frame = _frame()
     cv2.circle(frame, (cx, cy), radius, (0, 0, 255), -1)  # BGR red
     return frame
@@ -95,7 +97,7 @@ class TestSensorFusionHsv:
         assert (pos.point.x, pos.point.y) == pytest.approx((2.0, 0.0), abs=0.02)
 
     def test_ball_on_the_left_has_positive_bearing(self, node):
-        node.subscriptions['/camera/image_raw'](_image(_ball_frame(cx=100)))
+        node.subscriptions['/camera/image_raw'](_image(_ball_frame(cx=50)))
         assert node.publishers['/target_bearing'].last.data > 0.2
 
     def test_ball_without_scan_has_no_range(self, node):
@@ -184,7 +186,7 @@ class TestSensorFusionPerson:
         assert rng == pytest.approx(4.0, rel=0.01)
 
     def test_no_range_when_head_and_feet_are_cut(self, node):
-        bearing, rng = self._bbox(node, (300.0, 0.0, 40.0, float(H)))
+        bearing, rng = self._bbox(node, (150.0, 0.0, 20.0, float(H)))
         assert math.isfinite(bearing)
         assert rng == -1.0
 
@@ -202,7 +204,7 @@ class TestSensorFusionPerson:
             node.subscriptions['/scan'](scan)
         msg = PolygonStamped()
         msg.header.stamp = types.SimpleNamespace(sec=20, nanosec=0)
-        msg.polygon.points = pt.box_to_polygon(self._full_body_box(node, 3.0, cx=200.0))
+        msg.polygon.points = pt.box_to_polygon(self._full_body_box(node, 3.0, cx=100.0))
         node.subscriptions['/person_bbox'](msg)
         target = node.publishers['/target'].last
         assert target.header.stamp.sec == 20
@@ -223,7 +225,7 @@ class TestSensorFusionPerson:
         assert debug.msgs == []                       # no frame yet
         node.subscriptions['/camera/image_raw'](_image(_frame()))
         self._bbox(node, self._full_body_box(node, 3.0))
-        self._bbox(node, (300.0, 0.0, 40.0, float(H)))
+        self._bbox(node, (150.0, 0.0, 20.0, float(H)))
         assert len(debug.msgs) == 2
         assert debug.last.header.frame_id == 'camera_link_optical'
 
@@ -233,8 +235,8 @@ class TestSensorFusionPerson:
 # ---------------------------------------------------------------------------
 
 def _yolo_output(boxes):
-    """Raw [1, 84, 8400] YOLOv8 output; boxes are (cx, cy, w, h, cls, score)."""
-    out = np.zeros((1, 84, 8400), dtype=np.float32)
+    """Raw [1, 84, 2100] YOLOv8 output (320 px); boxes are (cx, cy, w, h, cls, score)."""
+    out = np.zeros((1, 84, 2100), dtype=np.float32)
     for i, (cx, cy, w, h, cls, score) in enumerate(boxes):
         out[0, :4, i] = [cx, cy, w, h]
         out[0, 4 + cls, i] = score
@@ -255,11 +257,12 @@ class FakeSession:
         return ['CPUExecutionProvider']
 
     def get_inputs(self):
-        return [types.SimpleNamespace(name='images')]
+        # The image's 320 px export: input pixels are camera pixels.
+        return [types.SimpleNamespace(name='images', shape=[1, 3, 320, 320])]
 
     def run(self, outputs, feeds):
         self.calls += 1
-        assert feeds['images'].shape == (1, 3, 640, 640)
+        assert feeds['images'].shape == (1, 3, 320, 320)
         if self.fail:
             raise RuntimeError('inference failed')
         return [_yolo_output(self.boxes)]
@@ -270,22 +273,27 @@ class FakeTracker:
 
     instances = []
 
-    def __init__(self):
+    def __init__(self, preferred='kcf'):
+        self.preferred = preferred
         self.box = None
         self.ok = True
         self.fail_init = False
+        self.init_frame = None
+        self.updates = []           # frames passed to update(), in order
         FakeTracker.instances.append(self)
 
     def init(self, frame, box):
         if self.fail_init:
             raise RuntimeError('init failed')
+        self.init_frame = frame
         self.box = box
 
     def update(self, frame):
+        self.updates.append(frame)
         return self.ok, self.box
 
 
-PERSON = (320.0, 240.0, 100.0, 200.0, 0, 0.9)   # box (270, 140, 100, 200)
+PERSON = (160.0, 120.0, 50.0, 100.0, 0, 0.9)    # box (135, 70, 50, 100)
 
 
 @pytest.fixture
@@ -293,8 +301,11 @@ def tracker_node(monkeypatch, ros_params):
     FakeTracker.instances = []
     monkeypatch.setattr(pt, 'make_tracker', FakeTracker)
     # Never the image's real /root/models/yolov8n.onnx: FakeSession instead.
+    # Inline YOLO: these tests check the per-frame logic deterministically;
+    # TestAsyncDetection covers the worker thread.
     ros_params.update(redetect_every=3, max_yolo_misses=2, max_coast_frames=2,
-                      model_path='/nonexistent/yolov8n.onnx')
+                      model_path='/nonexistent/yolov8n.onnx',
+                      async_detection=False)
     node = pt.PersonTrackerNode()
     node._session = FakeSession()
     node._session.boxes = [PERSON]
@@ -412,28 +423,28 @@ class TestPersonTrackerNode:
     def test_detection_starts_a_track(self, tracker_node):
         detected, box = _see(tracker_node)
         assert detected
-        assert box == [270.0, 140.0, 100.0, 200.0]
+        assert box == [135.0, 70.0, 50.0, 100.0]
         track = tracker_node.publishers['/person_track'].last
-        assert (track.point.x, track.point.y) == (320.0, 240.0)
+        assert (track.point.x, track.point.y) == (160.0, 120.0)
         assert track.header.frame_id == 'camera_link_optical'
         assert len(FakeTracker.instances) == 1
 
     def test_tracker_follows_between_detections(self, tracker_node):
         _see(tracker_node)
         tracker = FakeTracker.instances[0]
-        tracker.box = (280, 140, 100, 200)
+        tracker.box = (145, 70, 50, 100)
         _see(tracker_node)
         assert tracker_node._session.calls == 1       # tracker, not YOLO
-        assert tracker_node._box[0] > 270             # moved toward tracker
+        assert tracker_node._box[0] > 135             # moved toward tracker
 
     def test_every_detection_reseeds_the_tracker(self, tracker_node):
         _see(tracker_node)
-        # CSRT grew the box a little: still overlapping, but YOLO wins.
-        FakeTracker.instances[0].box = (265, 130, 115, 230)
+        # The tracker grew the box a little: still overlapping, but YOLO wins.
+        FakeTracker.instances[0].box = (132, 65, 58, 115)
         _see(tracker_node, 3)
         assert tracker_node._session.calls == 2       # frames 1 and 4
         assert len(FakeTracker.instances) == 2
-        assert FakeTracker.instances[1].box == (270, 140, 100, 200)
+        assert FakeTracker.instances[1].box == (135, 70, 50, 100)
 
     def test_slow_camera_redetects_by_time(self, tracker_node):
         _see(tracker_node)
@@ -453,7 +464,7 @@ class TestPersonTrackerNode:
         assert 'dropping track' in tracker_node.logger.messages('info')[0]
 
     def test_detections_of_other_classes_are_ignored(self, tracker_node):
-        tracker_node._session.boxes = [(320.0, 240.0, 100.0, 200.0, 32, 0.9)]
+        tracker_node._session.boxes = [(160.0, 120.0, 50.0, 100.0, 32, 0.9)]
         assert _see(tracker_node) == (False, [])
 
     def test_inference_errors_count_as_no_detection(self, tracker_node):
@@ -482,7 +493,7 @@ class TestPersonTrackerNode:
         assert tracker_node._kf is None
 
     def test_tracker_init_failure_is_survivable(self, tracker_node, monkeypatch):
-        def failing():
+        def failing(preferred='kcf'):
             t = FakeTracker()
             t.fail_init = True
             return t
@@ -519,13 +530,195 @@ class TestPersonTrackerNode:
         assert node.publishers['/person_tracker/image'].msgs == []
 
 
+class TestTrackerOptions:
+
+    def test_model_input_size_comes_from_the_model(self):
+        assert pt.model_input_size(FakeSession()) == 320
+        no_shape = types.SimpleNamespace(
+            get_inputs=lambda: [types.SimpleNamespace(name='images')])
+        assert pt.model_input_size(no_shape) == 640
+        dynamic = types.SimpleNamespace(get_inputs=lambda: [
+            types.SimpleNamespace(shape=[1, 3, 'height', 'width'])])
+        assert pt.model_input_size(dynamic) == 640
+
+    def test_load_logs_the_input_size_and_limits_threads(
+            self, tmp_path, monkeypatch, ros_params):
+        model = tmp_path / 'yolo.onnx'
+        model.write_bytes(b'onnx')
+        made = {}
+
+        class Session(FakeSession):
+            def __init__(self, path=None, providers=None, sess_options=None):
+                super().__init__(path, providers)
+                made['options'] = sess_options
+
+        monkeypatch.setitem(sys.modules, 'onnxruntime', types.SimpleNamespace(
+            InferenceSession=Session, SessionOptions=types.SimpleNamespace))
+        ros_params.update(model_path=str(model), inference_threads=2,
+                          async_detection=False)
+        node = pt.PersonTrackerNode()
+        assert '320 px input' in node.logger.messages('info')[0]
+        assert made['options'].intra_op_num_threads == 2
+
+    def test_default_threads_leave_onnxruntime_alone(
+            self, tmp_path, monkeypatch, ros_params):
+        model = tmp_path / 'yolo.onnx'
+        model.write_bytes(b'onnx')
+        monkeypatch.setitem(sys.modules, 'onnxruntime', types.SimpleNamespace(
+            InferenceSession=FakeSession, SessionOptions=types.SimpleNamespace))
+        ros_params.update(model_path=str(model), async_detection=False)
+        assert pt.PersonTrackerNode()._session is not None   # no sess_options
+
+    def test_tracker_parameter_is_validated(self, ros_params):
+        ros_params.update(tracker='boosting', async_detection=False)
+        with pytest.raises(ValueError, match='tracker'):
+            pt.PersonTrackerNode()
+
+    def test_tracker_parameter_reaches_make_tracker(
+            self, monkeypatch, ros_params):
+        FakeTracker.instances = []
+        monkeypatch.setattr(pt, 'make_tracker', FakeTracker)
+        ros_params.update(tracker='CSRT', async_detection=False,
+                          model_path='/nonexistent/yolov8n.onnx')
+        node = pt.PersonTrackerNode()
+        node._session = FakeSession()
+        node._session.boxes = [PERSON]
+        _see(node)
+        assert FakeTracker.instances[0].preferred == 'csrt'
+
+
+class TestDetectionWorker:
+
+    def test_result_is_kept_until_taken(self):
+        worker = pt.DetectionWorker(lambda frame: (1, 2, 3, 4))
+        try:
+            assert worker.take() is None
+            assert worker.submit(7, _frame())
+            assert worker.busy
+            assert worker.wait(5.0)
+            assert not worker.submit(8, _frame())   # result not taken yet
+            seq, box, seconds = worker.take()
+            assert (seq, box) == (7, (1, 2, 3, 4)) and seconds >= 0.0
+            assert not worker.busy
+            assert worker.take() is None
+        finally:
+            worker.stop()
+
+    def test_a_failing_detector_yields_no_box(self):
+        def broken(frame):
+            raise RuntimeError('boom')
+        worker = pt.DetectionWorker(broken)
+        try:
+            worker.submit(1, _frame())
+            assert worker.wait(5.0)
+            assert worker.take()[:2] == (1, None)
+        finally:
+            worker.stop()
+
+    def test_stop_ends_the_thread(self):
+        worker = pt.DetectionWorker(lambda frame: None)
+        worker.stop()
+        assert not worker._thread.is_alive()
+        assert not worker.submit(1, _frame())
+
+
+@pytest.fixture
+def async_node(monkeypatch, ros_params):
+    """Async tracker whose YOLO waits for ``node.gate`` to open."""
+    FakeTracker.instances = []
+    monkeypatch.setattr(pt, 'make_tracker', FakeTracker)
+    ros_params.update(model_path='/nonexistent/yolov8n.onnx',
+                      redetect_every=100, redetect_period=100.0)
+    node = pt.PersonTrackerNode()
+    node._session = FakeSession()
+    node._session.boxes = [PERSON]
+    gate = threading.Event()
+
+    def gated_yolo(frame):
+        assert gate.wait(5.0)
+        return node._run_yolo(frame)
+    node._worker.stop()
+    node._worker = pt.DetectionWorker(gated_yolo)
+    node.gate = gate
+    yield node
+    gate.set()
+    node.destroy_node()
+
+
+def _numbered_frame(i):
+    return np.full((H, W, 3), i, dtype=np.uint8)
+
+
+def _feed(node, i):
+    node.subscriptions['/camera/image_raw'](_image(_numbered_frame(i)))
+    return node.publishers['/person_detected'].last.data
+
+
+class TestAsyncDetection:
+
+    def test_frames_do_not_wait_for_yolo(self, async_node):
+        assert not _feed(async_node, 1)               # YOLO busy on frame 1
+        assert not _feed(async_node, 2)               # published anyway
+        assert async_node._session.calls == 0
+        assert len(async_node.publishers['/person_bbox'].msgs) == 2
+
+    def test_detection_is_replayed_onto_the_newest_frame(self, async_node):
+        for i in (1, 2, 3):
+            _feed(async_node, i)
+        async_node.gate.set()
+        assert async_node._worker.wait(5.0)
+        assert _feed(async_node, 4)                   # tracked from frame 4
+        tracker = FakeTracker.instances[0]
+        assert tracker.init_frame[0, 0, 0] == 1       # seeded where YOLO looked
+        assert [f[0, 0, 0] for f in tracker.updates] == [2, 3, 4]
+        assert async_node._box == (135, 70, 50, 100)
+        assert async_node._session.calls == 1         # one detection in flight
+
+    def test_detection_older_than_the_history_seeds_the_newest_frame(
+            self, async_node):
+        async_node._history = deque(maxlen=2)
+        for i in (1, 2, 3):
+            _feed(async_node, i)
+        async_node.gate.set()
+        assert async_node._worker.wait(5.0)
+        assert _feed(async_node, 4)
+        tracker = FakeTracker.instances[0]
+        assert tracker.init_frame[0, 0, 0] == 4
+        assert [f[0, 0, 0] for f in tracker.updates] == [4]
+
+    def test_misses_still_drop_the_track(self, async_node):
+        async_node.gate.set()
+        _feed(async_node, 1)
+        assert async_node._worker.wait(5.0)
+        assert _feed(async_node, 2)                   # track from frame 1
+        async_node._session.boxes = []
+        for i in (3, 4, 5, 6):
+            async_node.clock.advance(200.0)           # YOLO due every frame
+            _feed(async_node, i)
+            assert async_node._worker.wait(5.0)
+        assert not async_node.publishers['/person_detected'].last.data
+        assert 'dropping track' in async_node.logger.messages('info')[0]
+
+    def test_destroy_stops_the_worker(self, async_node):
+        async_node.destroy_node()
+        assert not async_node._worker._thread.is_alive()
+
+
 class TestMakeTracker:
 
-    def test_prefers_csrt(self, monkeypatch):
+    def test_prefers_kcf(self, monkeypatch):
+        fake = types.SimpleNamespace(TrackerCSRT_create=lambda: 'csrt',
+                                     TrackerKCF_create=lambda: 'kcf',
+                                     TrackerMIL_create=lambda: 'mil')
+        monkeypatch.setattr(pt, 'cv2', fake)
+        assert pt.make_tracker() == 'kcf'
+        assert pt.make_tracker('csrt') == 'csrt'
+
+    def test_falls_back_when_the_preferred_one_is_missing(self, monkeypatch):
         fake = types.SimpleNamespace(TrackerCSRT_create=lambda: 'csrt',
                                      TrackerMIL_create=lambda: 'mil')
         monkeypatch.setattr(pt, 'cv2', fake)
-        assert pt.make_tracker() == 'csrt'
+        assert pt.make_tracker('kcf') == 'csrt'
 
     def test_falls_back_to_the_legacy_module(self, monkeypatch):
         fake = types.SimpleNamespace(legacy=types.SimpleNamespace(
@@ -540,10 +733,10 @@ class TestMakeTracker:
 
     def test_real_opencv_has_a_tracker(self):
         tracker = pt.make_tracker()
-        tracker.init(_ball_frame(), (280, 200, 80, 80))
+        tracker.init(_ball_frame(), (140, 100, 40, 40))
         ok, box = tracker.update(_ball_frame())
         assert ok
-        assert abs(box[0] - 280) <= 10
+        assert abs(box[0] - 140) <= 5
 
 
 # ---------------------------------------------------------------------------

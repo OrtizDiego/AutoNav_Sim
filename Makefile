@@ -24,6 +24,10 @@ NEED_YOLO := test -s $(YOLO_MODEL) || { \
 # A scenario starts from a clean container: stop what an earlier run left
 # behind (closing a terminal does not stop docker exec; see src/stop_sim.sh).
 STOP_LEFTOVERS := bash src/stop_sim.sh;
+# GUI=false: no Gazebo window (gzclient), RViz only. With software rendering
+# the window costs CPU the simulation needs. make person-sim GUI=false
+GUI ?= true
+SCENARIO_ARGS := gui:=$(GUI)
 
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
@@ -53,6 +57,7 @@ help:
 	@echo "  ball-sim        - Robot chases the red ball (HSV + lidar fusion)"
 	@echo "  person-sim      - Security guard: patrol + YOLO + fusion + follow (the demo)"
 	@echo "  yolo-sim        - Static person in front of the robot: YOLO + fusion proof"
+	@echo "  Faster: make <scenario> GUI=false  (no Gazebo window; RViz shows the sim)"
 	@echo ""
 	@echo "Tools (run next to a scenario, in a second terminal):"
 	@echo "  teleop          - Drive the robot with the keyboard"
@@ -112,19 +117,19 @@ test:
 # --- SCENARIOS ---
 
 sim:
-	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) sim.launch.py $(SCENARIO_ARGS)"
 
 nav-sim:
-	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) nav_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) nav_sim.launch.py $(SCENARIO_ARGS)"
 
 ball-sim:
-	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) ball_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) ball_sim.launch.py $(SCENARIO_ARGS)"
 
 person-sim:
-	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py $(SCENARIO_ARGS)"
 
 yolo-sim:
-	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py"
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py $(SCENARIO_ARGS)"
 
 # --- TOOLS ---
 

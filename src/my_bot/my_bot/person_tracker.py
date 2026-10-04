@@ -22,14 +22,24 @@ Pipeline per camera frame
    comes first (or whenever there is no track), YOLOv8n looks for people.
    The time bound keeps YOLO in charge on a slow, software-rendered camera
    where ten frames can take seconds. The highest-scoring person (re)seeds
-   the OpenCV tracker, so tracker drift (CSRT tends to grow the box) never
-   outlives one cycle.
+   the OpenCV tracker, so tracker drift never outlives one cycle.
    If YOLO misses the person ``max_yolo_misses`` times in a row, the track
    is dropped, so a tracker stuck on the background cannot hold a lock.
-2. Between detections the OpenCV tracker (CSRT, then KCF, then MIL,
+2. Between detections the OpenCV tracker (``tracker``: KCF by default, a few
+   ms per frame where CSRT took tens; falls back to CSRT, then MIL,
    whichever this OpenCV build has) follows the box frame to frame.
 3. A constant-velocity Kalman filter smooths the box and predicts it
    through short tracker failures (up to ``max_coast_frames``).
+
+Detection in a worker thread (``async_detection``, the default)
+---------------------------------------------------------------
+YOLO runs on a background thread (onnxruntime releases the GIL), so the
+camera callback never waits for it: every frame is tracked and published
+right away, and /person_bbox is only as old as the camera plus the tracker.
+A YOLO result belongs to the frame it was run on, which is a few frames
+old when it arrives; it re-seeds the tracker on that frame and the tracker
+replays the frames since, so the correction lands on the newest frame.
+With ``async_detection: false`` YOLO runs inline, as before Phase 1.
 
 Published topics
 ----------------
@@ -46,10 +56,12 @@ the mean YOLO and tracker time per call, to tell CPU-bound inference from a
 slow simulator (Phase 0 of the security-guard plan).
 """
 
+from collections import deque
 import math
 import os
+import threading
 import time
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import cv2
 from cv_bridge import CvBridge
@@ -61,9 +73,12 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 
-from my_bot.object_detector import postprocess, preprocess
+from my_bot.object_detector import DEFAULT_INPUT_SIZE, postprocess, preprocess
 
 Box = Tuple[int, int, int, int]
+
+# OpenCV trackers in fallback order; the ``tracker`` parameter picks the first.
+TRACKERS = ('kcf', 'csrt', 'mil')
 
 
 # ---------------------------------------------------------------------------
@@ -135,15 +150,107 @@ class StageTimer:
         return text
 
 
-def make_tracker():
-    """Create the best OpenCV single-object tracker available."""
+def model_input_size(session) -> int:
+    """Square input side the ONNX model was exported with (640 if unknown)."""
+    try:
+        side = session.get_inputs()[0].shape[-1]
+    except (AttributeError, IndexError, TypeError):
+        return DEFAULT_INPUT_SIZE
+    return side if isinstance(side, int) and side > 0 else DEFAULT_INPUT_SIZE
+
+
+def make_tracker(preferred: str = 'kcf'):
+    """Create an OpenCV single-object tracker, ``preferred`` first.
+
+    KCF is the default: CSRT's tighter box cost tens of ms per frame on the
+    CPU, and YOLO re-seeds the box every ``redetect_period`` anyway. The
+    others in ``TRACKERS`` are fallbacks for OpenCV builds without it.
+    """
+    names = [preferred] + [n for n in TRACKERS if n != preferred]
     legacy = getattr(cv2, 'legacy', None)
-    for name in ('TrackerCSRT_create', 'TrackerKCF_create', 'TrackerMIL_create'):
+    for name in names:
+        attr = f'Tracker{name.upper()}_create'
         for mod in (cv2, legacy):
-            ctor = getattr(mod, name, None) if mod is not None else None
+            ctor = getattr(mod, attr, None) if mod is not None else None
             if ctor is not None:
                 return ctor()
     raise RuntimeError('No OpenCV tracker available')
+
+
+class DetectionWorker:
+    """Runs ``detect(frame)`` on a background thread, one frame at a time.
+
+    The camera callback hands a frame over with ``submit`` and keeps
+    tracking the frames that follow; ``take`` returns the finished
+    ``(seq, box, seconds)`` once. The worker stays busy until its result is
+    taken, so a result is never overwritten by the next one.
+    """
+
+    def __init__(self, detect: Callable[[np.ndarray], Optional[Box]]):
+        self._detect = detect
+        self._cond = threading.Condition()
+        self._job = None
+        self._result = None
+        self._busy = False
+        self._stopped = False
+        self._thread = threading.Thread(
+            target=self._run, name='yolo_worker', daemon=True)
+        self._thread.start()
+
+    @property
+    def busy(self) -> bool:
+        """True from ``submit`` until the result has been taken."""
+        with self._cond:
+            return self._busy
+
+    def submit(self, seq: int, frame: np.ndarray) -> bool:
+        """Start detecting on ``frame``; False if busy or stopped."""
+        with self._cond:
+            if self._busy or self._stopped:
+                return False
+            self._busy = True
+            self._job = (seq, frame)
+            self._cond.notify_all()
+        return True
+
+    def take(self):
+        """Return the finished (seq, box, seconds), or None if none is ready."""
+        with self._cond:
+            result, self._result = self._result, None
+            if result is not None:
+                self._busy = False
+            return result
+
+    def wait(self, timeout: float) -> bool:
+        """Block until a result is ready to take; False on timeout."""
+        with self._cond:
+            return self._cond.wait_for(
+                lambda: self._result is not None or self._stopped, timeout)
+
+    def stop(self) -> None:
+        """Stop the thread (the job in flight, if any, is discarded)."""
+        with self._cond:
+            self._stopped = True
+            self._cond.notify_all()
+        self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                self._cond.wait_for(
+                    lambda: self._job is not None or self._stopped)
+                if self._stopped:
+                    return
+                seq, frame = self._job
+                self._job = None
+            start = time.monotonic()
+            try:
+                box = self._detect(frame)
+            except Exception:  # noqa: BLE001 -- a lost frame, not a dead thread
+                box = None
+            with self._cond:
+                self._result = (seq, box, time.monotonic() - start)
+                self._cond.notify_all()
 
 
 class BoxKalman:
@@ -209,6 +316,9 @@ class PersonTrackerNode(Node):
         self.declare_parameter('max_coast_frames', 10)
         self.declare_parameter('publish_debug_image', True)
         self.declare_parameter('stats_period', 10.0)
+        self.declare_parameter('tracker', 'kcf')
+        self.declare_parameter('async_detection', True)
+        self.declare_parameter('inference_threads', 0)
 
         gp = self.get_parameter
         self._conf = float(gp('confidence_threshold').value)
@@ -219,6 +329,10 @@ class PersonTrackerNode(Node):
         self._max_coast = int(gp('max_coast_frames').value)
         self._debug = bool(gp('publish_debug_image').value)
         self._stats_period = float(gp('stats_period').value)
+        self._tracker_name = str(gp('tracker').value).lower()
+        if self._tracker_name not in TRACKERS:
+            raise ValueError(
+                f'tracker must be one of {TRACKERS}, got {self._tracker_name!r}')
         self._yolo_timer = StageTimer()
         self._track_timer = StageTimer()
         self._frames = 0
@@ -228,7 +342,8 @@ class PersonTrackerNode(Node):
         self._session = None
         # Why there is no session, drawn on the debug image.
         self._model_error = ''
-        self._load_model(str(gp('model_path').value))
+        self._load_model(str(gp('model_path').value),
+                         int(gp('inference_threads').value))
 
         self._tracker = None
         self._kf: Optional[BoxKalman] = None
@@ -237,6 +352,14 @@ class PersonTrackerNode(Node):
         self._last_yolo = -math.inf
         self._yolo_misses = 0
         self._coast = 0
+
+        # Async detection: frames since the one YOLO is working on, so its
+        # result can be replayed forward (~2 s at the camera's 15 Hz).
+        self._seq = 0
+        self._history = deque(maxlen=30)
+        self._worker: Optional[DetectionWorker] = None
+        if bool(gp('async_detection').value):
+            self._worker = DetectionWorker(self._run_yolo)
 
         # Depth 1: when inference is slower than the camera, work on the
         # newest frame instead of a queue of stale ones (the box would lag).
@@ -254,7 +377,7 @@ class PersonTrackerNode(Node):
 
     # ------------------------------------------------------------------
 
-    def _load_model(self, model_path: str) -> None:
+    def _load_model(self, model_path: str, threads: int = 0) -> None:
         # The Docker image exports the model at build time; a missing or
         # empty file means the container runs an image from before that.
         # Rebuilding alone does not help: a running container keeps its
@@ -280,15 +403,24 @@ class PersonTrackerNode(Node):
             set_severity = getattr(ort, 'set_default_logger_severity', None)
             if set_severity is not None:
                 set_severity(4)
+            # Threads for one inference; 0 = onnxruntime's default (every
+            # core), which competes with gzserver for the CPU.
+            options = {}
+            if threads > 0 and hasattr(ort, 'SessionOptions'):
+                opts = ort.SessionOptions()
+                opts.intra_op_num_threads = threads
+                options['sess_options'] = opts
             try:
                 self._session = ort.InferenceSession(
                     model_path,
-                    providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+                    providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+                    **options)
             finally:
                 if set_severity is not None:
                     set_severity(2)
             provider = self._session.get_providers()[0]
-            self.get_logger().info(f'YOLO loaded ({provider})')
+            side = model_input_size(self._session)
+            self.get_logger().info(f'YOLO loaded ({provider}, {side} px input)')
             if provider != 'CUDAExecutionProvider':
                 self.get_logger().info(
                     'CUDA unavailable to onnxruntime (needs a GPU plus the '
@@ -313,23 +445,32 @@ class PersonTrackerNode(Node):
             self.get_logger().debug(f'cv_bridge: {e}')
             return
         h, w = frame.shape[:2]
+        self._seq += 1
+
+        # A finished background detection re-seeds the tracker first, so
+        # this frame is tracked from the corrected box.
+        if self._worker is not None:
+            self._history.append((self._seq, frame))
+            result = self._worker.take()
+            if result is not None:
+                self._apply_async_detection(*result)
 
         self._frames_since_detect += 1
         now = self.get_clock().now().nanoseconds * 1e-9
         detected: Optional[Box] = None
-        if (self._tracker is None
+        if ((self._tracker is None
                 or self._frames_since_detect >= self._redetect_every
-                or now - self._last_yolo >= self._redetect_period):
+                or now - self._last_yolo >= self._redetect_period)
+                and (self._worker is None or not self._worker.busy)):
             self._frames_since_detect = 0
             self._last_yolo = now
-            detected = self._run_yolo(frame)
-            if detected is None and self._tracker is not None:
-                self._yolo_misses += 1
-                if self._yolo_misses >= self._max_misses:
-                    self.get_logger().info('YOLO lost the person; dropping track')
-                    self._reset()
-            elif detected is not None:
-                self._yolo_misses = 0
+            if self._worker is not None:
+                self._worker.submit(self._seq, frame)
+            else:
+                start = time.monotonic()
+                detected = self._run_yolo(frame)
+                self._yolo_timer.add(time.monotonic() - start)
+                self._count_detection(detected)
 
         measured: Optional[Box] = None
         if detected is not None:
@@ -361,6 +502,40 @@ class PersonTrackerNode(Node):
         self._publish(msg, frame)
         self._log_stats()
 
+    def _count_detection(self, detected: Optional[Box]) -> None:
+        """Track YOLO's misses; enough in a row drop the track."""
+        if detected is None and self._tracker is not None:
+            self._yolo_misses += 1
+            if self._yolo_misses >= self._max_misses:
+                self.get_logger().info('YOLO lost the person; dropping track')
+                self._reset()
+        elif detected is not None:
+            self._yolo_misses = 0
+
+    def _apply_async_detection(self, seq: int, box: Optional[Box],
+                               seconds: float) -> None:
+        """Fold in a detection made on the earlier frame ``seq``.
+
+        The tracker is re-seeded on that frame and run over the frames
+        after it up to (not including) the newest, which the caller then
+        tracks as usual. If the frame has left the history, the box seeds
+        the newest frame directly.
+        """
+        self._yolo_timer.add(seconds)
+        self._count_detection(box)
+        if box is None:
+            return
+        frames = [f for s, f in self._history if s >= seq]
+        if self._history[0][0] > seq:
+            frames = [self._history[-1][1]]
+        self._seed_tracker(frames[0], box)
+        for frame in frames[1:-1]:
+            if self._tracker is None:
+                break
+            start = time.monotonic()
+            self._tracker.update(frame)
+            self._track_timer.add(time.monotonic() - start)
+
     def _log_stats(self) -> None:
         self._frames += 1
         elapsed = time.monotonic() - self._stats_start
@@ -374,20 +549,20 @@ class PersonTrackerNode(Node):
         self._stats_start = time.monotonic()
 
     def _run_yolo(self, frame: np.ndarray) -> Optional[Box]:
-        if self._session is None:
+        """Best person box in ``frame``; runs on the worker thread if async."""
+        session = self._session
+        if session is None:
             return None
-        start = time.monotonic()
         try:
-            blob = preprocess(frame)
-            inp = self._session.get_inputs()[0].name
-            raw = self._session.run(None, {inp: blob})[0]
-            dets = postprocess(
-                raw, letterbox_shape(frame.shape), self._conf, self._iou)
+            side = model_input_size(session)
+            blob = preprocess(frame, side)
+            inp = session.get_inputs()[0].name
+            raw = session.run(None, {inp: blob})[0]
+            dets = postprocess(raw, letterbox_shape(frame.shape),
+                               self._conf, self._iou, side)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f'YOLO inference: {e}')
             return None
-        finally:
-            self._yolo_timer.add(time.monotonic() - start)
         box = select_person_box(dets, self._conf)
         if box is None:
             return None
@@ -396,7 +571,7 @@ class PersonTrackerNode(Node):
     def _seed_tracker(self, frame, box: Box) -> None:
         """(Re)start the tracker on a YOLO box; YOLO is the reference."""
         try:
-            self._tracker = make_tracker()
+            self._tracker = make_tracker(self._tracker_name)
             self._tracker.init(frame, tuple(box))
         except Exception as e:  # noqa: BLE001
             self.get_logger().warn(f'tracker init failed: {e}')
@@ -423,8 +598,8 @@ class PersonTrackerNode(Node):
             vis = frame.copy()
             if self._session is None:
                 cv2.putText(vis, self._model_error or 'YOLO model not loaded',
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 0, 255), 2)
+                            (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                            (0, 0, 255), 1)   # fits the 320 px frame
             if box is not None:
                 color = (0, 200, 0) if self._coast == 0 else (0, 200, 255)
                 x, y, w, h = box
@@ -435,6 +610,12 @@ class PersonTrackerNode(Node):
             out = self._bridge.cv2_to_imgmsg(vis, 'bgr8')
             out.header = img_msg.header
             self._debug_pub.publish(out)
+
+    def destroy_node(self):
+        """Stop the detection thread, then the node."""
+        if self._worker is not None:
+            self._worker.stop()
+        super().destroy_node()
 
 
 def main(args=None):

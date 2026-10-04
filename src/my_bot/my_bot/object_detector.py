@@ -17,6 +17,11 @@
 person_tracker runs the ONNX model (CUDA if available, else CPU); this
 module holds the pure parts so unit tests can exercise them without ROS or
 a model file.
+
+The network's input side is a parameter: the Docker image exports the
+model at 320 px (a quarter of the 640 px work, matching the 320x240
+camera), and person_tracker reads the size from the model, so a model
+exported at 640 keeps working.
 """
 
 import cv2
@@ -31,30 +36,32 @@ _COCO_NAMES = {
     32: 'sports ball',
 }
 
-# YOLOv8n input size
-_INPUT_SIZE = 640
+# Ultralytics' default export size; person_tracker passes the model's own.
+DEFAULT_INPUT_SIZE = 640
 
 
 # ---------------------------------------------------------------------------
 # Pure functions — importable by unit tests without ROS runtime
 # ---------------------------------------------------------------------------
 
-def preprocess(frame: np.ndarray) -> np.ndarray:
+def preprocess(frame: np.ndarray,
+               input_size: int = DEFAULT_INPUT_SIZE) -> np.ndarray:
     """Resize (letterbox) and normalise a BGR frame for YOLOv8 inference.
 
-    Returns float32 array of shape [1, 3, 640, 640] with values in [0, 1].
+    Returns float32 array of shape [1, 3, input_size, input_size] with
+    values in [0, 1].
     """
     h, w = frame.shape[:2]
-    scale = _INPUT_SIZE / max(h, w)
+    scale = input_size / max(h, w)
     new_h, new_w = int(round(h * scale)), int(round(w * scale))
     resized = cv2.resize(frame, (new_w, new_h))
     # Pad to square
-    canvas = np.zeros((_INPUT_SIZE, _INPUT_SIZE, 3), dtype=np.uint8)
+    canvas = np.zeros((input_size, input_size, 3), dtype=np.uint8)
     canvas[:new_h, :new_w] = resized
     # BGR → RGB, HWC → CHW, normalise
     rgb = canvas[:, :, ::-1].astype(np.float32) / 255.0
     chw = rgb.transpose(2, 0, 1)
-    return chw[np.newaxis]  # [1, 3, 640, 640]
+    return chw[np.newaxis]  # [1, 3, input_size, input_size]
 
 
 def postprocess(
@@ -62,19 +69,21 @@ def postprocess(
         orig_shape: tuple,
         conf_threshold: float = 0.5,
         iou_threshold: float = 0.45,
+        input_size: int = DEFAULT_INPUT_SIZE,
 ) -> list:
     """Decode YOLOv8 raw output into a list of (x1, y1, x2, y2, class_id, score).
 
-    output shape: [1, 84, 8400]
+    output shape: [1, 84, N] (N = 8400 at 640 px input, 2100 at 320 px)
     Returns list of tuples (x1, y1, x2, y2, class_id, confidence) in
-    original image coordinates.
+    original image coordinates. ``input_size`` must be the one
+    ``preprocess`` used.
     """
     if output.ndim == 3:
-        output = output[0]  # [84, 8400]
-    preds = output.T  # [8400, 84]
+        output = output[0]  # [84, N]
+    preds = output.T  # [N, 84]
 
     # Extract class scores
-    class_scores = preds[:, 4:]  # [8400, 80]
+    class_scores = preds[:, 4:]  # [N, 80]
     class_ids = np.argmax(class_scores, axis=1)
     confidences = class_scores[np.arange(len(class_ids)), class_ids]
 
@@ -83,14 +92,14 @@ def postprocess(
     if not np.any(mask):
         return []
 
-    boxes_xywh = preds[mask, :4]  # cx, cy, w, h (normalised to 640)
+    boxes_xywh = preds[mask, :4]  # cx, cy, w, h in input pixels
     confs = confidences[mask]
     cls_ids = class_ids[mask]
 
     # Undo the uniform letterbox scale from preprocess(). Padding is added
     # bottom/right only, so no offset needs subtracting.
     orig_h, orig_w = orig_shape[:2]
-    scale = max(orig_h, orig_w) / _INPUT_SIZE
+    scale = max(orig_h, orig_w) / input_size
     cx = boxes_xywh[:, 0] * scale
     cy = boxes_xywh[:, 1] * scale
     bw = boxes_xywh[:, 2] * scale

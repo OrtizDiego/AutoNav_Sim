@@ -75,10 +75,12 @@
       <real_time_factor>1</real_time_factor>
       <real_time_update_rate>1000</real_time_update_rate>
     </physics>
+    <!-- No shadows: with software rendering they cost the camera (and
+         gzclient) frames the perception chain needs. -->
     <scene>
       <ambient>0.4 0.4 0.4 1</ambient>
       <background>0.7 0.7 0.7 1</background>
-      <shadows>1</shadows>
+      <shadows>0</shadows>
     </scene>
     <audio>
       <device>default</device>

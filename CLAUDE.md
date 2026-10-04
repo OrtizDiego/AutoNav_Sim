@@ -53,7 +53,9 @@ make ball-sim    # ball chase: ball_controller + sensor_fusion(hsv) + ball_chase
 make person-sim  # demo: Nav2 + person_controller + person_tracker + sensor_fusion(person)
                  #       + security_guard_bt + system_monitor
 make yolo-sim    # static person ahead: person_tracker + sensor_fusion(person)
+make person-sim GUI=false   # any scenario without the Gazebo window (gzserver only)
 ```
+`GUI=false` passes `gui:=false` to `sim.launch.py`: no gzclient, RViz shows the sim. With software rendering (CPU container) the Gazebo window costs CPU the simulation needs.
 
 ### Tools (second terminal)
 ```bash
@@ -75,10 +77,10 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 ### System Layers
 
 **Hardware Interface (Gazebo)**
-- Simulates a differential drive robot (TurtleBot3 Waffle Pi meshes/dimensions) with 2D Lidar and RGB camera
+- Simulates a differential drive robot (TurtleBot3 Waffle Pi meshes/dimensions) with 2D Lidar and RGB camera (320×240 at 15 Hz: at 640×480/30 Hz software rendering delivered 2–5 Hz and dragged the real-time factor down)
 - Publishes: `/scan` (Lidar), `/odom` (odometry), `/camera/image_raw` (camera)
 - Subscribes to: `/cmd_vel` (velocity commands)
-- World files: `room.world` (museum, vanilla), `ball.world` (museum + red ball), `person.world` (museum + pedestrian actor), `yolo.world` (flat ground + standing person). `sim.launch.py` takes `world:=` and `rviz_config:=` (default `navigation.rviz`). It includes Gazebo inside a scoped `GroupAction`: gzserver declares `params_file:=''`, and launch configurations are global, so unscoped it would override Nav2's `params_file` default in any scenario that includes Nav2 afterwards. Scenarios that include `navigation.launch.py` also pass `map`/`params_file` explicitly. The museum block (incl. its `<state>` pose) must stay identical across the museum worlds: `maps/my_map` was built in it and its frame equals the world frame (robot spawns at the origin).
+- World files: `room.world` (museum, vanilla), `ball.world` (museum + red ball), `person.world` (museum + pedestrian actor), `yolo.world` (flat ground + standing person). Shadows are off in every world (`<scene><shadows>0`; SDF's default is on). `sim.launch.py` takes `world:=`, `rviz_config:=` (default `navigation.rviz`) and `gui:=` (default true; false = no gzclient). It includes Gazebo inside a scoped `GroupAction`: gzserver declares `params_file:=''`, and launch configurations are global, so unscoped it would override Nav2's `params_file` default in any scenario that includes Nav2 afterwards. Scenarios that include `navigation.launch.py` also pass `map`/`params_file` explicitly. The museum block (incl. its `<state>` pose) must stay identical across the museum worlds: `maps/my_map` was built in it and its frame equals the world frame (robot spawns at the origin).
 
 **SLAM Toolbox**
 - Runs asynchronous SLAM to generate `/map` from Lidar scans and odometry
@@ -98,7 +100,7 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 - **ball_chaser.py**: follows the fused target at 1 m; turns toward the last-seen side when lost.
 - **ball_controller.py**: drives the ball (`/ball/cmd_vel`, planar_move plugin, body frame, yaw held at 0) on a figure-eight checked against the map; flees a close robot, waits for a far one, pauses/reverses at random. `/ball/teleop` (TwistStamped, frame_id `robot`|`world`) overrides it while messages arrive.
 - **ball_teleop.py**: hold-to-move keyboard teleop for the ball.
-- **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`) + OpenCV tracker (CSRT → KCF → MIL fallback) + constant-velocity Kalman filter. Publishes `/person_bbox` (PolygonStamped: top-left + bottom-right px, empty = none; header = the image's), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
+- **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`; the network input size is read from the model, 320 px in the image) + OpenCV tracker (`tracker`: KCF by default, then CSRT → MIL fallback; CSRT was tens of ms per frame) + constant-velocity Kalman filter. YOLO runs in a `DetectionWorker` thread (`async_detection`, default true): every frame is tracked and published without waiting for inference; a result re-seeds the tracker on the frame YOLO saw and replays the frames since (`_history`). `async_detection: false` runs YOLO inline. `inference_threads` caps onnxruntime's threads (0 = all cores, which compete with gzserver). Publishes `/person_bbox` (PolygonStamped: top-left + bottom-right px, empty = none; header = the image's), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
 - **person_controller.py**: Pedestrian behaviour (WALK / RUN / EXHAUSTED) publishing `/person/cmd_vel` for the actor plugin. Pure `PersonBrain` steers on `clearance_map.py` (distance transform of `maps/my_map`, passed as `map_yaml`): line-of-sight wander targets, `safe_heading` fan search, speed capped to stop before walls. A `/person_detected` lock within `notice_radius` triggers a stamina-limited sprint away from the robot.
 - **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m), SearchProtocol (turn to last-seen side), PatrolProtocol (Nav2 waypoints)]. Detector-agnostic: reads sensor_fusion topics. Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses and follow bearing/range RMS), `/intruder_sightings` (one sphere per re-acquisition, not a goal). All timing runs on the node clock (sim time).
 - **perf_monitor.py**: `make perf`: real-time factor, per-topic publisher count, sim-Hz and message age (now - stamp) on `/perf_monitor` + log. person_tracker also logs frames/s and mean YOLO/tracker ms every `stats_period`. Nav2's velocity_smoother publishes /cmd_vel on a 20 Hz wall timer, so it reads 20 / RTF sim Hz (~30 at RTF 0.67) from one publisher.
@@ -134,7 +136,7 @@ src/my_bot/
 │   ├── mapper_params_online_async.yaml
 │   └── navigation.rviz (sim, nav-sim) / perception.rviz / person.rviz
 ├── meshes/                    # TurtleBot3 Waffle Pi STL meshes (Apache-2.0, see meshes/README.md)
-├── urdf/                      # Xacro: robot_core (cylinder chassis collision: ODE ray-box gives lidar ghost hits), gazebo_control, lidar (min range 0.12 m, noise 0.01 m), camera (noise 0.007)
+├── urdf/                      # Xacro: robot_core (cylinder chassis collision: ODE ray-box gives lidar ghost hits), gazebo_control, lidar (min range 0.12 m, noise 0.01 m), camera (320×240 at 15 Hz, noise 0.007; must match sensor_fusion's `image_width`/`image_height`, test_urdf.py checks)
 ├── worlds/                    # room, ball, person, yolo
 ├── maps/                      # my_map.yaml / my_map.pgm (museum; also used by tests)
 ├── test/                      # pytest; conftest.py fakes rclpy + msgs (recording Node, manual
@@ -235,6 +237,6 @@ Python: `cv2` (OpenCV), `numpy`, `onnxruntime-gpu` (CPU fallback), ROS 2 Python 
 ### GPU Notes
 - Container: `docker compose --profile gpu up -d` → starts `autonav_gpu`
 - `person_tracker.py` asks onnxruntime for `CUDAExecutionProvider`, but the image ships no CUDA 12 / cuDNN 9 runtime, so YOLO runs on the CPU (it logs the provider and why). The GPU container still renders Gazebo on the GPU
-- YOLOv8n model exported to `/root/models/yolov8n.onnx` during image build (`yolo_export` stage: Ultralytics only publishes `.pt` weights). A container on an older image has no model (or an empty file): person_tracker logs it and its debug image says so, and `make yolo-sim` / `make person-sim` stop with the fix. The fix is `make image`: `docker compose build` alone does not touch the running container
+- YOLOv8n model exported to `/root/models/yolov8n.onnx` at 320 px input during image build (`yolo_export` stage: Ultralytics only publishes `.pt` weights). person_tracker reads the input size from the model, so an older 640 px export still works, only slower (`make image` for the 320 px one). A container on an older image has no model (or an empty file): person_tracker logs it and its debug image says so, and `make yolo-sim` / `make person-sim` stop with the fix. The fix is `make image`: `docker compose build` alone does not touch the running container
 - Override container: `make build CONTAINER=autonav_gpu`
 

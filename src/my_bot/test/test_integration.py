@@ -40,7 +40,7 @@ from my_bot import security_guard_bt as sg
 from my_bot import sensor_fusion as sf
 from my_bot import system_monitor as sm
 
-W, H = 640, 480
+W, H = 320, 240   # camera.xacro
 
 
 def _scan(value, n=360):
@@ -61,7 +61,7 @@ def _camera(frame):
 def _ball_frame(cx):
     frame = np.full((H, W, 3), 90, dtype=np.uint8)
     if cx is not None:
-        cv2.circle(frame, (cx, H // 2), 40, (0, 0, 255), -1)
+        cv2.circle(frame, (cx, H // 2), 20, (0, 0, 255), -1)
     return frame
 
 
@@ -93,7 +93,7 @@ class TestBallSim:
         return cmd.linear.x, cmd.angular.z
 
     def test_chases_a_far_ball_on_the_left(self, graph):
-        v, w = self._step(*graph, _ball_frame(cx=200), _scan(3.0))
+        v, w = self._step(*graph, _ball_frame(cx=100), _scan(3.0))
         assert v > 0.0 and w > 0.0
 
     def test_backs_off_a_ball_that_is_too_close(self, graph):
@@ -107,7 +107,7 @@ class TestBallSim:
 
     def test_searches_toward_where_the_ball_left_the_view(self, graph):
         fusion, chaser = graph
-        self._step(fusion, chaser, _ball_frame(cx=560), _scan(3.0))  # right
+        self._step(fusion, chaser, _ball_frame(cx=280), _scan(3.0))  # right
         chaser.clock.advance(1.0)
         v, w = self._step(fusion, chaser, _ball_frame(cx=None), _scan(3.0))
         assert v == 0.0 and w < 0.0               # turns right to find it
@@ -152,10 +152,12 @@ class FakeYolo:
         self.box = None    # (cx, cy, w, h) in pixels
 
     def get_inputs(self):
-        return [types.SimpleNamespace(name='images')]
+        # The image's 320 px export: input pixels are camera pixels.
+        return [types.SimpleNamespace(name='images', shape=[1, 3, 320, 320])]
 
     def run(self, outputs, feeds):
-        out = np.zeros((1, 84, 8400), dtype=np.float32)
+        assert feeds['images'].shape == (1, 3, 320, 320)
+        out = np.zeros((1, 84, 2100), dtype=np.float32)
         if self.box is not None:
             out[0, :4, 0] = self.box
             out[0, 4, 0] = 0.9
@@ -164,6 +166,9 @@ class FakeYolo:
 
 class StaticTracker:
     """OpenCV tracker stand-in that holds the box it was given."""
+
+    def __init__(self, preferred='kcf'):
+        self.box = None
 
     def init(self, frame, box):
         self.box = box
@@ -176,7 +181,8 @@ class StaticTracker:
 def person_sim(monkeypatch, ros_params, fresh_blackboard):
     monkeypatch.setattr(pt, 'make_tracker', StaticTracker)
     ros_params.update(mode='person', waypoint_dwell_secs=0.0,
-                      model_path='/nonexistent/yolov8n.onnx')
+                      model_path='/nonexistent/yolov8n.onnx',
+                      async_detection=False)
     tracker = pt.PersonTrackerNode()
     tracker._session = FakeYolo()
     nodes = types.SimpleNamespace(
@@ -218,7 +224,7 @@ class TestPersonSim:
 
     def test_follows_a_detected_person(self, person_sim):
         _frame(person_sim)
-        person_sim.tracker._session.box = _person_box(person_sim.fusion, 5.0, 480.0)
+        person_sim.tracker._session.box = _person_box(person_sim.fusion, 5.0, 240.0)
         assert _frame(person_sim) == 'IntruderProtocol'
         assert person_sim.guard._navigator.cancelled == 1
         rng = person_sim.fusion.publishers['/target_range'].last.data

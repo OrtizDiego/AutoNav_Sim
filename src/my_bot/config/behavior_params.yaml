@@ -48,11 +48,13 @@ sensor_fusion:
     hsv_red_upper1: [10, 255, 255]
     hsv_red_lower2: [160, 100, 100]
     hsv_red_upper2: [180, 255, 255]
-    min_contour_area: 300.0
+    # px^2 at 320x240 (was 300 at 640x480: same apparent ball size)
+    min_contour_area: 75.0
     range_min: 0.3
     range_max: 12.0
-    image_width: 640
-    image_height: 480
+    # Must match camera.xacro (test_urdf.py checks)
+    image_width: 320
+    image_height: 240
     horizontal_fov: 1.089
     camera_height: 0.103
     person_height: 1.72
@@ -69,6 +71,15 @@ person_tracker:
     publish_debug_image: true
     # Log frames/s and mean YOLO / tracker time every N wall seconds (0 = off)
     stats_period: 10.0
+    # OpenCV tracker between detections: kcf (fast), csrt (tighter, ~10x
+    # slower on the CPU) or mil; falls back to the others if missing.
+    tracker: kcf
+    # YOLO in a worker thread: every frame is tracked and published without
+    # waiting for inference. false = inline, as before Phase 1.
+    async_detection: true
+    # onnxruntime threads per inference; 0 = its default (every core, which
+    # competes with gzserver). Try 2 if the real-time factor drops with YOLO.
+    inference_threads: 0
 
 # --- person-sim -----------------------------------------------------------
 

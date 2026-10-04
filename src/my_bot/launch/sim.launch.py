@@ -17,6 +17,11 @@
 Every scenario launch file includes this one and overrides ``world`` and
 ``rviz_config``. The default layout is navigation.rviz (map, costmaps,
 plan), so `make sim` + `make nav` shows the map exactly as before.
+
+``gui:=false`` starts gzserver only (no gzclient window): with software
+rendering the Gazebo window costs CPU the simulation needs, and RViz shows
+the robot, scan, map and camera anyway. Every scenario passes it through
+(`make person-sim GUI=false`).
 """
 
 import os
@@ -51,6 +56,9 @@ def generate_launch_description():
         'rviz_config', default_value=os.path.join(
             get_package_share_directory(pkg_name), 'config', 'navigation.rviz'),
         description='Absolute path to the RViz config file')
+    gui_arg = DeclareLaunchArgument(
+        'gui', default_value='true',
+        description='Start the Gazebo window (gzclient); false = headless')
 
     # gzserver.launch.py declares ~25 launch arguments, among them
     # params_file:=''. Launch configurations are global, so without a scope
@@ -60,7 +68,8 @@ def generate_launch_description():
         PythonLaunchDescriptionSource([os.path.join(
             get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py'
         )]),
-        launch_arguments={'world': LaunchConfiguration('world')}.items()  # Load your custom world
+        launch_arguments={'world': LaunchConfiguration('world'),
+                          'gui': LaunchConfiguration('gui')}.items()
     )])
 
     # 3. Spawn Entity
@@ -81,6 +90,7 @@ def generate_launch_description():
     return LaunchDescription([
         world_arg,
         rviz_arg,
+        gui_arg,
         rsp,
         gazebo,
         spawn_entity,
