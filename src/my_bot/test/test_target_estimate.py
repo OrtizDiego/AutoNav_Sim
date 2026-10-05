@@ -143,3 +143,32 @@ def test_compensation_removes_the_overshoot():
     assert raw_overshoot > 0.2                       # rings past the target
     assert comp_overshoot < 0.02
     assert comp_final < 0.01
+
+
+def test_track_is_extrapolated_with_its_velocity_up_to_a_cap():
+    est = TargetEstimate(max_predict=1.0)
+    est.add_pose(10.0, 0.0, 0.0, 0.0)
+    assert est.update_track(10.0, 3.0, 0.0, 0.0, 1.0)
+    assert est.target_xy == (3.0, 0.0)
+    assert est.predicted_xy(10.5) == pytest.approx((3.0, 0.5))
+    assert est.predicted_xy(9.0) == pytest.approx((3.0, 0.0))   # never back
+    assert est.predicted_xy(20.0) == pytest.approx((3.0, 1.0))  # capped
+    assert est.relative(t=10.5) == (pytest.approx(math.atan2(0.5, 3.0)),
+                                    pytest.approx(math.hypot(3.0, 0.5)))
+    est.add_pose(10.5, 0.0, 0.0, 0.0)
+    assert est.relative()[0] == pytest.approx(math.atan2(0.5, 3.0))  # odom time
+
+
+def test_a_detection_replaces_the_track_velocity():
+    est = TargetEstimate()
+    est.add_pose(0.0, 0.0, 0.0, 0.0)
+    est.update_track(0.0, 3.0, 0.0, 0.0, 1.0)
+    est.update(0.0, 0.0, 2.0)
+    assert est.predicted_xy(0.5) == pytest.approx((2.0, 0.0))
+    assert not est.update_track(0.0, float('inf'), 0.0, 0.0, 0.0)
+
+
+def test_track_without_odometry_is_seen_from_the_origin():
+    est = TargetEstimate()
+    est.update_track(None, 0.0, 2.0, 0.0, 0.0)
+    assert est.relative() == (pytest.approx(math.pi / 2), pytest.approx(2.0))

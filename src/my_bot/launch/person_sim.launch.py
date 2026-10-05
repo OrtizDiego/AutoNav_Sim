@@ -21,11 +21,13 @@
      robot's tracker locks on.
   4. person_tracker: YOLOv8n + OpenCV tracker + Kalman -> /person_bbox.
   5. sensor_fusion (mode person): bbox + lidar -> range and bearing.
-  6. security_guard_bt: py_trees tree. Patrols Nav2 waypoints; when the
-     intruder is seen it cancels the patrol and follows at 2.5 m; when the
+  6. target_tracker: odom-frame EKF (position + velocity) on /target and
+     person-sized lidar clusters -> /intruder/track once confirmed.
+  7. security_guard_bt: py_trees tree. Patrols Nav2 waypoints; when the
+     intruder track is confirmed it cancels the patrol and follows at 2.5 m; when the
      intruder is lost it searches toward the last-seen side, then resumes
      the patrol. Latched e-stop from system_monitor overrides everything.
-  7. system_monitor: sensor watchdog, /trigger_estop and /clear_estop.
+  8. system_monitor: sensor watchdog, /trigger_estop and /clear_estop.
 
 Watch /security_guard/state for PatrolProtocol / IntruderProtocol /
 SearchProtocol / EmergencyStop.
@@ -80,6 +82,7 @@ def generate_launch_description():
             'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml')}),
         node('person_tracker'),
         node('sensor_fusion', {'mode': 'person'}),
+        node('target_tracker'),
         node('security_guard_bt'),
         node('system_monitor'),
     ])

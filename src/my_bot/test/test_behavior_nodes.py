@@ -20,6 +20,7 @@ Also covers every node's ``main()`` and ``__main__`` entry point.
 import math
 import os
 import runpy
+import types
 
 from geometry_msgs.msg import Vector3Stamped
 from nav_msgs.msg import Odometry
@@ -131,8 +132,26 @@ def fresh_blackboard():
 
 @pytest.fixture
 def guard(fresh_blackboard, ros_params):
+    """Guard on sensor_fusion's /target (use_track: false)."""
+    ros_params.update(waypoint_dwell_secs=0.0, use_track=False)
+    return sg.SecurityGuardBTNode()
+
+
+@pytest.fixture
+def tracked_guard(fresh_blackboard, ros_params):
+    """Guard on target_tracker's /intruder/track (the default)."""
     ros_params['waypoint_dwell_secs'] = 0.0
     return sg.SecurityGuardBTNode()
+
+
+def _track(node, x, y, vx=0.0, vy=0.0, t=None):
+    msg = Odometry()
+    if t is not None:
+        msg.header.stamp = types.SimpleNamespace(
+            sec=int(t), nanosec=round((t % 1) * 1e9))
+    msg.pose.pose.position.x, msg.pose.pose.position.y = x, y
+    msg.twist.twist.linear.x, msg.twist.twist.linear.y = vx, vy
+    node.subscriptions['/intruder/track'](msg)
 
 
 def _tick(node, n=1):
@@ -289,6 +308,50 @@ class TestSecurityGuardNode:
         bearing_rms, range_rms = guard._follow_rms()
         assert bearing_rms == pytest.approx(math.degrees(0.1))
         assert range_rms == pytest.approx(1.0)
+
+
+class TestSecurityGuardOnTrack:
+
+    def test_follows_the_intruder_track_by_default(self, tracked_guard):
+        assert set(tracked_guard.subscriptions) == {
+            '/estop', '/intruder/track', '/scan', '/odom'}
+
+    def test_track_is_extrapolated_to_now(self, tracked_guard):
+        g = tracked_guard
+        g.subscriptions['/odom'](_odom(0.0, 0.0))
+        # Seen at t=100 (the clock) 3 m ahead, walking left at 1 m/s
+        _track(g, 3.0, 0.0, vx=0.0, vy=1.0, t=g.clock.seconds)
+        assert _bb(sg.BB_LAST_SEEN) == pytest.approx(g.clock.seconds)
+        assert _bb(sg.BB_TARGET_BEARING) == pytest.approx(0.0)
+        g.clock.advance(0.5)
+        assert _tick(g) == 'IntruderProtocol'
+        assert _bb(sg.BB_TARGET_BEARING) == pytest.approx(math.atan2(0.5, 3.0))
+        assert _bb(sg.BB_TARGET_RANGE) == pytest.approx(math.hypot(3.0, 0.5))
+        assert g.publishers['/cmd_vel'].last.angular.z > 0.0  # leads it left
+
+    def test_extrapolation_is_capped(self, tracked_guard):
+        g = tracked_guard
+        g.subscriptions['/odom'](_odom(0.0, 0.0))
+        _track(g, 3.0, 0.0, vy=1.0, t=g.clock.seconds)
+        g.clock.advance(0.9)                          # still within timeout
+        g._refresh_target()
+        far = _bb(sg.BB_TARGET_BEARING)
+        g.clock.advance(5.0)                          # long gone
+        g._refresh_target()
+        assert _bb(sg.BB_TARGET_BEARING) == pytest.approx(math.atan2(1.0, 3.0))
+        assert far == pytest.approx(math.atan2(0.9, 3.0))
+
+    def test_sighting_marker_at_the_track(self, tracked_guard):
+        g = tracked_guard
+        g.subscriptions['/odom'](_odom(0.0, 0.0))
+        _track(g, 2.0, 1.0, t=g.clock.seconds)
+        _tick(g)
+        sphere = g.publishers['/intruder_sightings'].last.markers[0]
+        assert (sphere.pose.position.x, sphere.pose.position.y) == (2.0, 1.0)
+
+    def test_non_finite_track_is_ignored(self, tracked_guard):
+        _track(tracked_guard, float('nan'), 0.0)
+        assert _bb(sg.BB_LAST_SEEN) == -math.inf
 
 
 def test_active_protocol_is_idle_before_the_first_tick(fresh_blackboard):
