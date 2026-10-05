@@ -49,6 +49,7 @@ NODE_SOURCES = {
     'person_tracker': 'person_tracker.py',
     'security_guard_bt': 'security_guard_bt.py',
     'system_monitor': 'system_monitor.py',
+    'target_tracker': 'target_tracker.py',
 }
 
 

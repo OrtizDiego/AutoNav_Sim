@@ -39,6 +39,7 @@ from my_bot import person_tracker as pt
 from my_bot import security_guard_bt as sg
 from my_bot import sensor_fusion as sf
 from my_bot import system_monitor as sm
+from my_bot import target_tracker as tt
 
 W, H = 320, 240   # camera.xacro
 
@@ -187,6 +188,7 @@ def person_sim(monkeypatch, ros_params, fresh_blackboard):
     tracker._session = FakeYolo()
     nodes = types.SimpleNamespace(
         tracker=tracker, fusion=sf.SensorFusionNode(),
+        target_tracker=tt.TargetTrackerNode(),
         guard=sg.SecurityGuardBTNode(), monitor=sm.SystemMonitorNode(),
         person=pc.PersonControllerNode())
     wire(*vars(nodes).values())
@@ -200,13 +202,18 @@ def _person_box(fusion, distance, cx):
     return (cx, fusion._cy, h / 3.0, h)
 
 
-def _frame(sim, scan=None):
-    frame = np.full((H, W, 3), 90, dtype=np.uint8)
-    if scan is not None:
-        sim.fusion.subscriptions['/scan'](scan)
-        sim.guard.subscriptions['/scan'](scan)
-    sim.tracker.subscriptions['/camera/image_raw'](_camera(frame))
-    sim.guard.timers[0]()
+def _frame(sim, scan=None, frames=1):
+    """Run ``frames`` camera frames (a track is confirmed after 3 hits)."""
+    for _ in range(frames):
+        frame = np.full((H, W, 3), 90, dtype=np.uint8)
+        for node in (sim.target_tracker, sim.guard):
+            node.subscriptions['/odom'](_odom(0.0, 0.0))
+        if scan is not None:
+            sim.fusion.subscriptions['/scan'](scan)
+            sim.target_tracker.subscriptions['/scan'](scan)
+            sim.guard.subscriptions['/scan'](scan)
+        sim.tracker.subscriptions['/camera/image_raw'](_camera(frame))
+        sim.guard.timers[0]()
     return sim.guard.publishers['/security_guard/state'].last.data
 
 
@@ -225,7 +232,9 @@ class TestPersonSim:
     def test_follows_a_detected_person(self, person_sim):
         _frame(person_sim)
         person_sim.tracker._session.box = _person_box(person_sim.fusion, 5.0, 240.0)
-        assert _frame(person_sim) == 'IntruderProtocol'
+        assert _frame(person_sim, frames=2) == 'PatrolProtocol'  # tentative
+        assert person_sim.target_tracker.publishers['/intruder/track'].msgs == []
+        assert _frame(person_sim) == 'IntruderProtocol'          # confirmed
         assert person_sim.guard._navigator.cancelled == 1
         rng = person_sim.fusion.publishers['/target_range'].last.data
         assert rng == pytest.approx(5.0, rel=0.05)    # camera-only range
@@ -235,7 +244,7 @@ class TestPersonSim:
 
     def test_lidar_ranges_the_person_when_it_agrees(self, person_sim):
         person_sim.tracker._session.box = _person_box(person_sim.fusion, 2.0, W / 2)
-        _frame(person_sim, _scan(2.1))
+        _frame(person_sim, _scan(2.1), frames=3)
         assert person_sim.fusion.publishers['/target_range'].last.data == \
             pytest.approx(2.1)
         v, _ = _cmd(person_sim)
@@ -253,7 +262,7 @@ class TestPersonSim:
 
     def test_searches_then_returns_to_patrol(self, person_sim, monkeypatch):
         person_sim.tracker._session.box = _person_box(person_sim.fusion, 4.0, 100.0)
-        _frame(person_sim)
+        _frame(person_sim, frames=3)
         person_sim.tracker._session.box = None
         last_seen = py_trees.blackboard.Blackboard.get(sg.BB_LAST_SEEN)
         clock = types.SimpleNamespace(now=last_seen + 1.0)
@@ -267,7 +276,7 @@ class TestPersonSim:
 
     def test_estop_overrides_the_chase_until_cleared(self, person_sim):
         person_sim.tracker._session.box = _person_box(person_sim.fusion, 5.0, W / 2)
-        assert _frame(person_sim) == 'IntruderProtocol'
+        assert _frame(person_sim, frames=3) == 'IntruderProtocol'
         resp = person_sim.monitor.services['/trigger_estop'](
             None, types.SimpleNamespace())
         assert resp.success

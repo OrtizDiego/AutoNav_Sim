@@ -69,7 +69,7 @@ class TestPerfMonitorNode:
     def test_interface(self, node, ros_params):
         assert set(node.subscriptions) == {
             '/camera/image_raw', '/scan', '/odom', '/person_bbox', '/target',
-            '/cmd_vel'}
+            '/intruder/track', '/cmd_vel'}
         assert set(node.publishers) == {'/perf_monitor'}
         assert node.timers[0].period == 5.0
         ros_params['watch_camera'] = False

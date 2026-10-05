@@ -20,6 +20,8 @@
      -> /person_bbox, /person_detected, /person_tracker/image.
   3. sensor_fusion (mode person): bbox + lidar (+ monocular check)
      -> /target_range (~2.6 m here: the lidar hits the front shin), /target_bearing, /target_position.
+  4. target_tracker: odom-frame track of the person -> /intruder/track,
+     /intruder/markers (should sit still on the person, velocity ~0).
 
 Nothing moves the robot; `make teleop` to drive around and watch the range
 and bearing follow.
@@ -57,4 +59,9 @@ def generate_launch_description():
         output='screen', parameters=params + [{'mode': 'person'}],
     )
 
-    return LaunchDescription([sim, person_tracker, sensor_fusion])
+    target_tracker = Node(
+        package='my_bot', executable='target_tracker', name='target_tracker',
+        output='screen', parameters=params,
+    )
+
+    return LaunchDescription([sim, person_tracker, sensor_fusion, target_tracker])

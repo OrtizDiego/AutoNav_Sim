@@ -51,8 +51,8 @@ make sim         # robot in the museum (room.world), navigation.rviz; add `make 
 make nav-sim     # sim + Nav2 (map, AMCL with initial pose from nav2_params.yaml)
 make ball-sim    # ball chase: ball_controller + sensor_fusion(hsv) + ball_chaser
 make person-sim  # demo: Nav2 + person_controller + person_tracker + sensor_fusion(person)
-                 #       + security_guard_bt + system_monitor
-make yolo-sim    # static person ahead: person_tracker + sensor_fusion(person)
+                 #       + target_tracker + security_guard_bt + system_monitor
+make yolo-sim    # static person ahead: person_tracker + sensor_fusion(person) + target_tracker
 make person-sim GUI=false   # any scenario without the Gazebo window (gzserver only)
 ```
 `GUI=false` passes `gui:=false` to `sim.launch.py`: no gzclient, RViz shows the sim. With software rendering (CPU container) the Gazebo window costs CPU the simulation needs.
@@ -95,14 +95,16 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 
 **Custom Behavior Nodes (Python)**
 - **sensor_fusion.py**: `mode` `hsv` (largest red blob in the camera) or `person` (`/person_bbox` from person_tracker). Range = low percentile of lidar beams across the box's angular span; in person mode cross-checked against a monocular estimate (person height, or feet ground contact). Image bearings are positive-right, so they are negated for ROS angles. Every output carries the camera image's stamp and is ranged with the scan closest to it. Publishes `/target` (Vector3Stamped base_link: x = bearing rad positive-left or NaN, y = range m or -1; what the followers use), `/target_range` + `/target_bearing` (Float32, for humans), `/target_position` (PointStamped base_link), `/sensor_fusion/image` (annotated debug).
-- **target_estimate.py** (library): latency compensation. Anchors each stamped `/target` in the odom frame at the robot pose of the image's time (interpolated odometry history), then gives bearing/range relative to the pose *now*. Steering on the raw, already-stale bearing made the followers overshoot. Target assumed static between detections (a world-frame KF with velocity is the next step).
+- **target_estimate.py** (library): latency compensation. `PoseHistory` interpolates odometry at a measurement's stamp. `TargetEstimate` anchors each stamped `/target` in the odom frame at the robot pose of the image's time, then gives bearing/range relative to the pose *now*; steering on the raw, already-stale bearing made the followers overshoot. A raw detection is static between detections (ball_chaser); `update_track()` takes a track with velocity and extrapolates it to now, capped at `max_predict` (security_guard_bt).
+- **track_filter.py** (library): constant-velocity EKF on odom-frame (x, y, vx, vy) with time-based dt, range/bearing (or bearing-only) camera updates from the pose at the stamp, lidar position updates, retrodiction of late measurements (≤ `max_lag`), chi-square gating. `IntruderTracker`: tentative → confirmed after `confirm_hits` → lost after `lost_timeout`; a ranged detection is needed to start a track; `max_outliers` gated-out detections in a row restart it. `scan_clusters()`: jump-segmented scan, legs merged, wider than `max_width` dropped. Lidar clusters update only a confirmed track with a camera hit ≤ `lidar_coast_secs` old, and only when exactly one cluster is in the gate (alone they cannot tell a person from an exhibit).
+- **target_tracker.py**: runs `IntruderTracker` on `/target` + `/scan` + `/odom`. Odom frame, not map (no AMCL needed, continuous). Publishes `/intruder/track` (nav_msgs/Odometry, confirmed tracks only, on every accepted measurement: stamp = state time, child `intruder` with odom-aligned axes so the twist is the odom-frame velocity, x/y pose and twist covariances), `/intruder/predicted` (PointStamped, `prediction_horizon` s ahead), `/intruder/state` (none | tentative | confirmed | lost, 10 Hz), `/intruder/markers` (body, 2σ ellipse, velocity arrow; RViz "Intruder track").
 - **follow_control.py** (library): stand-off P-control on range + bearing with a front safety stop, used by ball_chaser and the BT.
 - **ball_chaser.py**: follows the fused target at 1 m; turns toward the last-seen side when lost.
 - **ball_controller.py**: drives the ball (`/ball/cmd_vel`, planar_move plugin, body frame, yaw held at 0) on a figure-eight checked against the map; flees a close robot, waits for a far one, pauses/reverses at random. `/ball/teleop` (TwistStamped, frame_id `robot`|`world`) overrides it while messages arrive.
 - **ball_teleop.py**: hold-to-move keyboard teleop for the ball.
 - **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`; the network input size is read from the model, 320 px in the image) + OpenCV tracker (`tracker`: KCF by default, then CSRT → MIL fallback; CSRT was tens of ms per frame) + constant-velocity Kalman filter. YOLO runs in a `DetectionWorker` thread (`async_detection`, default true): every frame is tracked and published without waiting for inference; a result re-seeds the tracker on the frame YOLO saw and replays the frames since (`_history`). `async_detection: false` runs YOLO inline. `inference_threads` caps onnxruntime's threads (0 = all cores, which compete with gzserver). Publishes `/person_bbox` (PolygonStamped: top-left + bottom-right px, empty = none; header = the image's), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
 - **person_controller.py**: Pedestrian behaviour (WALK / RUN / EXHAUSTED) publishing `/person/cmd_vel` for the actor plugin. Pure `PersonBrain` steers on `clearance_map.py` (distance transform of `maps/my_map`, passed as `map_yaml`): line-of-sight wander targets, `safe_heading` fan search, speed capped to stop before walls. A `/person_detected` lock within `notice_radius` triggers a stamina-limited sprint away from the robot.
-- **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m), SearchProtocol (turn to last-seen side), PatrolProtocol (Nav2 waypoints)]. Detector-agnostic: reads sensor_fusion topics. Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses and follow bearing/range RMS), `/intruder_sightings` (one sphere per re-acquisition, not a goal). All timing runs on the node clock (sim time).
+- **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m), SearchProtocol (turn to last-seen side), PatrolProtocol (Nav2 waypoints)]. Detector-agnostic: follows target_tracker's `/intruder/track` extrapolated to now (`use_track: false` = sensor_fusion's `/target` directly). Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses and follow bearing/range RMS), `/intruder_sightings` (one sphere per re-acquisition, not a goal). All timing runs on the node clock (sim time).
 - **perf_monitor.py**: `make perf`: real-time factor, per-topic publisher count, sim-Hz and message age (now - stamp) on `/perf_monitor` + log. person_tracker also logs frames/s and mean YOLO/tracker ms every `stats_period`. Nav2's velocity_smoother publishes /cmd_vel on a 20 Hz wall timer, so it reads 20 / RTF sim Hz (~30 at RTF 0.67) from one publisher.
 - **system_monitor.py**: heartbeats → `/system_health`; `/trigger_estop` latches `/estop` (Bool, transient local) which the BT obeys; `/clear_estop` releases.
 
@@ -118,6 +120,8 @@ src/my_bot/
 │   ├── sensor_fusion.py       # camera box + lidar → range/bearing (hsv | person)
 │   ├── follow_control.py      # stand-off follow law (library)
 │   ├── target_estimate.py     # latency compensation with odometry (library)
+│   ├── track_filter.py        # odom-frame CV EKF + track lifecycle + lidar clusters (library)
+│   ├── target_tracker.py      # /target + lidar clusters -> /intruder/track
 │   ├── perf_monitor.py        # real-time factor, rates, latencies
 │   ├── ball_chaser.py         # ball-sim follower
 │   ├── ball_controller.py     # ball autopilot + teleop arbitration
@@ -217,7 +221,7 @@ ros2 topic pub -1 /initialpose geometry_msgs/PoseWithCovarianceStamped "{ header
 ## Entry Points (Console Scripts)
 
 Defined in `setup.py` (test_scripts.py checks they match the modules):
-`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`, `perf_monitor`.
+`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`, `perf_monitor`, `target_tracker`.
 
 Run with `ros2 run my_bot <script_name>`, but prefer the scenario make targets, which load `behavior_params.yaml` and `use_sim_time`.
 

@@ -25,11 +25,16 @@ at the image's timestamp (interpolated from odometry history) turns the
 relative bearing/range into a fixed point in the odom frame, or into a world
 direction when the range is unknown. The controller then asks for the
 target relative to the robot's pose *now*, which odometry updates at
-50-100 Hz. The target is assumed static between detections; a world-frame
-filter with velocity (Phase 3 of the security-guard plan) replaces that.
+50-100 Hz.
 
-Pure Python (no ROS): ball_chaser and security_guard_bt feed it odometry and
-sensor_fusion's stamped /target.
+Two kinds of input:
+  update()        a raw detection (sensor_fusion's /target). The target is
+                  assumed static between detections (ball_chaser).
+  update_track()  a world-frame track with velocity (target_tracker's
+                  /intruder/track, security_guard_bt). The position is
+                  extrapolated to now, at most ``max_predict`` seconds.
+
+Pure Python (no ROS): the followers feed it odometry and their target.
 """
 
 from collections import deque
@@ -59,20 +64,14 @@ def yaw_from_quaternion(q) -> float:
                       1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
-class TargetEstimate:
-    """Last target measurement, re-expressed relative to the current pose."""
+class PoseHistory:
+    """Recent odometry poses, interpolated at a measurement's time."""
 
     # 5 s: person-sim measured /target ages up to 2.1 s while the
     # simulator was CPU-starved; older measurements clamp to the oldest pose.
     def __init__(self, history_secs: float = 5.0):
         self._history_secs = history_secs
         self._poses = deque()  # (t, x, y, yaw), t increasing
-        self._xy: Optional[Tuple[float, float]] = None  # odom, when ranged
-        self._world_bearing: Optional[float] = None     # odom-frame direction
-        self._raw: Optional[Tuple[float, Optional[float]]] = None  # no odom yet
-        self.stamp: Optional[float] = None  # capture time of the measurement
-
-    # -- odometry ----------------------------------------------------------
 
     def add_pose(self, t: Optional[float], x: float, y: float, yaw: float):
         """Record an odometry pose. Unstamped poses replace the history."""
@@ -106,6 +105,19 @@ class TargetEstimate:
             later = entry
         return self._poses[0][1:]  # pragma: no cover — guarded above
 
+
+class TargetEstimate(PoseHistory):
+    """Last target measurement, re-expressed relative to the current pose."""
+
+    def __init__(self, history_secs: float = 5.0, max_predict: float = 1.0):
+        super().__init__(history_secs)
+        self._max_predict = max_predict
+        self._xy: Optional[Tuple[float, float]] = None  # odom, when ranged
+        self._velocity: Optional[Tuple[float, float]] = None  # odom, tracks
+        self._world_bearing: Optional[float] = None     # odom-frame direction
+        self._raw: Optional[Tuple[float, Optional[float]]] = None  # no odom yet
+        self.stamp: Optional[float] = None  # capture time of the measurement
+
     # -- measurements ------------------------------------------------------
 
     def update(self, t: Optional[float], bearing: float,
@@ -120,6 +132,7 @@ class TargetEstimate:
         if range_m is not None and not (math.isfinite(range_m) and range_m > 0.0):
             range_m = None
         self.stamp = t
+        self._velocity = None
         pose = self.pose_at(t)
         if pose is None:
             self._raw = (bearing, range_m)
@@ -135,6 +148,20 @@ class TargetEstimate:
                         y + range_m * math.sin(self._world_bearing))
         return True
 
+    def update_track(self, t: Optional[float], x: float, y: float,
+                     vx: float, vy: float) -> bool:
+        """Take an odom-frame track (position at ``t`` and velocity)."""
+        if not all(math.isfinite(v) for v in (x, y, vx, vy)):
+            return False
+        self.stamp = t
+        self._raw = None
+        self._xy = (x, y)
+        self._velocity = (vx, vy)
+        pose = self.latest_pose()
+        self._world_bearing = (math.atan2(y - pose[1], x - pose[0])
+                               if pose is not None else 0.0)
+        return True
+
     @property
     def has_target(self) -> bool:
         """True once a measurement has been anchored."""
@@ -142,19 +169,39 @@ class TargetEstimate:
 
     @property
     def target_xy(self) -> Optional[Tuple[float, float]]:
-        """Target position in the odom frame, if it was ranged."""
+        """Target position in the odom frame (as measured), if ranged."""
         return self._xy
 
-    def relative(self, pose: Optional[Pose] = None
+    def predicted_xy(self, t: Optional[float]) -> Optional[Tuple[float, float]]:
+        """Target position at ``t``: extrapolated for a track, else as measured."""
+        if self._xy is None or self._velocity is None:
+            return self._xy
+        dt = 0.0
+        if t is not None and self.stamp is not None:
+            dt = max(0.0, min(self._max_predict, t - self.stamp))
+        return (self._xy[0] + self._velocity[0] * dt,
+                self._xy[1] + self._velocity[1] * dt)
+
+    def relative(self, pose: Optional[Pose] = None, t: Optional[float] = None
                  ) -> Optional[Tuple[float, Optional[float]]]:
-        """(bearing, range or None) of the target from ``pose`` (default: now)."""
+        """(bearing, range or None) of the target from ``pose`` (default: now).
+
+        ``t`` is the time a track is extrapolated to (default: the latest
+        odometry stamp).
+        """
         if self._raw is not None:
             return self._raw
         if self._world_bearing is None:
             return None
-        pose = pose or self.latest_pose()
+        if pose is None:
+            pose = self.latest_pose()
+            if t is None and self._poses:
+                t = self._poses[-1][0]
+        if pose is None:  # a track before any odometry
+            pose = (0.0, 0.0, 0.0)
         x, y, yaw = pose
-        if self._xy is None:
+        target = self.predicted_xy(t)
+        if target is None:
             return wrap_angle(self._world_bearing - yaw), None
-        dx, dy = self._xy[0] - x, self._xy[1] - y
+        dx, dy = target[0] - x, target[1] - y
         return wrap_angle(math.atan2(dy, dx) - yaw), math.hypot(dx, dy)

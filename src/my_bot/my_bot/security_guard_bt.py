@@ -35,13 +35,15 @@ Tree structure (highest priority first):
         ├── Action("WaitAtWaypoint")        timed dwell
         └── Action("IncrementWaypoint")     advance bb.waypoint_index
 
-The intruder comes from sensor_fusion's /target, so the tree is
-detector-agnostic: in person-sim that is the YOLO person tracker. /target is
-stamped with the camera image's time; odometry anchors it in the odom frame
-(my_bot.target_estimate) and every tick the blackboard gets the target
-relative to the robot's pose *now*. Steering on the raw, already-stale
-bearing made the robot overshoot. The follow law is the same one
-ball_chaser uses (follow_control).
+The intruder comes from target_tracker's /intruder/track: a confirmed
+odom-frame track with velocity, built from sensor_fusion's /target (camera
++ lidar) and lidar clusters, so the tree is detector-agnostic. Every tick
+the blackboard gets the track extrapolated to now, relative to the robot's
+pose now (my_bot.target_estimate). Steering on the raw, already-stale
+bearing made the robot overshoot, and a static target lagged a walking
+person. ``use_track: false`` follows sensor_fusion's /target directly
+instead (anchored at its stamp, static between detections). The follow law
+is the same one ball_chaser uses (follow_control).
 
 All timing (target timeout, search, dwell) runs on the node clock, i.e.
 simulation time under use_sim_time, so a simulator running slower than real
@@ -382,6 +384,8 @@ class SecurityGuardBTNode(Node):
             0.23, -2.55, -4.52, 8.60, 0.0, 0.0,
         ])
         self.declare_parameter('waypoint_dwell_secs', 2.0)
+        self.declare_parameter('use_track', True)
+        self.declare_parameter('track_max_predict', 1.0)
         self.declare_parameter('target_timeout', 0.5)
         self.declare_parameter('search_secs', 6.0)
         self.declare_parameter('search_angular_speed', 0.6)
@@ -407,12 +411,17 @@ class SecurityGuardBTNode(Node):
         self._sighting_pub = self.create_publisher(
             MarkerArray, '/intruder_sightings', 10)
 
-        # Fed by /odom and /target: the intruder anchored in the odom frame
-        self._target = TargetEstimate()
+        # Fed by /odom and the intruder track (or /target): the intruder in
+        # the odom frame
+        self._target = TargetEstimate(
+            max_predict=float(gp('track_max_predict').value))
 
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Bool, '/estop', self._estop_cb, latched)
-        self.create_subscription(Vector3Stamped, '/target', self._target_cb, 10)
+        if bool(gp('use_track').value):
+            self.create_subscription(Odometry, '/intruder/track', self._track_cb, 10)
+        else:
+            self.create_subscription(Vector3Stamped, '/target', self._target_cb, 10)
         self.create_subscription(
             LaserScan, '/scan', self._scan_cb, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self._odom_cb, 10)
@@ -477,9 +486,17 @@ class SecurityGuardBTNode(Node):
             py_trees.blackboard.Blackboard().set(BB_LAST_SEEN, self._now())
             self._refresh_target()
 
+    def _track_cb(self, msg):
+        p = msg.pose.pose.position
+        v = msg.twist.twist.linear
+        if self._target.update_track(stamp_to_sec(msg.header.stamp),
+                                     p.x, p.y, v.x, v.y):
+            py_trees.blackboard.Blackboard().set(BB_LAST_SEEN, self._now())
+            self._refresh_target()
+
     def _refresh_target(self):
         """Blackboard target = the estimate relative to the robot now."""
-        rel = self._target.relative()
+        rel = self._target.relative(t=self._now())
         if rel is None:
             return
         bearing, rng = rel

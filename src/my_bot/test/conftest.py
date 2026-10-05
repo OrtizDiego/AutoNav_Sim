@@ -97,8 +97,13 @@ class PoseStamped(_Stamped):
 
 class Odometry(_Stamped):
     def __init__(self, **fields):
+        self.child_frame_id = ''
         self.pose = types.SimpleNamespace(
-            pose=types.SimpleNamespace(position=_Vec(), orientation=_quat()))
+            pose=types.SimpleNamespace(position=_Vec(), orientation=_quat()),
+            covariance=[0.0] * 36)
+        self.twist = types.SimpleNamespace(
+            twist=types.SimpleNamespace(linear=_Vec(), angular=_Vec()),
+            covariance=[0.0] * 36)
         super().__init__(**fields)
 
 
@@ -131,10 +136,12 @@ class DiagnosticStatus(_Msg):
 
 
 class Marker(_Stamped):
-    SPHERE, TEXT_VIEW_FACING, ADD = 2, 9, 0
+    ARROW, SPHERE, CYLINDER, TEXT_VIEW_FACING = 0, 2, 3, 9
+    ADD, DELETEALL = 0, 3
 
     def __init__(self, **fields):
         self.ns, self.id, self.type, self.action, self.text = '', 0, 0, 0, ''
+        self.points = []
         self.pose = types.SimpleNamespace(position=_Vec(), orientation=_quat())
         self.scale = _Vec()
         self.color = types.SimpleNamespace(r=0.0, g=0.0, b=0.0, a=0.0)
@@ -376,7 +383,7 @@ _module('geometry_msgs')
 _module('geometry_msgs.msg', Twist=Twist, PoseStamped=PoseStamped,
         TwistStamped=TwistStamped, PointStamped=PointStamped,
         Vector3Stamped=Vector3Stamped, PolygonStamped=PolygonStamped,
-        Point32=_Vec, **_plain('Pose'))
+        Point=_Vec, Point32=_Vec, **_plain('Pose'))
 _module('sensor_msgs')
 _module('sensor_msgs.msg', Image=Image, LaserScan=LaserScan)
 _module('std_msgs')

@@ -106,6 +106,7 @@ class PerfMonitorNode(Node):
                   (Odometry, '/odom', 10),
                   (PolygonStamped, '/person_bbox', 10),
                   (Vector3Stamped, '/target', 10),
+                  (Odometry, '/intruder/track', 10),
                   (Twist, '/cmd_vel', 10)]
         if bool(self.get_parameter('watch_camera').value):
             topics.insert(0, (Image, '/camera/image_raw', qos_profile_sensor_data))

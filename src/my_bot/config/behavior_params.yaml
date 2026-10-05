@@ -83,6 +83,42 @@ person_tracker:
 
 # --- person-sim -----------------------------------------------------------
 
+target_tracker:
+  ros__parameters:
+    frame_id: odom
+    # Constant-velocity EKF: white-noise acceleration (m/s^2). The pedestrian
+    # accelerates at 2 m/s^2 and sprints at 2.5 m/s.
+    accel_noise: 1.5
+    # Camera (/target) noise: bearing rad, range m + fraction of the range
+    bearing_sigma: 0.04
+    range_sigma: 0.15
+    range_sigma_rel: 0.05
+    speed_sigma: 1.0
+    # Camera hits before a track is confirmed (published, followed)
+    confirm_hits: 3
+    # Simulation seconds without an accepted measurement before a track is
+    # dropped (tentative / confirmed)
+    tentative_timeout: 0.5
+    lost_timeout: 1.5
+    # Gated-out ranged detections in a row that restart the track elsewhere
+    max_outliers: 3
+    # Measurements older than the filter by more than this are dropped
+    max_lag: 1.0
+    # Person-sized lidar clusters update a confirmed track for up to
+    # lidar_coast_secs after the last camera hit
+    use_lidar: true
+    lidar_sigma: 0.12
+    lidar_coast_secs: 1.5
+    # laser_frame is 0.064 m behind base_link (robot_core.xacro)
+    lidar_offset_x: -0.064
+    cluster_range_max: 8.0
+    cluster_jump: 0.1
+    cluster_jump_rel: 0.03
+    cluster_merge_distance: 0.5
+    cluster_max_width: 0.8
+    prediction_horizon: 1.0
+    publish_rate: 10.0
+
 person_controller:
   ros__parameters:
     walk_speed: 0.7
@@ -108,6 +144,11 @@ security_guard_bt:
     # hold nested lists.
     waypoints: [3.28, 6.85, -0.92, 6.85, 5.13, -2.45, 0.23, -2.55, -4.52, 8.60, 0.0, 0.0]
     waypoint_dwell_secs: 2.0
+    # Follow target_tracker's /intruder/track (odom-frame track with
+    # velocity, extrapolated to now for at most track_max_predict s);
+    # false = sensor_fusion's /target, static between detections.
+    use_track: true
+    track_max_predict: 1.0
     # Simulation seconds without a detection before the intruder counts as
     # lost. The target is anchored in the odom frame (latency compensated),
     # so following through a short tracker dropout is safe and avoids
