@@ -1,4 +1,4 @@
-# AutoNav Sim: Autonomous Mobile Robot Simulation 🤖📍
+# AutoNav Sim: Detect, Track and Follow People with a Mobile Robot 🤖🎯
 
 ![CI](https://img.shields.io/github/actions/workflow/status/OrtizDiego/AutoNav_Sim/ci.yml?style=for-the-badge)
 ![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-349cfa.svg?style=for-the-badge&logo=ros&logoColor=white)
@@ -7,74 +7,100 @@
 ![Python](https://img.shields.io/badge/Python-3.10-blue.svg?style=for-the-badge&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)
 
-A comprehensive simulation environment for developing and testing autonomous navigation algorithms, featuring SLAM, path planning (Nav2), LiDAR-camera sensor fusion, Behavior Trees, YOLO object detection, and a system watchdog — all running in a reproducible Docker container.
+**A ROS 2 perception-to-action pipeline that lets a mobile robot find a person (or a ball), keep track of them while they move and run away, and react: follow at a safe distance, search where they vanished, or go back to patrolling.** It runs entirely in simulation, in a reproducible Docker container, so the whole stack can be developed, measured and tested before it touches hardware.
 
 ---
 
 ## 📸 Demo & Visuals
 
+<!-- TODO: record these GIFs and drop them in assets/ (see the filenames below) -->
+
+![Person tracking](assets/person_tracking.gif?raw=true "Person tracking")
+> **Person tracking** *(placeholder: `assets/person_tracking.gif`)*: `make person-sim`. Camera view with the YOLO box and fused range/bearing next to RViz showing the intruder track (2σ ellipse, velocity arrow) while the person walks, sprints away and the robot follows.
+
+![Security guard](assets/security_guard.gif?raw=true "Security guard")
+> **Security guard** *(placeholder: `assets/security_guard.gif`)*: `make person-sim`. The full loop: patrol, intruder spotted, follow at 2.5 m, target lost, search, back to patrol.
+
+![Ball chase](assets/ball_chase.gif?raw=true "Ball chase")
+> **Ball chase** *(placeholder: `assets/ball_chase.gif`)*: `make ball-sim`. The robot following the red ball, with the Sensor fusion image showing the detected blob.
+
 ![alt text](assets/slam.gif?raw=true "SLAM")
-> **SLAM:** The robot exploring the `room.world` and generating a map in RViz (SLAM in action).
+> **SLAM:** The robot exploring the `room.world` museum and generating the map used by every scenario.
 
 ![alt text](assets/gazebo.gif?raw=true "Navigation")
-> **Navigation:** Left side: Gazebo view of the robot navigating the room. Right side: RViz view of the robot with the planned path and navigation costmap.
+> **Navigation:** Left: Gazebo view of the robot navigating the room. Right: RViz with the planned path and costmap.
 
 ---
 
-## 🚀 Project Overview
+## 🎯 Why this project?
 
-**AutoNav Sim** is a modular robotics framework for simulating a differential drive robot (modelled on the TurtleBot3 Waffle Pi) in a museum environment. Built on **ROS 2 Humble**, it serves as a testbed for verifying navigation stacks and perception algorithms before deployment on physical hardware.
+Most "follow me" or "guard this area" robots fail for the same reason: **perception is noisy, late and intermittent.** A detector misses frames, a camera has no depth, a lidar cannot tell a person from a pillar, and by the time a detection reaches the controller the target has moved and the robot has turned. AutoNav Sim is a testbed for solving exactly that part:
 
-This project demonstrates expertise in:
+1. **Detect** the target in the camera (YOLOv8 for people, colour segmentation for the ball we started with).
+2. **Range** it by fusing the camera box with the lidar, with a monocular fallback when the lidar misses.
+3. **Track** it over time (OpenCV tracker + Kalman filter in the image, constant-velocity EKF in the world) so the robot keeps a stable estimate through occlusions and detector dropouts.
+4. **Compensate latency** so the robot steers toward where the target *is now*, not where the image saw it.
+5. **Act** with a behaviour tree: patrol, follow, search, emergency stop.
 
-* **Full-Stack Robotics:** From URDF/Xacro modeling (with realistic sensor noise) to high-level behavior scripting.
-* **Autonomous Navigation:** The **Nav2** stack with A* global planner and DWB local planner, AMCL localization and `slam_toolbox` mapping.
-* **Deep Learning Perception:** YOLOv8-nano (ONNX on CPU; CUDA if the image has the CUDA 12 runtime) seeding an OpenCV tracker smoothed by a Kalman filter.
-* **Sensor Fusion:** Camera boxes ranged with the LiDAR, cross-checked against a monocular estimate.
-* **Behavior Trees:** A `py_trees` security guard that patrols, follows intruders, searches for them and obeys an e-stop.
-* **DevOps & Reproducibility:** Fully containerized development environment with CI/CD via GitHub Actions.
+The ball chase was the starting point: a bright, easy target to validate fusion, latency compensation and the follow controller. The same pipeline then got swapped to a moving pedestrian with a harder detector, a real tracker and an autonomous guard on top.
+
+### Where this applies
+
+| Application | What the pipeline provides |
+|-------------|----------------------------|
+| **Security & patrol robots** (museums, warehouses, car parks, data centres) | Spot a person, keep eyes on them at a stand-off distance, report sightings, resume patrol when they leave. |
+| **Person-following carts and porters** (hospitals, airports, retail, logistics) | Lock on to one person and follow them through a building with a safe distance and an e-stop. |
+| **Assistive and elder-care robots** | Stay near a person without crowding them; recover when they go out of view. |
+| **Search & rescue / inspection** | Re-acquire a moving target after loss by turning toward its last-seen side. |
+| **Camera and sports robots** (filming, ball retrieval) | Follow a moving subject or a ball while avoiding walls. |
+| **Human-robot interaction research** | A repeatable pedestrian that walks, flees and tires, to benchmark trackers and followers against. |
+
+> This is a simulation project: it shows the architecture and the engineering needed for these systems, not a certified product.
+
+---
+
+## 🚀 What it demonstrates
+
+* **Person detection:** YOLOv8-nano (ONNX, 320 px input; CPU by default, CUDA if the image has the CUDA 12 runtime), run in a worker thread so every camera frame is still tracked and published without waiting for inference.
+* **Visual tracking:** KCF (CSRT/MIL fallback) re-seeded by YOLO, smoothed by a Kalman filter that coasts through short dropouts. A late YOLO result is replayed through the frames that arrived meanwhile.
+* **Camera + lidar fusion:** the box's angular span selects lidar beams; a low percentile gives the range. In person mode it is cross-checked against a monocular estimate (person height, or feet ground contact).
+* **World-frame tracking:** a constant-velocity EKF on odometry coordinates with time-based prediction, retrodiction of late measurements, chi-square gating and a tentative → confirmed → lost track lifecycle. Lidar clusters refine a confirmed track only when exactly one cluster is in the gate.
+* **Latency compensation:** each detection is anchored in the odom frame at the robot pose of the image's timestamp, then re-expressed relative to the pose *now*. Steering on the raw, stale bearing made the followers overshoot.
+* **Behaviour Trees:** a `py_trees` security guard that patrols with **Nav2**, follows, searches and obeys an e-stop.
+* **A hard-to-track adversary:** a pedestrian that walks, sprints away when it notices the robot, and gets exhausted, steering on the saved map so it never walks into walls.
+* **Full navigation stack:** Nav2 (A* + DWB), AMCL localisation, `slam_toolbox` mapping, URDF/Xacro robot with realistic sensor noise.
+* **Engineering:** fully containerised, CI via GitHub Actions, unit tests that run without a ROS runtime, a `make perf` tool for real-time factor, topic rates and message latency.
 
 ---
 
 ## 🎬 Scenarios
 
-Everything is grouped into four one-command scenarios. Each opens Gazebo and an RViz layout made for it. Run them from the host. The `make` targets `docker exec` into the container.
+Each scenario is one command: Gazebo, an RViz layout made for it and every node it needs. Run them from the host. The `make` targets `docker exec` into the container.
 
 | Command | What you see |
 |---------|--------------|
+| `make yolo-sim` | **Detection & fusion proof.** A person stands in front of the robot: YOLO box, fused range and bearing, and the world-frame track. |
+| `make ball-sim` | **Where it started.** The robot chases a red ball that runs, waits and pauses around the museum. |
+| `make person-sim` | **The full demo.** A security guard that patrols, spots a running person with YOLO, tracks and follows them, searches when they escape and resumes the patrol. |
 | `make sim` | The robot in the museum (`room.world`), nothing else. Drive it with `make teleop`. |
 | `make nav-sim` | `sim` + Nav2 in one go: map, costmaps and AMCL pose appear immediately. Send goals with RViz's **Nav2 Goal** tool. |
-| `make ball-sim` | The robot chases a red ball around the museum. |
-| `make person-sim` | **The full demo:** a security guard that patrols, spots a running person with YOLO, follows them, searches when they escape and resumes the patrol. |
-| `make yolo-sim` | A person standing in front of the robot: proof of YOLO detection + LiDAR fusion. |
 
 > **Slow machine?** Add `GUI=false` to any scenario (`make person-sim GUI=false`): Gazebo runs without its window and RViz shows the robot, scan, map and camera. With software rendering the Gazebo window costs CPU the simulation needs.
 
 > **Why does `make sim` show no map?** `make sim` opens the navigation RViz layout, but nothing publishes `/map` (or the `map → odom` transform) until Nav2's map_server and AMCL run. Start them with `make nav` in a second terminal, or use `make nav-sim`, which starts both. AMCL's initial pose is the spawn point (`nav2_params.yaml`), so no "2D Pose Estimate" click is needed.
 
-### `make ball-sim`: chase the ball
-
-```
-ball.world ──▶ camera ──▶ sensor_fusion (mode hsv) ──▶ /target (stamped) ──▶ ball_chaser ──▶ /cmd_vel
-                  lidar ──┘                                 /odom ──┘   ball_controller ──▶ /ball/cmd_vel
-```
-
-* **ball_controller** drives the ball on a figure-eight through the U where the robot starts and the hall to its right. The path is checked against the map to keep the ball over 1 m from every wall. The ball plays with the robot: it runs when the robot gets close, waits when the robot falls behind, pauses now and then, and sometimes turns back.
-* **sensor_fusion** finds the red blob, converts its pixel span to bearings and takes a low percentile of the LiDAR beams inside it as the range.
-* **ball_chaser** keeps 1 m from the ball's surface; when the ball is lost it turns toward where it was last seen.
-* **`make teleop-ball`** (second terminal) takes the ball over by hand. Hold `w a s d` (or `q e z c` for diagonals) to move it and release to stop. By default the keys are relative to the robot's view: `w` = away from the robot, `a` = the robot's left. `m` switches to world axes and `+`/`-` change speed. Quit with Ctrl-C and the autopilot resumes.
-* Options: `ros2 launch my_bot ball_sim.launch.py chase:=false` (drive the robot yourself) or `autopilot:=false` (ball only moves when teleoperated).
-
-### `make person-sim`: security guard (the demo)
+### `make person-sim`: security guard (the main demo)
 
 ```mermaid
 graph LR
     CAM[/camera/image_raw/] --> PT[person_tracker<br/>YOLOv8n + KCF + Kalman]
     PT -->|/person_bbox| SF[sensor_fusion<br/>mode person]
     SCAN[/scan/] --> SF
-    SF -->|/target<br/>stamped| BT[security_guard_bt]
-    SCAN --> BT
-    ODOM[/odom/] --> BT
+    SF -->|/target<br/>stamped| TT[target_tracker<br/>odom-frame EKF]
+    SCAN --> TT
+    ODOM[/odom/] --> TT
+    TT -->|/intruder/track| BT[security_guard_bt]
+    ODOM --> BT
     NAV[Nav2 + AMCL] <-->|goToPose| BT
     BT -->|/cmd_vel| ROBOT[Robot]
     NAV -->|/cmd_vel| ROBOT
@@ -93,23 +119,40 @@ Selector("SecurityGuard")
 └── Sequence("PatrolProtocol")     NavigateToWaypoint → WaitAtWaypoint → IncrementWaypoint
 ```
 
-* **person_controller** animates the pedestrian: it **walks** between random spots, **runs** away once the robot's tracker locks on, and is **exhausted** after a sprint. Gazebo actors have no physics, so it steers on the saved museum map. It only picks targets in line of sight, takes the heading closest to its goal that has free floor ahead, and caps its speed so it can always stop before a wall. A test simulates minutes of walking and fleeing on the real map and checks the person never gets within 0.5 m of a wall.
-* **person_tracker**: YOLOv8n (320 px input) reseeds an OpenCV KCF tracker every 10 frames or 0.5 s, whichever comes first; a Kalman filter smooths the box and coasts through short dropouts. YOLO runs in a worker thread, so every camera frame is tracked and published without waiting for inference; its result is replayed through the frames that arrived meanwhile.
-* **sensor_fusion** (mode `person`) ranges the box with the LiDAR and falls back to a monocular estimate (person height / feet ground contact) when the beams miss the legs.
-* **security_guard_bt** publishes its active protocol on `/security_guard/state`, mission metrics on `/security_guard/metrics` and sighting markers on `/intruder_sightings`.
+* **person_tracker**: YOLOv8n reseeds an OpenCV KCF tracker every 10 frames or 0.5 s, whichever comes first; a Kalman filter smooths the box and coasts through short dropouts. Publishes `/person_bbox`, `/person_track`, `/person_detected` and an annotated debug image.
+* **sensor_fusion** (mode `person`) ranges the box with the lidar and falls back to a monocular estimate when the beams miss the legs. Publishes the stamped `/target` (bearing, range) the followers use.
+* **target_tracker** runs the world-frame EKF on `/target` + `/scan` + `/odom` and publishes `/intruder/track` (pose, velocity, covariance), `/intruder/predicted`, `/intruder/state` and RViz markers (body, 2σ ellipse, velocity arrow). It works in the odom frame, so it needs no AMCL and is continuous.
+* **security_guard_bt** follows the track extrapolated to now, publishes its active protocol on `/security_guard/state`, mission metrics on `/security_guard/metrics` (track losses, follow bearing/range RMS) and sighting markers on `/intruder_sightings`.
+* **person_controller** animates the pedestrian: it **walks** between random spots, **runs** away once the robot's tracker locks on, and is **exhausted** after a sprint. Gazebo actors have no physics, so it steers on the saved museum map: line-of-sight targets only, the free heading closest to its goal, and a speed cap so it can always stop before a wall. A test simulates minutes of walking and fleeing on the real map and checks the person never gets within 0.5 m of a wall.
 * **E-stop:** `ros2 service call /trigger_estop std_srvs/srv/Trigger` latches it (the robot halts and Nav2 is cancelled). `ros2 service call /clear_estop std_srvs/srv/Trigger` releases it.
 
 ### `make yolo-sim`: perception proof
 
-A person stands 3 m in front of the robot, with a crate and a barrel to either side. RViz shows the **Sensor fusion** image: the YOLO box around the person only, labelled with the fused range (≈2.6 m, where the lidar hits the front shin) with its source (lidar or camera) and bearing. Check it numerically with `ros2 topic echo /target_range`. Drive around with `make teleop` and watch range and bearing follow. Enable the **YOLO tracker** image display to see the raw tracker output.
+A person stands 3 m in front of the robot, with a crate and a barrel to either side. RViz shows the **Sensor fusion** image: the YOLO box around the person only, labelled with the fused range (≈2.6 m, where the lidar hits the front shin), its source (lidar or camera) and bearing. Check it numerically with `ros2 topic echo /target_range`. Drive around with `make teleop` and watch range and bearing follow. Enable the **YOLO tracker** image display to see the raw tracker output.
+
+### `make ball-sim`: the starting point
+
+```
+ball.world ──▶ camera ──▶ sensor_fusion (mode hsv) ──▶ /target (stamped) ──▶ ball_chaser ──▶ /cmd_vel
+                  lidar ──┘                                 /odom ──┘   ball_controller ──▶ /ball/cmd_vel
+```
+
+The ball is the simplest target (a saturated red blob) and was used to build and validate the shared pieces: fusion, latency compensation and the stand-off follow law.
+
+* **ball_controller** drives the ball on a figure-eight checked against the map to keep it over 1 m from every wall. It plays with the robot: it runs when the robot gets close, waits when the robot falls behind, pauses now and then, and sometimes turns back.
+* **sensor_fusion** (mode `hsv`) finds the largest red blob, converts its pixel span to bearings and takes a low percentile of the lidar beams inside it as the range.
+* **ball_chaser** keeps 1 m from the ball's surface; when the ball is lost it turns toward where it was last seen.
+* **`make teleop-ball`** (second terminal) takes the ball over by hand. Hold `w a s d` (or `q e z c` for diagonals) to move it and release to stop. By default the keys are relative to the robot's view: `w` = away from the robot, `a` = the robot's left. `m` switches to world axes and `+`/`-` change speed. Quit with Ctrl-C and the autopilot resumes.
+* Options: `ros2 launch my_bot ball_sim.launch.py chase:=false` (drive the robot yourself) or `autopilot:=false` (ball only moves when teleoperated).
 
 ---
 
 ## 🛠️ Other Features
 
-* **Mapping:** `make slam` (with `make sim` + `make teleop`), then `make save-map`.
-* **Realistic sensor noise** in the Xacro URDF: LiDAR range σ = 0.01 m, camera pixel σ = 0.007. The camera is 320×240 at 15 Hz, which is cheap enough to render in software.
+* **Mapping:** `make slam` (with `make sim` + `make teleop`), then `make save-map NAME=x`.
+* **Realistic sensor noise** in the Xacro URDF: lidar range σ = 0.01 m, camera pixel σ = 0.007. The camera is 320×240 at 15 Hz, which is cheap enough to render in software.
 * **System watchdog** (`make system-monitor`, built into `person-sim`): `/system_health` diagnostics from `/scan` and camera heartbeats, plus the e-stop services.
+* **Performance tooling:** `make perf` reports the real-time factor, per-topic rates in sim time and message age (latency); `person_tracker` also logs frames/s and mean YOLO/tracker milliseconds.
 * **CI/CD:** GitHub Actions builds the workspace, runs the tests (launch files are built against a real ROS install) and uploads coverage.
 
 ---
@@ -119,7 +162,7 @@ A person stands 3 m in front of the robot, with a crate and a barrel to either s
 ### Prerequisites
 
 * Docker & Docker Compose
-* NVIDIA GPU (optional — speeds up YOLO)
+* NVIDIA GPU (optional, renders Gazebo on the GPU; YOLO runs on the CPU unless the image has the CUDA 12 runtime)
 
 ### Setup
 
@@ -175,17 +218,19 @@ src/my_bot/
 │   └── rsp.launch.py                    # robot_state_publisher
 ├── maps/                                # Saved museum map (also used by the person & ball tests)
 ├── my_bot/
+│   ├── person_tracker.py                # YOLO + OpenCV tracker + Kalman
+│   ├── object_detector.py               # YOLOv8 pre/post-processing
 │   ├── sensor_fusion.py                 # camera box + lidar → range / bearing (hsv | person)
-│   ├── follow_control.py                # stand-off follow law (ball_chaser + BT)
 │   ├── target_estimate.py               # detection-latency compensation with odometry
+│   ├── track_filter.py                  # odom-frame CV EKF + track lifecycle + lidar clusters
+│   ├── target_tracker.py                # /target + lidar → /intruder/track
+│   ├── follow_control.py                # stand-off follow law (ball_chaser + BT)
+│   ├── security_guard_bt.py             # py_trees security guard
 │   ├── ball_chaser.py                   # ball-sim: follow the fused ball
 │   ├── ball_controller.py               # ball-sim: ball autopilot + teleop arbitration
 │   ├── ball_teleop.py                   # make teleop-ball
-│   ├── person_tracker.py                # YOLO + OpenCV tracker + Kalman
-│   ├── object_detector.py               # YOLOv8 pre/post-processing
 │   ├── person_controller.py             # pedestrian WALK / RUN / EXHAUSTED on the map
 │   ├── clearance_map.py                 # distance-to-wall lookups on the saved map
-│   ├── security_guard_bt.py             # py_trees security guard
 │   ├── system_monitor.py                # watchdog + e-stop
 │   └── perf_monitor.py                  # make perf: real-time factor, rates, latencies
 ├── test/                                # unit tests (no ROS runtime needed)
@@ -213,8 +258,8 @@ src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walkin
 | `make sim` | Robot in the museum, Gazebo + RViz (any scenario: `GUI=false` for no Gazebo window) |
 | `make nav-sim` | `sim` + Nav2 in one command |
 | `make ball-sim` | Ball chase (fusion + chaser + ball autopilot) |
-| `make person-sim` | Security guard demo (Nav2 + YOLO + fusion + BT + watchdog) |
-| `make yolo-sim` | Static person: YOLO + fusion proof |
+| `make person-sim` | Security guard demo (Nav2 + YOLO + fusion + tracker + BT + watchdog) |
+| `make yolo-sim` | Static person: YOLO + fusion + tracking proof |
 | `make teleop` | Keyboard control of the robot |
 | `make teleop-ball` | Keyboard control of the ball (ball-sim) |
 | `make slam` / `make save-map NAME=x` | SLAM mapping / save the map |
