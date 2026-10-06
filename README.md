@@ -13,6 +13,17 @@
 
 ## 📸 Demo & Visuals
 
+<!-- TODO: record these GIFs and drop them in assets/ (see the filenames below) -->
+
+![Person tracking](assets/person_tracking.gif?raw=true "Person tracking")
+> **Person tracking** *(placeholder: `assets/person_tracking.gif`)*: `make person-sim`. Camera view with the YOLO box and fused range/bearing next to RViz showing the intruder track (2σ ellipse, velocity arrow) while the person walks, sprints away and the robot follows.
+
+![Security guard](assets/security_guard.gif?raw=true "Security guard")
+> **Security guard** *(placeholder: `assets/security_guard.gif`)*: `make person-sim`. The full loop: patrol, intruder spotted, follow at 2.5 m, target lost, search, back to patrol.
+
+![Ball chase](assets/ball_chase.gif?raw=true "Ball chase")
+> **Ball chase** *(placeholder: `assets/ball_chase.gif`)*: `make ball-sim`. The robot following the red ball, with the Sensor fusion image showing the detected blob.
+
 ![alt text](assets/slam.gif?raw=true "SLAM")
 > **SLAM:** The robot exploring the `room.world` museum and generating the map used by every scenario.
 
