@@ -1,5 +1,6 @@
-# AutoNav Sim
-##  Detect, Track and Follow People with a Mobile Robot
+<div align="center">
+    
+# AutoNav Sim: Detect, Track and Follow People with a Mobile Robot
 
 ![CI](https://img.shields.io/github/actions/workflow/status/OrtizDiego/AutoNav_Sim/ci.yml?style=for-the-badge)
 ![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-349cfa.svg?style=for-the-badge&logo=ros&logoColor=white)
@@ -7,6 +8,8 @@
 ![Docker](https://img.shields.io/badge/Docker-Containerized-2496ed.svg?style=for-the-badge&logo=docker&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.10-blue.svg?style=for-the-badge&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)
+
+</div>
 
 **A ROS 2 perception-to-action pipeline that lets a mobile robot find a person (or a ball), keep track of them while they move and run away, and react: follow at a safe distance, search where they vanished, or go back to patrolling.** It runs entirely in simulation, in a reproducible Docker container, so the whole stack can be developed, measured and tested before it touches hardware.
 
