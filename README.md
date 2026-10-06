@@ -1,4 +1,5 @@
-# AutoNav Sim: Detect, Track and Follow People with a Mobile Robot 🤖🎯
+# AutoNav Sim
+##  Detect, Track and Follow People with a Mobile Robot
 
 ![CI](https://img.shields.io/github/actions/workflow/status/OrtizDiego/AutoNav_Sim/ci.yml?style=for-the-badge)
 ![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-349cfa.svg?style=for-the-badge&logo=ros&logoColor=white)
