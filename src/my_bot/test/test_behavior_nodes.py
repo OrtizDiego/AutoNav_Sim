@@ -17,6 +17,7 @@
 Also covers every node's ``main()`` and ``__main__`` entry point.
 """
 
+import json
 import math
 import os
 import runpy
@@ -24,9 +25,10 @@ import types
 
 from geometry_msgs.msg import Vector3Stamped
 from nav_msgs.msg import Odometry
+import numpy as np
 import py_trees
 import pytest
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool
 
 from my_bot import person_controller as pc
@@ -177,7 +179,7 @@ class TestSecurityGuardNode:
             '/estop', '/target', '/scan', '/odom'}
         assert set(guard.publishers) == {
             '/cmd_vel', '/security_guard/state', '/security_guard/metrics',
-            '/intruder_sightings'}
+            '/intruder_sightings', '/security_events'}
         assert [t.period for t in guard.timers] == [0.1, 5.0]
         assert guard._navigator.active                # waited for Nav2
         assert 'PatrolProtocol' in guard.logger.messages('info')[1]
@@ -189,7 +191,7 @@ class TestSecurityGuardNode:
         _tick(node)
         goal = node._navigator.goals[0]
         assert (goal.pose.position.x, goal.pose.position.y) == (1.0, 2.0)
-        assert node._bt.root.children[3].children[2]._n == 2
+        assert node._bt.root.children[4].children[2]._n == 2
 
     def test_blackboard_starts_clean(self, guard):
         assert _bb(sg.BB_ESTOP) is False
@@ -352,6 +354,103 @@ class TestSecurityGuardOnTrack:
     def test_non_finite_track_is_ignored(self, tracked_guard):
         _track(tracked_guard, float('nan'), 0.0)
         assert _bb(sg.BB_LAST_SEEN) == -math.inf
+
+
+def _events(node):
+    return [json.loads(m.data) for m in node.publishers['/security_events'].msgs]
+
+
+class TestSecurityGuardAlerts:
+
+    def test_incident_lifecycle(self, tracked_guard):
+        g = tracked_guard
+        g.subscriptions['/odom'](_odom(0.0, 0.0))
+        _track(g, 3.0, 1.0, vx=1.0, t=g.clock.seconds)
+        assert _tick(g) == 'IntruderProtocol'
+        detected, = _events(g)
+        assert detected['event'] == 'intruder_detected'
+        assert (detected['frame'], detected['x'], detected['y']) == ('odom', 3.0, 1.0)
+        assert 'snapshot' not in detected               # no incident_dir
+        g.clock.advance(1.5)
+        assert _tick(g) == 'SearchProtocol'
+        assert _events(g)[-1]['event'] == 'intruder_lost'
+        _track(g, 5.0, 1.0, t=g.clock.seconds)          # seen again
+        _tick(g)
+        assert _events(g)[-1]['event'] == 'intruder_reacquired'
+        assert _events(g)[-1]['incident'] == 1
+        g.clock.advance(1.5)
+        assert _tick(g) == 'SearchProtocol'
+        g.clock.advance(30.0)                           # search gives up
+        assert _tick(g) == 'ReportProtocol'
+        assert _tick(g) == 'PatrolProtocol'
+        kinds = [e['event'] for e in _events(g)]
+        assert kinds[-2:] == ['intruder_lost', 'incident_closed']
+        assert g._metrics['incidents'] == 1
+        assert 'security event: {"event": "incident_closed"' in \
+            ' '.join(g.logger.messages('info'))
+
+    def test_alert_position_in_the_map_frame(self, tracked_guard):
+        g = tracked_guard
+        g._tf_buffer.transforms[('map', 'odom')] = (1.0, 2.0, math.pi / 2)
+        g.subscriptions['/odom'](_odom(0.0, 0.0))
+        _track(g, 3.0, 0.0, t=g.clock.seconds)
+        _tick(g)
+        event = _events(g)[0]
+        assert event['frame'] == 'map'
+        assert (event['x'], event['y']) == (pytest.approx(1.0), pytest.approx(5.0))
+
+    def test_search_goal_leads_the_track(self, tracked_guard):
+        g = tracked_guard
+        g.subscriptions['/odom'](_odom(0.0, 0.0))
+        _track(g, 3.0, 0.0, vy=1.0, t=g.clock.seconds)  # 2 s lead = 2 m
+        assert _bb(sg.BB_SEARCH_GOAL) == pytest.approx((3.0, 2.0))
+        assert _bb(sg.BB_TARGET_YAW_RATE) == pytest.approx(1.0 / 3.0)
+        _track(g, 3.0, 0.0, vy=5.0, t=g.clock.seconds)  # capped at 4 m
+        assert _bb(sg.BB_SEARCH_GOAL) == pytest.approx((3.0, 4.0))
+        _tick(g)
+        g.clock.advance(1.5)
+        assert _tick(g) == 'SearchProtocol'
+        goal = g._navigator.goals[-1]
+        assert goal.header.frame_id == 'odom'
+        assert (goal.pose.position.x, goal.pose.position.y) == pytest.approx((3.0, 4.0))
+
+    def test_unranged_target_searches_by_turning(self, guard):
+        guard.subscriptions['/odom'](_odom(0.0, 0.0))
+        _see(guard, 0.4, -1.0)
+        assert _bb(sg.BB_SEARCH_GOAL) is None
+        _tick(guard)
+        guard.clock.advance(1.5)
+        assert _tick(guard) == 'SearchProtocol'
+        assert guard.publishers['/cmd_vel'].last.angular.z > 0.0
+        assert guard._navigator.goals == []             # no Nav2 drive
+
+    def test_snapshot_and_log_on_disk(self, fresh_blackboard, ros_params, tmp_path):
+        ros_params['incident_dir'] = str(tmp_path)
+        g = sg.SecurityGuardBTNode()
+        assert '/camera/image_raw' in g.subscriptions
+        g.subscriptions['/camera/image_raw'](
+            Image(frame=np.full((24, 32, 3), 80, np.uint8)))
+        g.subscriptions['/odom'](_odom(0.0, 0.0))
+        _track(g, 3.0, 0.0, t=g.clock.seconds)
+        _tick(g)
+        event = _events(g)[0]
+        assert event['snapshot'] == str(tmp_path / 'incident_001_00.jpg')
+        assert os.path.getsize(event['snapshot']) > 0
+        logged = (tmp_path / 'incidents.jsonl').read_text().splitlines()
+        assert json.loads(logged[0])['event'] == 'intruder_detected'
+
+    def test_failed_snapshot_does_not_stop_the_alert(self, fresh_blackboard,
+                                                     ros_params, tmp_path):
+        ros_params['incident_dir'] = str(tmp_path)
+        g = sg.SecurityGuardBTNode()
+        g.subscriptions['/camera/image_raw'](Image())     # no frame
+        _track(g, 3.0, 0.0, t=g.clock.seconds)
+        _tick(g)
+        assert _events(g)[0]['snapshot'] is None
+        assert 'not saved' in g.logger.messages('warn')[0]
+
+    def test_no_camera_subscription_without_incident_dir(self, tracked_guard):
+        assert '/camera/image_raw' not in tracked_guard.subscriptions
 
 
 def test_active_protocol_is_idle_before_the_first_tick(fresh_blackboard):

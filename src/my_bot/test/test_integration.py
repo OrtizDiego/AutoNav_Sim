@@ -20,6 +20,7 @@ graph. The camera, lidar and odometry inputs are synthetic; YOLO is a fake
 session that "sees" a scripted person box.
 """
 
+import json
 import math
 import types
 
@@ -269,9 +270,20 @@ class TestPersonSim:
         for leaf in person_sim.guard._bt.root.iterate():
             if hasattr(leaf, '_clock'):
                 monkeypatch.setattr(leaf, '_clock', lambda: clock.now)
+        nav = person_sim.guard._navigator
         assert _frame(person_sim) == 'SearchProtocol'
+        goal = nav.goals[-1]                          # where it was heading
+        assert goal.header.frame_id == 'odom'
+        assert goal.pose.position.x == pytest.approx(4.0, abs=0.5)
+        nav.done = True                               # Nav2 arrived
+        _frame(person_sim)
         assert _cmd(person_sim) == (0.0, pytest.approx(0.6))  # last seen left
-        clock.now += 10.0
+        clock.now += 30.0
+        assert _frame(person_sim) == 'ReportProtocol'
+        events = [json.loads(m.data) for m in
+                  person_sim.guard.publishers['/security_events'].msgs]
+        assert [e['event'] for e in events] == [
+            'intruder_detected', 'intruder_lost', 'incident_closed']
         assert _frame(person_sim) == 'PatrolProtocol'
 
     def test_estop_overrides_the_chase_until_cleared(self, person_sim):

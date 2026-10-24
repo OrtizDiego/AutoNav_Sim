@@ -182,6 +182,34 @@ class TargetEstimate(PoseHistory):
         return (self._xy[0] + self._velocity[0] * dt,
                 self._xy[1] + self._velocity[1] * dt)
 
+    def bearing_rate(self, pose: Optional[Pose] = None,
+                     t: Optional[float] = None) -> float:
+        """Rate (rad/s, positive left) at which the track's motion turns its bearing.
+
+        Seen from ``pose`` (default: now): cross(d, v) / |d|^2 with d the
+        robot-to-target vector. 0.0 without a velocity (raw detections).
+        """
+        if self._velocity is None:
+            return 0.0
+        if pose is None:
+            pose = self.latest_pose()
+            if t is None and self._poses:
+                t = self._poses[-1][0]
+        if pose is None:
+            pose = (0.0, 0.0, 0.0)
+        target = self.predicted_xy(t)
+        dx, dy = target[0] - pose[0], target[1] - pose[1]
+        r2 = dx * dx + dy * dy
+        if r2 < 1e-6:
+            return 0.0
+        vx, vy = self._velocity
+        return (dx * vy - dy * vx) / r2
+
+    @property
+    def velocity(self) -> Optional[Tuple[float, float]]:
+        """Track velocity in the odom frame (m/s), None for raw detections."""
+        return self._velocity
+
     def relative(self, pose: Optional[Pose] = None, t: Optional[float] = None
                  ) -> Optional[Tuple[float, Optional[float]]]:
         """(bearing, range or None) of the target from ``pose`` (default: now).

@@ -126,7 +126,7 @@ Selector("SecurityGuard")
 * **person_tracker**: YOLOv8n reseeds an OpenCV KCF tracker every 10 frames or 0.5 s, whichever comes first; a Kalman filter smooths the box and coasts through short dropouts. Publishes `/person_bbox`, `/person_track`, `/person_detected` and an annotated debug image.
 * **sensor_fusion** (mode `person`) ranges the box with the lidar and falls back to a monocular estimate when the beams miss the legs. Publishes the stamped `/target` (bearing, range) the followers use.
 * **target_tracker** runs the world-frame EKF on `/target` + `/scan` + `/odom` and publishes `/intruder/track` (pose, velocity, covariance), `/intruder/predicted`, `/intruder/state` and RViz markers (body, 2σ ellipse, velocity arrow). It works in the odom frame, so it needs no AMCL and is continuous.
-* **security_guard_bt** follows the track extrapolated to now, publishes its active protocol on `/security_guard/state`, mission metrics on `/security_guard/metrics` (track losses, follow bearing/range RMS) and sighting markers on `/intruder_sightings`.
+* **security_guard_bt** follows the track extrapolated to now, leading a crossing person with a feedforward of its bearing rate. When the person is lost it drives (Nav2) to where the track was heading, looks around, then reports and resumes the patrol. It publishes its active protocol on `/security_guard/state`, mission metrics on `/security_guard/metrics` (track losses, incidents, follow bearing/range RMS), alerts on `/security_events` (JSON, also logged with a camera snapshot under `~/.ros/security_incidents`) and sighting markers on `/intruder_sightings`.
 * **person_controller** animates the pedestrian: it **walks** between random spots, **runs** away once the robot's tracker locks on, and is **exhausted** after a sprint. Gazebo actors have no physics, so it steers on the saved museum map: line-of-sight targets only, the free heading closest to its goal, and a speed cap so it can always stop before a wall. A test simulates minutes of walking and fleeing on the real map and checks the person never gets within 0.5 m of a wall.
 * **E-stop:** `ros2 service call /trigger_estop std_srvs/srv/Trigger` latches it (the robot halts and Nav2 is cancelled). `ros2 service call /clear_estop std_srvs/srv/Trigger` releases it.
 
@@ -230,6 +230,7 @@ src/my_bot/
 │   ├── target_tracker.py                # /target + lidar → /intruder/track
 │   ├── follow_control.py                # stand-off follow law (ball_chaser + BT)
 │   ├── security_guard_bt.py             # py_trees security guard
+│   ├── incident_log.py                  # alert events + incident log
 │   ├── ball_chaser.py                   # ball-sim: follow the fused ball
 │   ├── ball_controller.py               # ball-sim: ball autopilot + teleop arbitration
 │   ├── ball_teleop.py                   # make teleop-ball

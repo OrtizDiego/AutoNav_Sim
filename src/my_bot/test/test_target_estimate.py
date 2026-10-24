@@ -172,3 +172,48 @@ def test_track_without_odometry_is_seen_from_the_origin():
     est = TargetEstimate()
     est.update_track(None, 0.0, 2.0, 0.0, 0.0)
     assert est.relative() == (pytest.approx(math.pi / 2), pytest.approx(2.0))
+
+
+def test_bearing_rate_of_a_crossing_track():
+    est = TargetEstimate()
+    assert est.bearing_rate() == 0.0                  # nothing yet
+    est.add_pose(0.0, 0.0, 0.0, 0.0)
+    est.update(0.0, 0.0, 3.0)
+    assert est.bearing_rate() == 0.0                  # raw detection: no velocity
+    assert est.velocity is None
+    est.update_track(0.0, 3.0, 0.0, 0.0, 1.5)         # crossing right to left
+    assert est.velocity == (0.0, 1.5)
+    assert est.bearing_rate() == pytest.approx(0.5)   # v / r
+    assert est.bearing_rate(pose=(3.0, -3.0, 2.0)) == pytest.approx(0.0)  # head-on
+    est.update_track(0.0, 0.0, 0.0, 1.0, 1.0)         # on top of the robot
+    assert est.bearing_rate() == 0.0
+    est = TargetEstimate()
+    est.update_track(None, 0.0, 2.0, -1.0, 0.0)       # no odometry: from the origin
+    assert est.bearing_rate() == pytest.approx(0.5)
+
+
+def test_feedforward_removes_the_lag_on_a_crossing_person():
+    """Closed loop: a person crosses 3 m ahead at 2.5 m/s, the robot turns in place.
+
+    A P-loop alone lags by (bearing rate) / k_yaw; feeding the track's
+    bearing rate forward keeps the person centred (person-sim measured
+    16-17 deg bearing RMS without it).
+    """
+    k, dt = 1.5, 0.02
+
+    def rms_bearing(k_ff):
+        yaw, est, sq, n = 0.0, TargetEstimate(), 0.0, 0
+        for i in range(int(2.0 / dt)):
+            t = i * dt
+            est.add_pose(t, 0.0, 0.0, yaw)
+            est.update_track(t, 3.0, -2.5 + 2.5 * t, 0.0, 2.5)
+            bearing = est.relative()[0]
+            _, w = compute_command(bearing, None, 2.5, 0.8, k, 1.0, 0.2, 3.0,
+                                   yaw_rate_ff=k_ff * est.bearing_rate())
+            yaw += w * dt
+            if t > 1.5:                               # around the crossing
+                sq, n = sq + bearing ** 2, n + 1
+        return math.degrees(math.sqrt(sq / n))
+
+    assert rms_bearing(0.0) > 15.0
+    assert rms_bearing(1.0) < 5.0

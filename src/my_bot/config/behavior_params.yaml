@@ -154,8 +154,18 @@ security_guard_bt:
     # so following through a short tracker dropout is safe and avoids
     # flapping between IntruderProtocol and SearchProtocol.
     target_timeout: 1.0
-    search_secs: 6.0
+    # Search: Nav2 drives (goal in odom) to the track's last position plus
+    # search_lead_secs of its velocity (at most search_max_distance further),
+    # then the robot turns toward the last-seen side. Nav2 is capped at
+    # 0.26 m/s, so the window is long enough for a few metres of driving.
+    search_secs: 20.0
     search_angular_speed: 0.6
+    search_lead_secs: 2.0
+    search_max_distance: 4.0
+    # Incident log (incidents.jsonl) and alert snapshots from snapshot_topic;
+    # '' = events on /security_events only
+    incident_dir: ~/.ros/security_incidents
+    snapshot_topic: /camera/image_raw
     # 2.5 m keeps the person's torso in view: the camera is ~0.10 m off the
     # ground with a +/-24 deg vertical FOV, so closer than ~1.5 m it sees
     # only the legs and YOLO becomes unreliable.
@@ -167,6 +177,10 @@ security_guard_bt:
     max_back_speed: 0.2
     max_angular_speed: 1.5
     safety_distance: 0.6
+    # Feedforward of the track's bearing rate (rad/s from its velocity): a
+    # P-loop alone lags a person crossing the view by rate / k_yaw.
+    # 0 = P-loop only.
+    k_ff: 1.0
 
 system_monitor:
   ros__parameters:
