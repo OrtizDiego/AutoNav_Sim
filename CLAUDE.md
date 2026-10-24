@@ -89,7 +89,7 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 
 **Nav2 Stack**
 - Provides `/map` → `/odom` → `/base_link` transform chain
-- Global planner (A*) and local planner (DWB)
+- Global planner (A*) and local planner (DWB), up to 0.8 m/s (faster than the pedestrian's walk, below the guard's 1.0 m/s direct follow; test_nav2_params.py keeps DWB, the velocity smoother and the 5 m local costmap consistent)
 - AMCL particle filter for localization
 - Configuration: `src/my_bot/config/nav2_params.yaml`
 

@@ -156,8 +156,8 @@ security_guard_bt:
     target_timeout: 1.0
     # Search: Nav2 drives (goal in odom) to the track's last position plus
     # search_lead_secs of its velocity (at most search_max_distance further),
-    # then the robot turns toward the last-seen side. Nav2 is capped at
-    # 0.26 m/s, so the window is long enough for a few metres of driving.
+    # then the robot turns toward the last-seen side. Nav2 drives at up to
+    # 0.8 m/s, so the window leaves time for a few metres and the turn.
     search_secs: 20.0
     search_angular_speed: 0.6
     search_lead_secs: 2.0
