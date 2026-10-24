@@ -94,7 +94,7 @@ def test_vanilla_world_has_no_ball_or_person():
     assert root.find('.//actor') is None
 
 
-@pytest.mark.parametrize('world', ['ball.world', 'person.world'])
+@pytest.mark.parametrize('world', ['ball.world', 'person.world', 'two_person.world'])
 def test_museum_matches_the_mapped_world(world):
     """The map was built in room.world; scenario worlds must not move it."""
     def museum_xml(root):
@@ -103,6 +103,26 @@ def test_museum_matches_the_mapped_world(world):
         model.tail = state.tail = None  # whitespace after the element
         return ET.tostring(model), ET.tostring(state)
     assert museum_xml(_world(world)) == museum_xml(_world('room.world'))
+
+
+@pytest.mark.parametrize('world', ['room.world', 'ball.world', 'person.world',
+                                   'two_person.world'])
+def test_world_models_are_vendored(world):
+    """Every model:// the world loads ships in models/ (no online database)."""
+    root = _world(world)
+    uris = {el.text.strip() for el in root.iter('uri')
+            if el.text and el.text.strip().startswith('model://')}
+    assert uris, world
+    for uri in uris:
+        assert os.path.isfile(os.path.join(PKG_DIR, 'models', uri[len('model://'):])), uri
+
+
+def test_sim_launch_puts_the_models_on_gazebos_path():
+    with open(os.path.join(PKG_DIR, 'launch', 'sim.launch.py')) as f:
+        src = f.read()
+    assert "AppendEnvironmentVariable(\n        'GAZEBO_MODEL_PATH'" in src
+    with open(os.path.join(PKG_DIR, 'setup.py')) as f:
+        assert "*tree('models')" in f.read()
 
 
 # ---------------------------------------------------------------------------

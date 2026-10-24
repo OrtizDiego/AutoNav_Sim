@@ -4,6 +4,13 @@ from setuptools import find_packages, setup
 
 package_name = 'my_bot'
 
+
+def tree(src):
+    """data_files entries that install the directory ``src`` with its layout."""
+    return [(os.path.join('share', package_name, root), [os.path.join(root, f) for f in files])
+            for root, _, files in os.walk(src) if files]
+
+
 setup(
     name=package_name,
     version='0.1.0',
@@ -18,6 +25,9 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*')),
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*.world')),
         (os.path.join('share', package_name, 'maps'), glob('maps/*')),
+        # Gazebo models the worlds use (model://...); sim.launch.py puts
+        # share/my_bot/models on GAZEBO_MODEL_PATH
+        *tree('models'),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

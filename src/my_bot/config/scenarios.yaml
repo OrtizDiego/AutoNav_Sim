@@ -48,3 +48,33 @@ hide:
     - {to: [1.7, -7.6], speed: 1.2, pause: 40.0}
     - {to: [3.0, -7.4]}
     - {to: [3.0, -4.6], pause: 20.0}
+
+crossing:
+  description: >-
+    Two people. The intruder walks in as in walk_in; once the tracker has
+    someone, a second person crosses the hall from the east, between the
+    robot and the intruder, then turns back. Does the track jump to the
+    second person (track_switches), and does the guard stay on the intruder?
+  legs:
+    - {wait_robot_within: 6.0}
+    - {to: [-3.0, 9.0]}
+    - {to: [-6.5, 8.5]}
+    - {to: [-4.3, 7.0]}
+    - {to: [-4.3, 4.5]}
+    - {to: [-4.0, 1.0], pause: 20.0}
+  second_person:
+    # Starts at two_person.world's second actor, (5.0, 6.0) facing west
+    legs:
+      - {wait_detected: true}
+      - {to: [-1.5, 6.0], speed: 1.0}
+      - {to: [-1.0, 9.0], speed: 1.0}
+      - {to: [4.5, 9.0], speed: 1.0, pause: 15.0}
+
+smoke:
+  description: >-
+    Shortest run that exercises the whole stack, for the headless CI smoke
+    test (src/smoke_test.sh): waits to be seen, takes a few steps, stops.
+  legs:
+    - {wait_detected: true}
+    - {to: [-1.5, 7.5]}
+    - {to: [-1.5, 8.5], pause: 5.0}

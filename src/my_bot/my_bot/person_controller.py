@@ -31,6 +31,8 @@ EXHAUSTED  Out of breath after a sprint: keeps moving away, but slowly,
 Scripted   With ``scenario`` set (`make scenario NAME=...`), ScriptedWalker
            walks that scenario's legs from ``scenarios_file`` instead
            (scenario_script.py): repeatable runs for scenario_evaluator.
+           ``scenario_person: second`` walks the scenario's second person
+           (the launch file remaps /person/* to /person2/* for it).
 
 Staying out of the walls
 ------------------------
@@ -393,6 +395,8 @@ class PersonControllerNode(Node):
         # scenarios_file replaces the random wander. '' = wander.
         self.declare_parameter('scenario', '')
         self.declare_parameter('scenarios_file', '')
+        # intruder | second: which person of the scenario this node walks
+        self.declare_parameter('scenario_person', 'intruder')
 
         gp = self.get_parameter
         params = PersonParams(**{
@@ -417,11 +421,18 @@ class PersonControllerNode(Node):
             if scenario not in scenarios:
                 raise ValueError(f'unknown scenario {scenario!r}: '
                                  f'one of {sorted(scenarios)}')
-            self._brain = ScriptedWalker(cmap, scenarios[scenario], params)
+            script = scenarios[scenario]
+            who = str(gp('scenario_person').value)
+            if who == 'second':
+                script = script.second_person()
+            elif who != 'intruder':
+                raise ValueError(f'scenario_person must be intruder or second, '
+                                 f'got {who!r}')
+            self._brain = ScriptedWalker(cmap, script, params)
             self._status_pub = self.create_publisher(String, '/scenario/status', 10)
             self._last_status = None
-            self.get_logger().info(f'scripted scenario {scenario}: '
-                                   f'{scenarios[scenario].description}')
+            self.get_logger().info(f'scripted scenario {script.name}: '
+                                   f'{script.description}')
         else:
             self._brain = PersonBrain(cmap, params)
 

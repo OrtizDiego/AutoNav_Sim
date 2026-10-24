@@ -35,7 +35,9 @@
 
 ``scenario:=<name>`` makes the person walk that scenario from
 config/scenarios.yaml instead of wandering (scenario.launch.py, which also
-scores the run).
+scores the run). ``second_person:=true`` with ``world:=<two_person.world>``
+adds a second person_controller for the scenario's second person, remapped
+to the second actor's /person2 topics.
 
 Watch /security_guard/state for PatrolProtocol / IntruderProtocol /
 SearchProtocol / SweepProtocol / ReportProtocol / EmergencyStop, and /security_events for
@@ -47,10 +49,12 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+import yaml
 
 
 def generate_launch_description():
@@ -64,7 +68,7 @@ def generate_launch_description():
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'sim.launch.py')),
         launch_arguments={
-            'world': os.path.join(pkg, 'worlds', 'person.world'),
+            'world': LaunchConfiguration('world'),
             'rviz_config': os.path.join(pkg, 'config', 'person.rviz'),
         }.items(),
     )
@@ -89,16 +93,37 @@ def generate_launch_description():
     scenario_arg = DeclareLaunchArgument(
         'scenario', default_value='',
         description='Scripted person from config/scenarios.yaml; empty = wander')
+    person_args = {
+        'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml'),
+        # value_type=str: an empty scenario stays '' instead of YAML null
+        'scenario': ParameterValue(LaunchConfiguration('scenario'), value_type=str),
+        'scenarios_file': os.path.join(pkg, 'config', 'scenarios.yaml')}
+    # The second controller has its own node name, so the params file's
+    # person_controller section is handed to it as a dict.
+    with open(params[0]) as f:
+        person_params = yaml.safe_load(f)['person_controller']['ros__parameters']
+    second_person = Node(
+        package='my_bot', executable='person_controller', name='person2_controller',
+        output='screen', condition=IfCondition(LaunchConfiguration('second_person')),
+        parameters=[person_params, {'use_sim_time': True}, person_args,
+                    {'scenario_person': 'second'}],
+        remappings=[('/person/cmd_vel', '/person2/cmd_vel'),
+                    ('/person/odom', '/person2/odom'),
+                    ('/person_mode', '/person2/mode'),
+                    ('/scenario/status', '/scenario/second_person_status')])
 
     return LaunchDescription([
         scenario_arg,
+        DeclareLaunchArgument(
+            'world', default_value=os.path.join(pkg, 'worlds', 'person.world'),
+            description='Gazebo world (two_person.world for second_person)'),
+        DeclareLaunchArgument(
+            'second_person', default_value='false',
+            description="Walk the scenario's second person (needs two_person.world)"),
         sim,
         nav2,
-        node('person_controller', {
-            'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml'),
-            # value_type=str: an empty scenario stays '' instead of YAML null
-            'scenario': ParameterValue(LaunchConfiguration('scenario'), value_type=str),
-            'scenarios_file': os.path.join(pkg, 'config', 'scenarios.yaml')}),
+        node('person_controller', person_args),
+        second_person,
         node('person_tracker'),
         node('sensor_fusion', {'mode': 'person'}),
         node('target_tracker'),

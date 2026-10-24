@@ -27,8 +27,11 @@ time to detect      first moment the person was in the camera's view to the
 track breaks        confirmed -> not confirmed transitions, also per minute
                     after the first detection
 false alarms        confirmed track episodes that never came within
-                    ``match_radius`` of the person; plus the share of
-                    confirmed time spent off the person
+                    ``match_radius`` of anyone; plus the share of
+                    confirmed time spent on no one
+track switches      (two-person scenarios) a confirmed track that jumps from
+                    one person to the other without a break; plus the share
+                    of confirmed time spent on the second person
 patrol coverage     share of the floor the camera has seen (0.5 m cells,
                     within view range and in line of sight on the map)
 
@@ -38,11 +41,16 @@ robot crosses no wall or exhibit of the saved map. The robot pose is
 odometry, which equals the world frame at spawn and drifts a little;
 ``match_radius`` absorbs that.
 
+The intruder is "the person"; other people (``others`` in add()) only
+decide whether a track off the intruder is a false alarm or a switch.
+
 Pure Python + numpy, no ROS: importable by unit tests.
 """
 
+import json
 import math
-from typing import Dict, List, Optional, Tuple
+import sys
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -136,8 +144,12 @@ class ScenarioMetrics:
         self.tracked_in_view_secs = 0.0
         self.confirmed_secs = 0.0
         self.false_track_secs = 0.0
+        self.other_track_secs = 0.0
         self.track_breaks = 0
-        self.episodes: List[bool] = []  # one per confirmed episode: matched?
+        self.track_switches = 0
+        self.saw_others = False
+        self.episodes: List[bool] = []  # one per confirmed episode: on anyone?
+        self._on: Optional[int] = None  # who the episode was last on: 0 = intruder
         self.follow_ranges: List[float] = []
         self.guard_secs: Dict[str, float] = {}
         self.events: Dict[str, int] = {}
@@ -148,10 +160,25 @@ class ScenarioMetrics:
         """Count a /security_events entry by its kind."""
         self.events[kind] = self.events.get(kind, 0) + 1
 
+    def _on_whom(self, track_xy: Optional[Point],
+                 people: Sequence[Optional[Point]]) -> Optional[int]:
+        """Index of the person the track is on (nearest within match_radius)."""
+        if track_xy is None:
+            return None
+        best, best_d = None, self.match_radius
+        for i, xy in enumerate(people):
+            if xy is not None and math.dist(track_xy, xy) <= best_d:
+                best, best_d = i, math.dist(track_xy, xy)
+        return best
+
     def add(self, t: float, robot: Pose, person: Optional[Point],
             track_state: str = 'none', track_xy: Optional[Point] = None,
-            guard_state: str = '') -> None:
-        """Add the state at time ``t``; it holds until the next sample."""
+            guard_state: str = '',
+            others: Sequence[Optional[Point]] = ()) -> None:
+        """Add the state at time ``t``; it holds until the next sample.
+
+        ``person`` is the intruder; ``others`` are further people.
+        """
         if self.start is None:
             self.start = t
         if t - self._last_coverage >= self._coverage_period:
@@ -160,8 +187,9 @@ class ScenarioMetrics:
         confirmed = track_state == CONFIRMED
         in_view = person is not None and in_camera_view(
             self.cmap, robot, person, self.hfov, self.view_range)
-        matched = (confirmed and person is not None and track_xy is not None
-                   and math.dist(track_xy, person) <= self.match_radius)
+        self.saw_others = self.saw_others or any(o is not None for o in others)
+        on = self._on_whom(track_xy, [person, *others]) if confirmed else None
+        matched = on == 0
 
         if in_view and self.first_in_view is None:
             self.first_in_view = t
@@ -169,10 +197,15 @@ class ScenarioMetrics:
             self.first_detection = t
         if confirmed and not self._confirmed:
             self.episodes.append(False)
+            self._on = None
         if self._confirmed and not confirmed:
             self.track_breaks += 1
-        if matched:
+        if on is not None:
             self.episodes[-1] = True
+            if self._on is not None and on != self._on:
+                self.track_switches += 1
+            self._on = on
+        if matched:
             self.follow_ranges.append(math.dist(robot[:2], person))
         self._confirmed = confirmed
 
@@ -181,6 +214,7 @@ class ScenarioMetrics:
         # A confirmed track without a position (none received yet) is
         # neither on nor off the person.
         self._prev = {'in_view': in_view, 'matched': matched,
+                      'on_other': on is not None and on > 0,
                       'confirmed': confirmed and track_xy is not None,
                       'guard': guard_state,
                       'detected': self.first_detection is not None}
@@ -196,7 +230,10 @@ class ScenarioMetrics:
             self.tracked_in_view_secs += dt if s['matched'] else 0.0
         if s['confirmed']:
             self.confirmed_secs += dt
-            self.false_track_secs += 0.0 if s['matched'] else dt
+            if s['on_other']:
+                self.other_track_secs += dt
+            elif not s['matched']:
+                self.false_track_secs += dt
         if s['guard']:
             self.guard_secs[s['guard']] = self.guard_secs.get(s['guard'], 0.0) + dt
 
@@ -223,6 +260,9 @@ class ScenarioMetrics:
                                      if minutes > 0.0 else None),
             'false_alarms': sum(1 for matched in self.episodes if not matched),
             'false_track_pct': pct(self.false_track_secs, self.confirmed_secs),
+            'track_switches': self.track_switches,
+            'second_person_track_pct': (pct(self.other_track_secs, self.confirmed_secs)
+                                        if self.saw_others else None),
             'follow_range_mean_m': (round(float(np.mean(self.follow_ranges)), 2)
                                     if self.follow_ranges else None),
             'patrol_coverage_pct': round(100.0 * self.coverage.fraction, 1),
@@ -238,6 +278,7 @@ TARGETS = (
     ('tracked_in_view_pct', 'min', 'min_tracked_in_view_pct'),
     ('track_breaks_per_min', 'max', 'max_track_breaks_per_min'),
     ('false_alarms', 'max', 'max_false_alarms'),
+    ('track_switches', 'max', 'max_track_switches'),
     ('patrol_coverage_pct', 'min', 'min_patrol_coverage_pct'),
 )
 
@@ -270,3 +311,48 @@ def format_report(name: str, report: dict, failures: List[str]) -> str:
         lines.append(f'  {key:<24} {value}')
     lines += [f'  missed: {f}' for f in failures]
     return '\n'.join(lines)
+
+
+def smoke_failures(report: Optional[dict]) -> List[str]:
+    """Return why a CI smoke run failed; empty = the whole stack ran.
+
+    Looser than check_targets(): a CI runner renders on the CPU and runs
+    well below real time, so only "every part came up and the loop closed"
+    is checked: the scenario finished, the person was detected and the
+    guard raised its alert.
+    """
+    if not report:
+        return ['no report: the evaluator never finished']
+    failures = []
+    if report.get('outcome') != 'completed':
+        failures.append(f"outcome {report.get('outcome')} (want completed)")
+    if report.get('time_to_detect_s') is None:
+        failures.append('the person was never detected')
+    if not report.get('events', {}).get('intruder_detected'):
+        failures.append('no intruder_detected event from the guard')
+    if not report.get('guard_state_pct'):
+        failures.append('no /security_guard/state received')
+    return failures
+
+
+def main(argv=None) -> int:
+    """`python3 -m my_bot.scenario_metrics smoke <report.json>` (smoke_test.sh)."""
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 2 or argv[0] != 'smoke':
+        print('usage: python3 -m my_bot.scenario_metrics smoke <report.json>')
+        return 2
+    try:
+        with open(argv[1]) as f:
+            report = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f'cannot read {argv[1]}: {e}')
+        report = None
+    failures = smoke_failures(report)
+    print('smoke test: ' + ('PASS' if not failures else 'FAIL'))
+    for failure in failures:
+        print(f'  {failure}')
+    return 1 if failures else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

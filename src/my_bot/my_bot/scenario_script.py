@@ -36,6 +36,13 @@ wait_detected      start only once the robot's tracker has the person
                    (person_controller's alarm: a lock within notice_radius)
 wait_robot_within  start only once the robot is closer than this (m)
 
+A scenario may also script a second person (``second_person: {legs: ...}``,
+same leg keys). scenario.launch.py then runs it in two_person.world, whose
+second actor starts at (5.0, 6.0); a second person_controller
+(``scenario_person: second``) walks those legs. Its triggers react to the
+same tracker lock as the intruder's: the tracker follows one person and
+cannot tell which one it has.
+
 Pure Python + PyYAML, no ROS: the launch file, the nodes and the tests all
 read the same file.
 """
@@ -49,6 +56,7 @@ import yaml
 Point = Tuple[float, float]
 
 LEG_KEYS = {'to', 'speed', 'pause', 'wait_detected', 'wait_robot_within'}
+SCENARIO_KEYS = {'description', 'legs', 'second_person'}
 
 
 @dataclass
@@ -74,10 +82,23 @@ class Scenario:
     name: str
     description: str = ''
     legs: List[Leg] = field(default_factory=list)
+    second_legs: List[Leg] = field(default_factory=list)
 
     def waypoints(self) -> List[Point]:
         """Return the points the legs walk to, in order."""
         return [leg.to for leg in self.legs if leg.to is not None]
+
+    @property
+    def has_second_person(self) -> bool:
+        """True if the scenario scripts a second person too."""
+        return bool(self.second_legs)
+
+    def second_person(self) -> 'Scenario':
+        """Return the second person's part as a scenario of its own."""
+        if not self.second_legs:
+            raise ValueError(f'{self.name}: no second_person')
+        return Scenario(name=f'{self.name}/second_person',
+                        description=self.description, legs=self.second_legs)
 
 
 def parse_leg(raw: dict, where: str) -> Leg:
@@ -113,9 +134,21 @@ def parse_scenarios(data: dict) -> Dict[str, Scenario]:
         legs = body.get('legs') if isinstance(body, dict) else None
         if not legs:
             raise ValueError(f'{name}: needs a non-empty legs list')
+        unknown = set(body) - SCENARIO_KEYS
+        if unknown:
+            raise ValueError(f'{name}: unknown keys {sorted(unknown)}')
+        second = body.get('second_person')
+        second_legs = []
+        if second is not None:
+            raw_legs = second.get('legs') if isinstance(second, dict) else None
+            if not raw_legs:
+                raise ValueError(f'{name}: second_person needs a non-empty legs list')
+            second_legs = [parse_leg(raw, f'{name} second_person leg {i}')
+                           for i, raw in enumerate(raw_legs)]
         scenarios[name] = Scenario(
             name=name, description=str(body.get('description', '')).strip(),
-            legs=[parse_leg(raw, f'{name} leg {i}') for i, raw in enumerate(legs)])
+            legs=[parse_leg(raw, f'{name} leg {i}') for i, raw in enumerate(legs)],
+            second_legs=second_legs)
     return scenarios
 
 

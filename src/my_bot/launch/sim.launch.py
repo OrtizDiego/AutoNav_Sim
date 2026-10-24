@@ -22,13 +22,17 @@ plan), so `make sim` + `make nav` shows the map exactly as before.
 rendering the Gazebo window costs CPU the simulation needs, and RViz shows
 the robot, scan, map and camera anyway. Every scenario passes it through
 (`make person-sim GUI=false`).
+
+The museum (``model://iscas_museum``) is vendored in models/ and put on
+GAZEBO_MODEL_PATH here, so no world needs Gazebo's online model database.
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import (
+    AppendEnvironmentVariable, DeclareLaunchArgument, GroupAction, IncludeLaunchDescription)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -64,6 +68,11 @@ def generate_launch_description():
         'rviz', default_value='true',
         description='Start RViz; false for unattended runs (make scenario)')
 
+    # model://iscas_museum and any other vendored model (models/README.md)
+    model_path = AppendEnvironmentVariable(
+        'GAZEBO_MODEL_PATH',
+        os.path.join(get_package_share_directory(pkg_name), 'models'))
+
     # gzserver.launch.py declares ~25 launch arguments, among them
     # params_file:=''. Launch configurations are global, so without a scope
     # that empty params_file leaks into anything a scenario includes later
@@ -97,6 +106,7 @@ def generate_launch_description():
         rviz_arg,
         gui_arg,
         rviz_on_arg,
+        model_path,
         rsp,
         gazebo,
         spawn_entity,
