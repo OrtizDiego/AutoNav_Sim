@@ -29,6 +29,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -59,6 +60,9 @@ def generate_launch_description():
     gui_arg = DeclareLaunchArgument(
         'gui', default_value='true',
         description='Start the Gazebo window (gzclient); false = headless')
+    rviz_on_arg = DeclareLaunchArgument(
+        'rviz', default_value='true',
+        description='Start RViz; false for unattended runs (make scenario)')
 
     # gzserver.launch.py declares ~25 launch arguments, among them
     # params_file:=''. Launch configurations are global, so without a scope
@@ -84,13 +88,15 @@ def generate_launch_description():
         executable='rviz2',
         arguments=['-d', LaunchConfiguration('rviz_config')],
         parameters=[{'use_sim_time': True}],
-        output='screen'
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
     return LaunchDescription([
         world_arg,
         rviz_arg,
         gui_arg,
+        rviz_on_arg,
         rsp,
         gazebo,
         spawn_entity,

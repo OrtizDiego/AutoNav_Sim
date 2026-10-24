@@ -50,6 +50,7 @@ NODE_SOURCES = {
     'security_guard_bt': 'security_guard_bt.py',
     'system_monitor': 'system_monitor.py',
     'target_tracker': 'target_tracker.py',
+    'scenario_evaluator': 'scenario_evaluator.py',
 }
 
 

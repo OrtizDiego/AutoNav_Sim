@@ -28,10 +28,16 @@ STOP_LEFTOVERS := bash src/stop_sim.sh;
 # the window costs CPU the simulation needs. make person-sim GUI=false
 GUI ?= true
 SCENARIO_ARGS := gui:=$(GUI)
+# Scripted, scored runs (make scenario): headless unless GUI=true / RVIZ=true
+# is given on the command line. Report + rosbag in ~/.ros/autonav_scenarios.
+NAME ?= walk_in
+RECORD ?= true
+SCENARIO_NAMES := walk_in sprint hide
+ON_REQUEST = $(if $(filter command line,$(origin $(1))),$($(1)),false)
 
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
-        ball-sim teleop-ball person-sim yolo-sim perf stop
+        ball-sim teleop-ball person-sim yolo-sim scenario scenarios perf stop
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -58,6 +64,11 @@ help:
 	@echo "  person-sim      - Security guard: patrol + YOLO + fusion + follow (the demo)"
 	@echo "  yolo-sim        - Static person in front of the robot: YOLO + fusion proof"
 	@echo "  Faster: make <scenario> GUI=false  (no Gazebo window; RViz shows the sim)"
+	@echo ""
+	@echo "Evaluation (scripted person, headless, scored, then exits):"
+	@echo "  scenario NAME=x - One scripted run: $(SCENARIO_NAMES)"
+	@echo "                    (GUI=true RVIZ=true to watch, RECORD=false: no rosbag)"
+	@echo "  scenarios       - All of them in a row; reports in ~/.ros/autonav_scenarios"
 	@echo ""
 	@echo "Tools (run next to a scenario, in a second terminal):"
 	@echo "  teleop          - Drive the robot with the keyboard"
@@ -130,6 +141,14 @@ person-sim:
 
 yolo-sim:
 	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py $(SCENARIO_ARGS)"
+
+# --- EVALUATION ---
+
+scenario:
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) scenario.launch.py scenario:=$(NAME) gui:=$(call ON_REQUEST,GUI) rviz:=$(call ON_REQUEST,RVIZ) record:=$(RECORD)"
+
+scenarios:
+	@for name in $(SCENARIO_NAMES); do $(MAKE) --no-print-directory scenario NAME=$$name || exit 1; done
 
 # --- TOOLS ---
 
