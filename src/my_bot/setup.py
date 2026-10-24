@@ -39,6 +39,7 @@ setup(
             'system_monitor = my_bot.system_monitor:main',
             'perf_monitor = my_bot.perf_monitor:main',
             'target_tracker = my_bot.target_tracker:main',
+            'scenario_evaluator = my_bot.scenario_evaluator:main',
         ],
     },
 )

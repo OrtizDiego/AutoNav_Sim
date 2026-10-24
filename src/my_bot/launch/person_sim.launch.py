@@ -33,6 +33,10 @@
      the patrol. Latched e-stop from system_monitor overrides everything.
   8. system_monitor: sensor watchdog, /trigger_estop and /clear_estop.
 
+``scenario:=<name>`` makes the person walk that scenario from
+config/scenarios.yaml instead of wandering (scenario.launch.py, which also
+scores the run).
+
 Watch /security_guard/state for PatrolProtocol / IntruderProtocol /
 SearchProtocol / SweepProtocol / ReportProtocol / EmergencyStop, and /security_events for
 the alerts (also in ~/.ros/security_incidents/incidents.jsonl).
@@ -42,9 +46,11 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -80,11 +86,19 @@ def generate_launch_description():
         return Node(package='my_bot', executable=executable, name=executable,
                     output='screen', parameters=params + ([extra] if extra else []))
 
+    scenario_arg = DeclareLaunchArgument(
+        'scenario', default_value='',
+        description='Scripted person from config/scenarios.yaml; empty = wander')
+
     return LaunchDescription([
+        scenario_arg,
         sim,
         nav2,
         node('person_controller', {
-            'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml')}),
+            'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml'),
+            # value_type=str: an empty scenario stays '' instead of YAML null
+            'scenario': ParameterValue(LaunchConfiguration('scenario'), value_type=str),
+            'scenarios_file': os.path.join(pkg, 'config', 'scenarios.yaml')}),
         node('person_tracker'),
         node('sensor_fusion', {'mode': 'person'}),
         node('target_tracker'),

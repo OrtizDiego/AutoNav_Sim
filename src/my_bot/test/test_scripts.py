@@ -43,6 +43,7 @@ SCRIPTS = [
     'system_monitor.py',
     'perf_monitor.py',
     'target_tracker.py',
+    'scenario_evaluator.py',
 ]
 
 PKG_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

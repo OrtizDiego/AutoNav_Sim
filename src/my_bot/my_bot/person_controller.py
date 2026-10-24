@@ -28,6 +28,10 @@ RUN        Sprints away from the robot after being detected.
 EXHAUSTED  Out of breath after a sprint: keeps moving away, but slowly,
            until stamina recovers.
 
+Scripted   With ``scenario`` set (`make scenario NAME=...`), ScriptedWalker
+           walks that scenario's legs from ``scenarios_file`` instead
+           (scenario_script.py): repeatable runs for scenario_evaluator.
+
 Staying out of the walls
 ------------------------
 Gazebo actors have no physics, so nothing stops one from walking through a
@@ -63,9 +67,12 @@ Publishes
 ---------
 /person/cmd_vel    geometry_msgs/Twist
 /person_mode       std_msgs/String     WALK | RUN | EXHAUSTED
+/scenario/status   std_msgs/String     scripted only: JSON {scenario, leg,
+                                       legs, phase}; phase done = finished
 """
 
 from dataclasses import dataclass
+import json
 import math
 import random
 from typing import Optional, Tuple
@@ -77,6 +84,7 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
 from my_bot.clearance_map import ClearanceMap, safe_heading
+from my_bot.scenario_script import Leg, Scenario, load_scenarios
 
 
 WALK = 'WALK'
@@ -257,6 +265,102 @@ class PersonBrain:
         return speed, yaw_rate
 
 
+WAITING = 'waiting'
+MOVING = 'moving'
+PAUSING = 'pausing'
+DONE = 'done'
+
+# A scripted leg at or above this speed animates (and steers) as a run.
+RUN_THRESHOLD = 1.5
+
+
+class ScriptedWalker:
+    """Walk a scenario's legs in order, steering on a clearance map (no ROS).
+
+    Same step() interface as PersonBrain, so the node runs either. Legs
+    keep the brain's human limits (acceleration, yaw rate, slowing for
+    turns, never outrunning the free floor) but take speed and route from
+    the script; stamina does not apply.
+    """
+
+    def __init__(self, cmap: ClearanceMap, scenario: Scenario,
+                 params: Optional[PersonParams] = None):
+        self.cmap = cmap
+        self.scenario = scenario
+        self.p = params or PersonParams()
+        self.leg_index = 0
+        self.phase = WAITING
+        self.mode = WALK
+        self._paused = 0.0
+
+    @property
+    def done(self) -> bool:
+        return self.phase == DONE
+
+    def status(self) -> dict:
+        """Return what /scenario/status reports."""
+        return {'scenario': self.scenario.name, 'leg': self.leg_index,
+                'legs': len(self.scenario.legs), 'phase': self.phase}
+
+    def _stops_after(self, index: int) -> bool:
+        """Tell whether the person must stand still at the end of leg ``index``."""
+        legs = self.scenario.legs
+        return (legs[index].pause > 0.0 or index + 1 == len(legs)
+                or legs[index + 1].waits or legs[index + 1].to is None)
+
+    def step(self, dt: float, pose: PersonPose, robot_xy: Point,
+             alarmed: bool) -> Tuple[float, float]:
+        """Advance the script by ``dt``; return (speed, yaw_rate)."""
+        here = (pose.x, pose.y)
+        while not self.done:
+            leg = self.scenario.legs[self.leg_index]
+            if self.phase == WAITING:
+                if leg.wait_detected and not alarmed:
+                    return self._stand(dt, pose)
+                if (leg.wait_robot_within > 0.0
+                        and math.dist(here, robot_xy) > leg.wait_robot_within):
+                    return self._stand(dt, pose)
+                self.phase = MOVING if leg.to is not None else PAUSING
+                self._paused = 0.0
+            if self.phase == MOVING:
+                stop = self._stops_after(self.leg_index)
+                dist = math.dist(here, leg.to)
+                arrive = 0.3 if stop else max(0.5, 0.6 * pose.speed)
+                if dist > arrive:
+                    return self._walk(dt, pose, leg, dist, stop)
+                self.phase = PAUSING
+            if self.phase == PAUSING:
+                if self._paused < leg.pause:
+                    self._paused += dt
+                    return self._stand(dt, pose)
+                self.leg_index += 1
+                self.phase = DONE if self.leg_index == len(self.scenario.legs) else WAITING
+        return self._stand(dt, pose)
+
+    def _stand(self, dt: float, pose: PersonPose) -> Tuple[float, float]:
+        self.mode = WALK
+        return max(0.0, pose.speed - self.p.decel * dt), 0.0
+
+    def _walk(self, dt: float, pose: PersonPose, leg: Leg, dist: float,
+              stop: bool) -> Tuple[float, float]:
+        p = self.p
+        running = leg.speed >= RUN_THRESHOLD
+        self.mode = RUN if running else WALK
+        max_yaw = p.run_max_yaw_rate if running else p.walk_max_yaw_rate
+        desired = math.atan2(leg.to[1] - pose.y, leg.to[0] - pose.x)
+        lookahead = 1.0 + 1.5 * max(leg.speed, pose.speed) / max_yaw
+        heading, _ = safe_heading(
+            self.cmap, pose.x, pose.y, desired, lookahead, p.min_clearance)
+        speed, yaw_rate = steer(pose.yaw, heading, leg.speed, pose.speed, dt,
+                                max_yaw, p.accel, p.decel)
+        free = self.cmap.free_distance(
+            pose.x, pose.y, pose.yaw, lookahead, p.min_clearance)
+        speed = min(speed, stopping_speed(free, p.decel), free / dt)
+        if stop:  # slow down to arrive nearly standing, without stalling
+            speed = min(speed, max(0.3, stopping_speed(dist, p.decel, margin=0.2)))
+        return speed, yaw_rate
+
+
 # ---------------------------------------------------------------------------
 # ROS node
 # ---------------------------------------------------------------------------
@@ -285,6 +389,10 @@ class PersonControllerNode(Node):
         self.declare_parameter('map_yaml', '')
         self.declare_parameter('bounds', 8.0)
         self.declare_parameter('update_rate_hz', 20.0)
+        # Scripted run (make scenario): the name of a scenario in
+        # scenarios_file replaces the random wander. '' = wander.
+        self.declare_parameter('scenario', '')
+        self.declare_parameter('scenarios_file', '')
 
         gp = self.get_parameter
         params = PersonParams(**{
@@ -302,7 +410,20 @@ class PersonControllerNode(Node):
             cmap = ClearanceMap.from_bounds(bounds + 2.0)
             self.get_logger().warn(
                 f'no map_yaml: keeping inside +/-{bounds} m only')
-        self._brain = PersonBrain(cmap, params)
+        scenario = str(gp('scenario').value)
+        self._status_pub = None
+        if scenario:
+            scenarios = load_scenarios(str(gp('scenarios_file').value))
+            if scenario not in scenarios:
+                raise ValueError(f'unknown scenario {scenario!r}: '
+                                 f'one of {sorted(scenarios)}')
+            self._brain = ScriptedWalker(cmap, scenarios[scenario], params)
+            self._status_pub = self.create_publisher(String, '/scenario/status', 10)
+            self._last_status = None
+            self.get_logger().info(f'scripted scenario {scenario}: '
+                                   f'{scenarios[scenario].description}')
+        else:
+            self._brain = PersonBrain(cmap, params)
 
         self._person = PersonPose()
         self._have_person_pose = False
@@ -318,6 +439,8 @@ class PersonControllerNode(Node):
             Bool, '/person_detected', self._on_detection, 10)
 
         self.create_timer(self._dt, self._tick)
+        if self._status_pub is not None:
+            self.create_timer(1.0, self._publish_status)
         self.get_logger().info(
             f'person_controller: walk {params.walk_speed} m/s, '
             f'run {params.run_speed} m/s for up to {params.max_run_secs} s')
@@ -351,7 +474,7 @@ class PersonControllerNode(Node):
 
         prev = self._brain.mode
         p.speed, yaw_rate = self._brain.step(self._dt, p, self._robot_xy, alarmed)
-        if self._brain.mode != prev:
+        if self._brain.mode != prev and self._status_pub is None:  # scripted: status logs
             self.get_logger().info(
                 f'{prev} -> {self._brain.mode} (stamina '
                 f'{self._brain.stamina:.2f}, robot {robot_dist:.1f} m)')
@@ -361,6 +484,16 @@ class PersonControllerNode(Node):
         cmd.angular.z = yaw_rate
         self._cmd_pub.publish(cmd)
         self._mode_pub.publish(String(data=self._brain.mode))
+        if self._status_pub is not None and self._brain.status() != self._last_status:
+            self._publish_status()
+
+    def _publish_status(self) -> None:
+        """Publish the scenario progress as JSON (on every change, and every 1 s)."""
+        status = self._brain.status()
+        if status != self._last_status:
+            self.get_logger().info(f'scenario: {status}')
+        self._last_status = status
+        self._status_pub.publish(String(data=json.dumps(status)))
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9

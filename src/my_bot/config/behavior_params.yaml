@@ -201,3 +201,31 @@ system_monitor:
     scan_timeout: 2.0
     camera_timeout: 2.0
     health_publish_rate: 1.0
+
+# make scenario (scenario.launch.py) scores the run against the person's
+# ground truth; scenario, map_yaml and report_path come from the launch file.
+scenario_evaluator:
+  ros__parameters:
+    sample_rate_hz: 10.0
+    # Ground-truth "in view": the camera's horizontal FOV (camera.xacro),
+    # how far YOLO still finds a person, and line of sight on the map
+    camera_hfov: 1.089
+    view_range: 8.0
+    # A confirmed track within this of the person is on the person; absorbs
+    # odometry drift (the robot pose is odom, the person's is world)
+    match_radius: 1.5
+    coverage_cell: 0.5
+    # /intruder/track comes only with accepted measurements; it is
+    # extrapolated with its velocity for up to this long (> target_tracker's
+    # lost_timeout, so a confirmed track always has a position)
+    track_timeout: 2.0
+    # After person_controller reports the scenario done: time for the
+    # search and the report
+    linger_secs: 30.0
+    timeout_secs: 600.0
+    # Targets (< 0 = not checked)
+    max_time_to_detect_s: 5.0
+    min_tracked_in_view_pct: 80.0
+    max_track_breaks_per_min: 1.0
+    max_false_alarms: 0.0
+    min_patrol_coverage_pct: -1.0
