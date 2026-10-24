@@ -50,6 +50,7 @@ setup(
             'perf_monitor = my_bot.perf_monitor:main',
             'target_tracker = my_bot.target_tracker:main',
             'scenario_evaluator = my_bot.scenario_evaluator:main',
+            'explorer = my_bot.explorer:main',
         ],
     },
 )

@@ -1,0 +1,30 @@
+# Environments the robot can run in: `make sim WORLD=<name>`,
+# `make nav-sim WORLD=<name>` (default museum). worlds.py documents the keys.
+#
+# The map of a world is maps/<map>.yaml. nav-sim drives Nav2 + AMCL on it;
+# without it, nav-sim maps the world first (SLAM + frontier exploration) and
+# saves it there. A map built that way has its origin at the spawn pose
+# (SLAM starts the map frame at the robot), which is why AMCL's initial pose
+# in nav2_params.yaml is (0, 0, 0) for every world.
+#
+# Only the museum has scenario content (person, ball, patrol zones,
+# scripts): person-sim, ball-sim, yolo-sim and make scenario stay there.
+
+museum:
+  description: ISCAS museum (models/iscas_museum, vendored)
+  world: room.world          # relative path: this package's worlds/
+  map: my_map                # built in this world, frame = world frame
+  spawn: [0.0, 0.0, 0.0]
+
+warehouse:
+  description: >-
+    AWS RoboMaker small warehouse (MIT-0), no roof: shelves, desks, a
+    loading area. The Dockerfile clones it into root (make image).
+  root: /opt/worlds/aws-robomaker-small-warehouse-world
+  world: worlds/no_roof_small_warehouse/no_roof_small_warehouse.world
+  model_path: models         # model://aws_robomaker_warehouse_*
+  resource_path: .           # its meshes are file://models/... below root
+  map: warehouse
+  # Clear of every model pose in the world file (nearest: clutter at
+  # (-1.6, 2.3), shelves at x = 4.7); not yet checked in Gazebo
+  spawn: [0.0, 0.0, 0.0]

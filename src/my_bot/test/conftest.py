@@ -108,6 +108,17 @@ class Odometry(_Stamped):
         super().__init__(**fields)
 
 
+class OccupancyGrid(_Stamped):
+    """nav_msgs/OccupancyGrid: info (resolution, width, height, origin), data."""
+
+    def __init__(self, **fields):
+        self.info = types.SimpleNamespace(
+            resolution=0.05, width=0, height=0,
+            origin=types.SimpleNamespace(position=_Vec(), orientation=_quat()))
+        self.data = []
+        super().__init__(**fields)
+
+
 class Image(_Stamped):
     """Carries the numpy frame itself (see CvBridge below)."""
 
@@ -330,6 +341,10 @@ def wire(*nodes):
                     pub.callbacks.append(cb)
 
 
+class TaskResult:
+    UNKNOWN, SUCCEEDED, CANCELED, FAILED = range(4)
+
+
 class BasicNavigator:
     """Fake nav2_simple_commander navigator: goals finish when told to."""
 
@@ -338,9 +353,14 @@ class BasicNavigator:
         self.cancelled = 0
         self.done = True
         self.active = False
+        self.result = TaskResult.SUCCEEDED
 
     def waitUntilNav2Active(self, *args, **kwargs):
         self.active = True
+        self.wait_kwargs = kwargs
+
+    def getResult(self):
+        return self.result
 
     def isTaskComplete(self):
         return self.done
@@ -421,14 +441,15 @@ _module('std_msgs.msg', Header=Header, Bool=_Data, Float32=_Data, String=_Data,
 _module('std_srvs')
 _module('std_srvs.srv', **_plain('Trigger'))
 _module('nav_msgs')
-_module('nav_msgs.msg', Odometry=Odometry)
+_module('nav_msgs.msg', Odometry=Odometry, OccupancyGrid=OccupancyGrid)
 _module('diagnostic_msgs')
 _module('diagnostic_msgs.msg', DiagnosticArray=DiagnosticArray,
         DiagnosticStatus=DiagnosticStatus, **_plain('KeyValue'))
 _module('visualization_msgs')
 _module('visualization_msgs.msg', Marker=Marker, MarkerArray=MarkerArray)
 _module('nav2_simple_commander')
-_module('nav2_simple_commander.robot_navigator', BasicNavigator=BasicNavigator)
+_module('nav2_simple_commander.robot_navigator', BasicNavigator=BasicNavigator,
+        TaskResult=TaskResult)
 
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PKG_DIR not in sys.path:

@@ -41,6 +41,7 @@ SCRIPTS = [
     'person_tracker.py',
     'security_guard_bt.py',
     'system_monitor.py',
+    'explorer.py',
     'perf_monitor.py',
     'target_tracker.py',
     'scenario_evaluator.py',
@@ -120,7 +121,9 @@ def test_scenarios_can_run_without_the_gazebo_window():
     """make <scenario> GUI=false reaches gazebo.launch.py's gui argument."""
     targets = _make_targets()
     for target in SCENARIOS:
-        assert targets[target].endswith('.launch.py $(SCENARIO_ARGS)"'), target
+        # sim and nav-sim also take the world (make nav-sim WORLD=warehouse)
+        world = ' world_name:=$(WORLD)' if target in ('sim', 'nav-sim') else ''
+        assert targets[target].endswith(f'.launch.py $(SCENARIO_ARGS){world}"'), target
     with open(os.path.join(REPO_ROOT, 'Makefile')) as f:
         assert 'SCENARIO_ARGS := gui:=$(GUI)' in f.read()
     with open(os.path.join(PKG_PATH, 'launch', 'sim.launch.py')) as f:
@@ -176,7 +179,7 @@ def test_scenarios_stop_leftovers_first():
     script = os.path.join(REPO_ROOT, 'src', 'stop_sim.sh')
     with open(script) as f:
         src = f.read()
-    for name in ('gzserver', 'component_container', 'ros2 launch'):
+    for name in ('gzserver', 'component_container', 'ros2 launch', 'slam_toolbox'):
         assert name in src
     assert 'skip' in src  # spares the scenario's own shell, which matches
 

@@ -13,10 +13,12 @@
 #     "Frame [map] does not exist";
 #   - two security_guard_bt publish /cmd_vel, two person_controllers steer
 #     the person.
+#   - an old slam_toolbox (nav-sim exploring a world) keeps publishing /map
+#     and map -> odom over the new run's.
 #
 # Uses /proc only: the image does not guarantee procps (pgrep, ps).
 
-PATTERN='ros2 launch|gzserver|gzclient|rviz2|component_container|/opt/ros/humble/lib/nav2_|robot_state_publisher|spawn_entity|/install/my_bot/lib/my_bot/'
+PATTERN='ros2 launch|gzserver|gzclient|rviz2|component_container|/opt/ros/humble/lib/nav2_|/opt/ros/humble/lib/slam_toolbox/|robot_state_publisher|spawn_entity|/install/my_bot/lib/my_bot/'
 
 parent_of() {
     local stat

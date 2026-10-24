@@ -48,6 +48,15 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=yolo_export /export/yolov8n.onnx /root/models/yolov8n.onnx
 
+# Extra environments for `make sim/nav-sim WORLD=...` (config/worlds.yaml):
+# AWS RoboMaker small warehouse (MIT-0), pinned to the ros2 branch head of
+# 2021-12-14. Only its Gazebo files are used (no ROS package build).
+ARG WAREHOUSE_COMMIT=ee0af733315e78432408c3cd98d378ecee5f767c
+RUN git clone https://github.com/aws-robotics/aws-robomaker-small-warehouse-world.git \
+        /opt/worlds/aws-robomaker-small-warehouse-world \
+    && git -C /opt/worlds/aws-robomaker-small-warehouse-world checkout -q ${WAREHOUSE_COMMIT} \
+    && rm -rf /opt/worlds/aws-robomaker-small-warehouse-world/.git
+
 # 4. Create the Workspace
 WORKDIR /root/dev_ws
 COPY src ./src
