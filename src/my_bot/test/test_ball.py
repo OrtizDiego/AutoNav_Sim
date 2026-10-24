@@ -105,6 +105,26 @@ def test_museum_matches_the_mapped_world(world):
     assert museum_xml(_world(world)) == museum_xml(_world('room.world'))
 
 
+@pytest.mark.parametrize('world', ['room.world', 'ball.world', 'person.world',
+                                   'two_person.world'])
+def test_world_models_are_vendored(world):
+    """Every model:// the world loads ships in models/ (no online database)."""
+    root = _world(world)
+    uris = {el.text.strip() for el in root.iter('uri')
+            if el.text and el.text.strip().startswith('model://')}
+    assert uris, world
+    for uri in uris:
+        assert os.path.isfile(os.path.join(PKG_DIR, 'models', uri[len('model://'):])), uri
+
+
+def test_sim_launch_puts_the_models_on_gazebos_path():
+    with open(os.path.join(PKG_DIR, 'launch', 'sim.launch.py')) as f:
+        src = f.read()
+    assert "AppendEnvironmentVariable(\n        'GAZEBO_MODEL_PATH'" in src
+    with open(os.path.join(PKG_DIR, 'setup.py')) as f:
+        assert "*tree('models')" in f.read()
+
+
 # ---------------------------------------------------------------------------
 # Frames
 # ---------------------------------------------------------------------------

@@ -90,16 +90,6 @@ jobs:
           rosdep update
           rosdep install --from-paths src --ignore-src -y
 
-      # iscas_museum (model:// in the worlds) is not in the repo: gzserver
-      # downloads it from Gazebo's model database on first use, as in the
-      # dev container. Cached so later runs neither wait nor depend on it.
-      - name: Cached Gazebo models
-        uses: actions/cache@v4
-        with:
-          path: ~/.gazebo/models
-          key: gazebo-models-${{ hashFiles('src/my_bot/worlds/*.world') }}
-          restore-keys: gazebo-models-
-
       - name: Build
         timeout-minutes: 10
         shell: bash
