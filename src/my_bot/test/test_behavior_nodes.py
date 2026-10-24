@@ -179,7 +179,8 @@ class TestSecurityGuardNode:
             '/estop', '/target', '/scan', '/odom'}
         assert set(guard.publishers) == {
             '/cmd_vel', '/security_guard/state', '/security_guard/metrics',
-            '/intruder_sightings', '/security_events'}
+            '/intruder_sightings', '/security_events', '/guard_zones',
+            '/sweep_viewpoints'}
         assert [t.period for t in guard.timers] == [0.1, 5.0]
         assert guard._navigator.active                # waited for Nav2
         assert 'PatrolProtocol' in guard.logger.messages('info')[1]
@@ -191,7 +192,7 @@ class TestSecurityGuardNode:
         _tick(node)
         goal = node._navigator.goals[0]
         assert (goal.pose.position.x, goal.pose.position.y) == (1.0, 2.0)
-        assert node._bt.root.children[4].children[2]._n == 2
+        assert node._bt.root.children[5].children[2]._count() == 2
 
     def test_blackboard_starts_clean(self, guard):
         assert _bb(sg.BB_ESTOP) is False
@@ -238,7 +239,7 @@ class TestSecurityGuardNode:
         assert len(guard._navigator.goals) == 1
         guard._navigator.done = True                  # arrived
         _tick(guard, 3)                               # wait, then increment
-        assert guard._metrics['waypoints_visited'] == 1
+        assert _bb(sg.BB_WP_VISITS) == 1
         assert len(guard._navigator.goals) == 2
 
     def test_intruder_is_followed_and_marked(self, guard):
@@ -451,6 +452,85 @@ class TestSecurityGuardAlerts:
 
     def test_no_camera_subscription_without_incident_dir(self, tracked_guard):
         assert '/camera/image_raw' not in tracked_guard.subscriptions
+
+
+ZONES_YAML = os.path.join(PKG_DIR, 'config', 'guard_zones.yaml')
+
+
+@pytest.fixture
+def museum_guard(fresh_blackboard, ros_params):
+    """Guard with the shipped zones file and map, AMCL's map = odom."""
+    ros_params.update(waypoint_dwell_secs=0.0, zones_file=ZONES_YAML,
+                      map_yaml=MAP_YAML)
+    g = sg.SecurityGuardBTNode()
+    g._tf_buffer.transforms[('map', 'odom')] = (0.0, 0.0, 0.0)
+    return g
+
+
+class TestSecurityGuardZonesAndSweep:
+
+    def test_zones_file_drives_the_patrol(self, museum_guard):
+        g = museum_guard
+        assert set(g._zones.zones) == {'north_hall', 'south_gallery', 'west_wing'}
+        _tick(g)
+        assert _bb(sg.BB_PATROL_ZONE) == g._zones.zone_at(g.clock.seconds)
+        markers = g.publishers['/guard_zones'].last.markers
+        assert {m.ns for m in markers} >= {'restricted', 'restricted_labels',
+                                           'patrol_north_hall'}
+        outline = next(m for m in markers if m.ns == 'restricted')
+        assert outline.points[0].x == outline.points[-1].x   # closed
+
+    def test_bad_zones_file_falls_back_to_the_waypoints(self, fresh_blackboard,
+                                                        ros_params, tmp_path):
+        ros_params.update(zones_file=str(tmp_path / 'missing.yaml'),
+                          waypoints=[1.0, 2.0])
+        g = sg.SecurityGuardBTNode()
+        assert g._zones.route_at(0.0) == ('patrol', [(1.0, 2.0)])
+        assert 'not usable' in g.logger.messages('error')[0]
+
+    def test_losing_the_intruder_plans_a_sweep(self, museum_guard):
+        g = museum_guard
+        g.subscriptions['/odom'](_odom(-3.0, 4.5))
+        _track(g, -5.0, 3.0, vx=-0.5, t=g.clock.seconds)
+        assert _tick(g) == 'IntruderProtocol'
+        g.clock.advance(1.5)
+        assert _tick(g) == 'SearchProtocol'
+        points = _bb(sg.BB_SWEEP)
+        assert 1 <= len(points) <= 4
+        arrows = [m for m in g.publishers['/sweep_viewpoints'].last.markers
+                  if m.ns == 'sweep']
+        assert len(arrows) == len(points)
+        g.clock.advance(21.0)                          # search window over
+        assert _tick(g) == 'SweepProtocol'
+        goal = g._navigator.goals[-1]
+        assert goal.header.frame_id == 'map'
+        assert (goal.pose.position.x, goal.pose.position.y) == points[0][:2]
+        g.clock.advance(61.0)                          # sweep window over
+        assert _tick(g) == 'ReportProtocol'
+        assert _bb(sg.BB_SWEEP) == []
+        assert _events(g)[-1]['event'] == 'incident_closed'
+
+    def test_no_sweep_without_the_map_frame(self, museum_guard):
+        g = museum_guard
+        del g._tf_buffer.transforms[('map', 'odom')]
+        g.subscriptions['/odom'](_odom(-3.0, 4.5))
+        _track(g, -5.0, 3.0, t=g.clock.seconds)
+        _tick(g)
+        g.clock.advance(1.5)
+        _tick(g)
+        assert _bb(sg.BB_SWEEP) == []
+
+    def test_restricted_area_alert(self, museum_guard):
+        g = museum_guard
+        g.subscriptions['/odom'](_odom(-3.0, 4.5))
+        _track(g, -4.0, 4.5, t=g.clock.seconds)        # outside
+        _tick(g)
+        assert [e['event'] for e in _events(g)] == ['intruder_detected']
+        _track(g, -6.5, 2.0, t=g.clock.seconds)        # statue_circle
+        _tick(g, 3)
+        restricted = [e for e in _events(g) if e['event'] == 'restricted_area']
+        assert len(restricted) == 1 and restricted[0]['area'] == 'statue_circle'
+        assert g._metrics['restricted_entries'] == 1
 
 
 def test_active_protocol_is_idle_before_the_first_tick(fresh_blackboard):

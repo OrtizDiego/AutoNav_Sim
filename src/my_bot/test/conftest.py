@@ -137,7 +137,7 @@ class DiagnosticStatus(_Msg):
 
 
 class Marker(_Stamped):
-    ARROW, SPHERE, CYLINDER, TEXT_VIEW_FACING = 0, 2, 3, 9
+    ARROW, SPHERE, CYLINDER, LINE_STRIP, TEXT_VIEW_FACING = 0, 2, 3, 4, 9
     ADD, DELETEALL = 0, 3
 
     def __init__(self, **fields):

@@ -31,11 +31,14 @@ from my_bot.security_guard_bt import (
     BB_FRONT_CLEAR,
     BB_LAST_SEEN,
     BB_NAV_GOAL_SENT,
+    BB_PATROL_ZONE,
     BB_SEARCH_GOAL,
+    BB_SWEEP,
     BB_TARGET_BEARING,
     BB_TARGET_RANGE,
     BB_TARGET_YAW_RATE,
     BB_WP_INDEX,
+    BB_WP_VISITS,
     CancelPatrol,
     EStopActive,
     FollowGains,
@@ -48,6 +51,8 @@ from my_bot.security_guard_bt import (
     NavigateToWaypoint,
     ReportIncident,
     SearchPredictedPath,
+    SweepPending,
+    SweepRooms,
     WaitAtWaypoint,
     active_protocol,
     build_security_guard_tree,
@@ -102,6 +107,16 @@ def fresh_blackboard():
 def _bb(**kwargs):
     for k, v in kwargs.items():
         py_trees.blackboard.Blackboard.set(k, v)
+
+
+class FakeClock:
+    """Manual clock for the sweep leaves."""
+
+    def __init__(self, t=100.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +283,74 @@ class TestActions:
         _bb(**{BB_WP_INDEX: 2})
         IncrementWaypoint(3).update()
         assert py_trees.blackboard.Blackboard.get(BB_WP_INDEX) == 0
+        assert py_trees.blackboard.Blackboard.get(BB_WP_VISITS) == 1
+
+    def test_route_switches_zone_at_the_next_goal(self):
+        nav = FakeNavigator()
+        route = {'now': ('a', WAYPOINTS)}
+        node = NavigateToWaypoint(nav, lambda: route['now'])
+        _bb(**{BB_WP_INDEX: 2})
+        node.update()                                 # first zone: keep index
+        assert nav.goals[-1].pose.position.x == 5.13
+        assert py_trees.blackboard.Blackboard.get(BB_PATROL_ZONE) == 'a'
+        route['now'] = ('b', [[9.0, 9.0], [8.0, 8.0]])
+        assert node.update() == Status.RUNNING        # the leg is not cut short
+        assert len(nav.goals) == 1
+        nav.done = True
+        assert node.update() == Status.SUCCESS
+        IncrementWaypoint(lambda: route['now']).update()
+        node.update()                                 # next leg: zone b, first
+        assert nav.goals[-1].pose.position.x == 9.0
+        assert py_trees.blackboard.Blackboard.get(BB_WP_INDEX) == 0
+
+    def test_sweep_window_follows_the_search(self):
+        clock = FakeClock()
+        pending = SweepPending(timeout=1.0, search_secs=5.0, sweep_secs=10.0,
+                               clock=clock)
+        _bb(**{BB_LAST_SEEN: 100.0, BB_SWEEP: [(1.0, 2.0, 0.0)]})
+        for t, expected in ((101.0, Status.SUCCESS), (115.9, Status.SUCCESS),
+                            (116.1, Status.FAILURE)):
+            clock.t = t
+            assert pending.update() == expected
+        clock.t = 105.0
+        _bb(**{BB_SWEEP: []})
+        assert pending.update() == Status.FAILURE
+
+    def test_sweep_visits_each_viewpoint_then_succeeds(self):
+        nav, clock = FakeNavigator(), FakeClock()
+        nav.done = False                              # the search drive
+        _bb(**{BB_SWEEP: [(1.0, 2.0, math.pi / 2), (3.0, 4.0, 0.0)]})
+        sweep = SweepRooms(nav, dwell_secs=2.0, clock=clock)
+        sweep.initialise()
+        assert nav.cancelled == 1
+        assert sweep.update() == Status.RUNNING
+        goal = nav.goals[-1]
+        assert goal.header.frame_id == 'map'
+        assert (goal.pose.position.x, goal.pose.position.y) == (1.0, 2.0)
+        assert goal.pose.orientation.z == pytest.approx(math.sqrt(0.5))
+        assert sweep.update() == Status.RUNNING       # driving
+        nav.done = True
+        assert sweep.update() == Status.RUNNING       # arrived: dwell
+        clock.t += 2.5
+        assert sweep.update() == Status.RUNNING       # next viewpoint
+        assert py_trees.blackboard.Blackboard.get(BB_SWEEP) == [(3.0, 4.0, 0.0)]
+        assert sweep.update() == Status.RUNNING
+        assert len(nav.goals) == 2
+        nav.done = True                               # e.g. Nav2 failed: next
+        sweep.update()
+        clock.t += 2.5
+        assert sweep.update() == Status.SUCCESS
+        assert py_trees.blackboard.Blackboard.get(BB_SWEEP) == []
+
+    def test_leaving_the_sweep_cancels_its_drive(self):
+        nav = FakeNavigator()
+        _bb(**{BB_SWEEP: [(1.0, 2.0, 0.0)]})
+        sweep = SweepRooms(nav, clock=FakeClock())
+        sweep.initialise()
+        sweep.update()
+        sweep.terminate(Status.INVALID)
+        assert nav.cancelled == 1
+        assert py_trees.blackboard.Blackboard.get(BB_SWEEP) == [(1.0, 2.0, 0.0)]
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +367,7 @@ class TestTree:
         assert isinstance(tree.root, py_trees.composites.Selector)
         assert [c.name for c in tree.root.children] == [
             'EmergencyStop', 'IntruderProtocol', 'SearchProtocol',
-            'ReportProtocol', 'PatrolProtocol']
+            'SweepProtocol', 'ReportProtocol', 'PatrolProtocol']
         for child in tree.root.children:
             assert isinstance(child, py_trees.composites.Sequence)
 
@@ -356,6 +439,33 @@ class TestTree:
         tree.tick()
         assert active_protocol(tree) == 'PatrolProtocol'
         assert nav.goals[-1].header.frame_id == 'map'
+        assert incident['reports'] == 1
+
+    def test_search_then_sweep_then_report(self):
+        nav, pub, clock = FakeNavigator(), Recorder(), FakeClock()
+        incident = {'open': True, 'reports': 0}
+
+        def report():
+            incident['reports'] += 1
+            incident['open'] = False
+        tree = build_security_guard_tree(
+            nav, pub, WAYPOINTS, target_timeout=1.0, search_secs=6.0,
+            sweep_secs=30.0, sweep_dwell_secs=1.0, clock=clock,
+            incident_open=lambda: incident['open'], report=report)
+        _bb(**{BB_LAST_SEEN: 98.0, BB_SWEEP: [(1.0, 2.0, 0.0)]})
+        tree.tick()
+        assert active_protocol(tree) == 'SearchProtocol'
+        clock.t = 108.0                                # search window over
+        tree.tick()
+        assert active_protocol(tree) == 'SweepProtocol'
+        assert nav.goals[-1].header.frame_id == 'map'
+        assert incident['reports'] == 0
+        nav.done = True
+        tree.tick()                                    # arrived
+        clock.t += 1.5
+        tree.tick()                                    # dwell over: done
+        tree.tick()
+        assert active_protocol(tree) == 'ReportProtocol'
         assert incident['reports'] == 1
 
     def test_estop_overrides_everything(self):

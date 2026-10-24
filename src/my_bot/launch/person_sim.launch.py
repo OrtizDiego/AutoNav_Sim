@@ -23,16 +23,18 @@
   5. sensor_fusion (mode person): bbox + lidar -> range and bearing.
   6. target_tracker: odom-frame EKF (position + velocity) on /target and
      person-sized lidar clusters -> /intruder/track once confirmed.
-  7. security_guard_bt: py_trees tree. Patrols Nav2 waypoints; when the
-     intruder track is confirmed it cancels the patrol, raises an alert
-     and follows at 2.5 m; when the intruder is lost it drives (Nav2) to
-     where the track was heading, turns toward the last-seen side, then
-     reports the incident and resumes the patrol. Latched e-stop from
-     system_monitor overrides everything.
+  7. security_guard_bt: py_trees tree. Patrols the zones of
+     config/guard_zones.yaml on their schedule; when the intruder track is
+     confirmed it cancels the patrol, raises an alert (and another if the
+     intruder enters a restricted area) and follows at 2.5 m; when the
+     intruder is lost it drives (Nav2) to where the track was heading,
+     turns toward the last-seen side, sweeps the rooms around from a few
+     viewpoints picked on the map, then reports the incident and resumes
+     the patrol. Latched e-stop from system_monitor overrides everything.
   8. system_monitor: sensor watchdog, /trigger_estop and /clear_estop.
 
 Watch /security_guard/state for PatrolProtocol / IntruderProtocol /
-SearchProtocol / ReportProtocol / EmergencyStop, and /security_events for
+SearchProtocol / SweepProtocol / ReportProtocol / EmergencyStop, and /security_events for
 the alerts (also in ~/.ros/security_incidents/incidents.jsonl).
 """
 
@@ -86,6 +88,8 @@ def generate_launch_description():
         node('person_tracker'),
         node('sensor_fusion', {'mode': 'person'}),
         node('target_tracker'),
-        node('security_guard_bt'),
+        node('security_guard_bt', {
+            'zones_file': os.path.join(pkg, 'config', 'guard_zones.yaml'),
+            'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml')}),
         node('system_monitor'),
     ])

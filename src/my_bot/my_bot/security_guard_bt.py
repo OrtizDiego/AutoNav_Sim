@@ -30,11 +30,16 @@ Tree structure (highest priority first):
     │   ├── Condition("IntruderRecentlyLost")  lost < search_secs ago
     │   └── Action("SearchPredictedPath")   Nav2 to where the track was heading,
     │                                       then turn toward the last-seen side
+    ├── Sequence("SweepProtocol")
+    │   ├── Condition("SweepPending")       viewpoints left, lost < search_secs
+    │   │                                   + sweep_secs ago
+    │   └── Action("SweepRooms")            Nav2 to each viewpoint, look, dwell
     ├── Sequence("ReportProtocol")
     │   ├── Condition("IncidentOpen")       an incident is still open
     │   └── Action("ReportIncident")        close it: incident_closed event
     └── Sequence("PatrolProtocol")
-        ├── Action("NavigateToWaypoint")    Nav2 goToPose, RUNNING until done
+        ├── Action("NavigateToWaypoint")    Nav2 goToPose to the scheduled
+        │                                   zone's waypoint, RUNNING until done
         ├── Action("WaitAtWaypoint")        timed dwell
         └── Action("IncrementWaypoint")     advance bb.waypoint_index
 
@@ -63,25 +68,36 @@ The search drives (Nav2, goal in the odom frame) to where the track was
 heading: its last position plus ``search_lead_secs`` of its velocity, at
 most ``search_max_distance`` further. Nav2 plans around the walls the
 intruder went behind. Then, or at once without a ranged track, the robot
-turns toward the side it was last seen on.
+turns toward the side it was last seen on. SweepProtocol then visits the
+viewpoints my_bot.room_sweep picked on the saved map around the last-seen
+spot (map frame, planned when the intruder is lost), each facing the floor
+it uncovers, so someone behind an exhibit or around a corner comes into
+view. Without a map (no zones file, or no map -> odom yet) there is no sweep.
+
+Patrol zones, their schedule and restricted areas come from ``zones_file``
+(my_bot.guard_zones); without one the ``waypoints`` parameter is a single
+zone. The zone switches when the current leg ends, never mid-goal. An
+intruder inside a restricted area raises a restricted_area event, once per
+area and incident.
 
 All timing (target timeout, search, dwell) runs on the node clock, i.e.
 simulation time under use_sim_time, so a simulator running slower than real
 time does not make the intruder look lost.
 
 Publishes /cmd_vel (follow, search, halt), /security_guard/state (the active
-protocol), /security_guard/metrics, /security_events and /intruder_sightings
-markers.
+protocol), /security_guard/metrics, /security_events, /intruder_sightings
+markers, /guard_zones (restricted areas and patrol waypoints, latched) and
+/sweep_viewpoints markers.
 """
 
 from dataclasses import dataclass
 import json
 import math
 import time
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Sequence, Tuple, Union
 
 from builtin_interfaces.msg import Time
-from geometry_msgs.msg import PoseStamped, Twist, Vector3Stamped
+from geometry_msgs.msg import Point, PoseStamped, Twist, Vector3Stamped
 from nav2_simple_commander.robot_navigator import BasicNavigator
 import py_trees
 import rclpy
@@ -90,8 +106,11 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 
+from my_bot.clearance_map import ClearanceMap
 from my_bot.follow_control import compute_command, front_clearance, search_command
+from my_bot.guard_zones import GuardZones
 from my_bot.incident_log import IncidentLog
+from my_bot.room_sweep import plan_sweep
 from my_bot.target_estimate import TargetEstimate, stamp_to_sec, yaw_from_quaternion
 
 # Types only needed by the running node (metrics, markers, alerts). Guarded
@@ -119,18 +138,44 @@ BB_TARGET_RANGE = 'target_range'       # metres, -1.0 if unknown
 BB_TARGET_BEARING = 'target_bearing'   # rad, positive left
 BB_TARGET_YAW_RATE = 'target_yaw_rate'  # rad/s the intruder turns its bearing
 BB_SEARCH_GOAL = 'search_goal'         # odom (x, y) to search first, or None
+BB_SWEEP = 'sweep_points'              # map (x, y, yaw) viewpoints left
 BB_FRONT_CLEAR = 'front_clear'         # closest lidar return ahead (m)
 BB_WP_INDEX = 'waypoint_index'
+BB_WP_VISITS = 'waypoints_visited'
+BB_PATROL_ZONE = 'patrol_zone'
 BB_NAV_GOAL_SENT = 'nav_goal_sent'
 BB_DWELL_START = 'dwell_start_time'
 
 Status = py_trees.common.Status
 Publish = Callable[[Twist], None]
+Route = Callable[[], Tuple[str, Sequence[Sequence[float]]]]  # (zone, waypoints)
 
 
 def _bb_get(key, default):
     bb = py_trees.blackboard.Blackboard()
     return bb.get(key) if bb.exists(key) else default
+
+
+def _as_route(waypoints) -> Route:
+    """Return a route callable for a fixed waypoint list (zone 'patrol') or a route."""
+    if callable(waypoints):
+        return waypoints
+    return lambda: ('patrol', waypoints)
+
+
+def _map_goal(x: float, y: float, yaw: Optional[float] = None,
+              frame: str = 'map') -> PoseStamped:
+    goal = PoseStamped()
+    goal.header.frame_id = frame
+    goal.header.stamp = Time()  # zero stamp: use the latest transform
+    goal.pose.position.x = x
+    goal.pose.position.y = y
+    if yaw is None:
+        goal.pose.orientation.w = 1.0
+    else:
+        goal.pose.orientation.z = math.sin(yaw / 2.0)
+        goal.pose.orientation.w = math.cos(yaw / 2.0)
+    return goal
 
 
 def _twist(linear: float = 0.0, angular: float = 0.0) -> Twist:
@@ -286,12 +331,7 @@ class SearchPredictedPath(py_trees.behaviour.Behaviour):
         self._driving = False
         self._turn = None
         if self._goal is not None:
-            goal = PoseStamped()
-            goal.header.frame_id = self._frame
-            goal.header.stamp = Time()  # zero stamp: use the latest transform
-            goal.pose.position.x, goal.pose.position.y = self._goal
-            goal.pose.orientation.w = 1.0
-            self._nav.goToPose(goal)
+            self._nav.goToPose(_map_goal(*self._goal, frame=self._frame))
             self._driving = True
             self._log('search: driving to ({:.2f}, {:.2f}) in {}'.format(
                 *self._goal, self._frame))
@@ -310,6 +350,86 @@ class SearchPredictedPath(py_trees.behaviour.Behaviour):
         if self._driving and not self._nav.isTaskComplete():
             self._nav.cancelTask()
         self._driving = False
+
+
+class SweepPending(py_trees.behaviour.Behaviour):
+    """SUCCESS while sweep viewpoints are left and the sweep window is open.
+
+    The window follows the search: from ``timeout + search_secs`` to
+    ``timeout + search_secs + sweep_secs`` after the last sighting.
+    """
+
+    def __init__(self, timeout: float = 0.5, search_secs: float = 6.0,
+                 sweep_secs: float = 60.0, clock=time.monotonic,
+                 name: str = 'SweepPending'):
+        super().__init__(name)
+        self._timeout = timeout
+        self._search_secs = search_secs
+        self._sweep_secs = sweep_secs
+        self._clock = clock
+
+    def update(self) -> Status:
+        if not _bb_get(BB_SWEEP, None):
+            return Status.FAILURE
+        age = self._clock() - _bb_get(BB_LAST_SEEN, -math.inf)
+        if age <= self._timeout + self._search_secs + self._sweep_secs:
+            return Status.SUCCESS
+        return Status.FAILURE
+
+
+class SweepRooms(py_trees.behaviour.Behaviour):
+    """Nav2 to each sweep viewpoint (map frame), dwell, drop it (RUNNING).
+
+    A viewpoint Nav2 cannot reach counts as visited: the next one may be.
+    SUCCESS once none is left. Leaving the sweep cancels a drive still
+    running; the viewpoint stays and is driven to again on return.
+    """
+
+    def __init__(self, navigator: BasicNavigator, dwell_secs: float = 2.0,
+                 clock=time.monotonic, log=None, name: str = 'SweepRooms'):
+        super().__init__(name)
+        self._nav = navigator
+        self._dwell = dwell_secs
+        self._clock = clock
+        self._log = log or (lambda _msg: None)
+        self._driving = False
+        self._arrived = None
+
+    def initialise(self) -> None:
+        if not self._nav.isTaskComplete():
+            self._nav.cancelTask()  # the patrol goal
+        py_trees.blackboard.Blackboard().set(BB_NAV_GOAL_SENT, False)
+        self._driving = False
+        self._arrived = None
+
+    def update(self) -> Status:
+        bb = py_trees.blackboard.Blackboard()
+        points = list(_bb_get(BB_SWEEP, None) or [])
+        if not points:
+            return Status.SUCCESS
+        if not self._driving and self._arrived is None:
+            x, y, yaw = points[0]
+            self._nav.goToPose(_map_goal(x, y, yaw))
+            self._driving = True
+            self._log('sweep: viewpoint ({:.2f}, {:.2f}), {} left'.format(
+                x, y, len(points)))
+            return Status.RUNNING
+        if self._driving:
+            if not self._nav.isTaskComplete():
+                return Status.RUNNING
+            self._driving = False
+            self._arrived = self._clock()
+        if self._clock() - self._arrived < self._dwell:
+            return Status.RUNNING
+        self._arrived = None
+        bb.set(BB_SWEEP, points[1:])
+        return Status.RUNNING if points[1:] else Status.SUCCESS
+
+    def terminate(self, new_status: Status) -> None:
+        if self._driving and not self._nav.isTaskComplete():
+            self._nav.cancelTask()
+        self._driving = False
+        self._arrived = None
 
 
 class IncidentOpen(py_trees.behaviour.Behaviour):
@@ -336,29 +456,34 @@ class ReportIncident(py_trees.behaviour.Behaviour):
 
 
 class NavigateToWaypoint(py_trees.behaviour.Behaviour):
-    """Send a Nav2 goal on first tick; poll completion on subsequent ticks."""
+    """Send a Nav2 goal on first tick; poll completion on subsequent ticks.
+
+    ``waypoints`` is a list, or a route callable returning (zone, waypoints)
+    for the zone scheduled now. A new zone starts at its first waypoint.
+    """
 
     def __init__(self, navigator: BasicNavigator, waypoints,
                  log=None, name: str = 'NavigateToWaypoint'):
         super().__init__(name)
         self._nav = navigator
-        self._waypoints = waypoints
+        self._route = _as_route(waypoints)
         self._log = log or (lambda _msg: None)
 
     def update(self) -> Status:
         bb = py_trees.blackboard.Blackboard()
         if not _bb_get(BB_NAV_GOAL_SENT, False):
+            zone, waypoints = self._route()
+            previous = _bb_get(BB_PATROL_ZONE, None)
+            if zone != previous:
+                bb.set(BB_PATROL_ZONE, zone)
+                if previous is not None:  # a new zone starts at its first
+                    bb.set(BB_WP_INDEX, 0)
+                    self._log(f'patrol: zone {previous} -> {zone}')
             wp_idx = _bb_get(BB_WP_INDEX, 0)
-            wp = self._waypoints[wp_idx % len(self._waypoints)]
-            goal = PoseStamped()
-            goal.header.frame_id = 'map'
-            goal.header.stamp = Time()  # zero stamp: use the latest transform
-            goal.pose.position.x = wp[0]
-            goal.pose.position.y = wp[1]
-            goal.pose.orientation.w = 1.0
-            self._nav.goToPose(goal)
+            wp = waypoints[wp_idx % len(waypoints)]
+            self._nav.goToPose(_map_goal(wp[0], wp[1]))
             bb.set(BB_NAV_GOAL_SENT, True)
-            self._log(f'patrol: heading to waypoint {wp_idx} {tuple(wp)}')
+            self._log(f'patrol: heading to {zone} waypoint {wp_idx} {tuple(wp)}')
 
         if self._nav.isTaskComplete():
             bb.set(BB_NAV_GOAL_SENT, False)
@@ -389,15 +514,18 @@ class WaitAtWaypoint(py_trees.behaviour.Behaviour):
 
 
 class IncrementWaypoint(py_trees.behaviour.Behaviour):
-    """Advance the waypoint index on the blackboard."""
+    """Advance the waypoint index (wrapping) and count the visit."""
 
-    def __init__(self, n_waypoints: int, name: str = 'IncrementWaypoint'):
+    def __init__(self, waypoints: Union[int, Route],
+                 name: str = 'IncrementWaypoint'):
         super().__init__(name)
-        self._n = n_waypoints
+        self._count = (lambda: waypoints) if isinstance(waypoints, int) else (
+            lambda: len(_as_route(waypoints)()[1]))
 
     def update(self) -> Status:
         bb = py_trees.blackboard.Blackboard()
-        bb.set(BB_WP_INDEX, (_bb_get(BB_WP_INDEX, 0) + 1) % self._n)
+        bb.set(BB_WP_INDEX, (_bb_get(BB_WP_INDEX, 0) + 1) % self._count())
+        bb.set(BB_WP_VISITS, _bb_get(BB_WP_VISITS, 0) + 1)
         return Status.SUCCESS
 
 
@@ -414,6 +542,8 @@ def build_security_guard_tree(
         search_secs: float = 6.0,
         search_speed: float = 0.6,
         dwell_secs: float = 2.0,
+        sweep_secs: float = 60.0,
+        sweep_dwell_secs: float = 2.0,
         log=None,
         clock=time.monotonic,
         incident_open: Callable[[], bool] = lambda: False,
@@ -421,6 +551,7 @@ def build_security_guard_tree(
 ) -> py_trees.trees.BehaviourTree:
     """Construct and return the security guard behaviour tree.
 
+    ``waypoints`` is a fixed list or a route callable (zone, waypoints).
     ``clock`` returns seconds; the node passes its (sim-time) clock.
     ``incident_open`` and ``report`` connect ReportProtocol to the node's
     incident log.
@@ -441,6 +572,12 @@ def build_security_guard_tree(
         SearchPredictedPath(navigator, publish, search_speed, log=log),
     ])
 
+    sweep = py_trees.composites.Sequence('SweepProtocol', memory=False)
+    sweep.add_children([
+        SweepPending(target_timeout, search_secs, sweep_secs, clock),
+        SweepRooms(navigator, sweep_dwell_secs, clock, log),
+    ])
+
     report_seq = py_trees.composites.Sequence('ReportProtocol', memory=False)
     report_seq.add_children([IncidentOpen(incident_open), ReportIncident(report)])
 
@@ -448,11 +585,11 @@ def build_security_guard_tree(
     patrol.add_children([
         NavigateToWaypoint(navigator, waypoints, log),
         WaitAtWaypoint(dwell_secs, clock),
-        IncrementWaypoint(len(waypoints)),
+        IncrementWaypoint(_as_route(waypoints)),
     ])
 
     root = py_trees.composites.Selector('SecurityGuard', memory=False)
-    root.add_children([estop, intruder, search, report_seq, patrol])
+    root.add_children([estop, intruder, search, sweep, report_seq, patrol])
     return py_trees.trees.BehaviourTree(root)
 
 
@@ -479,6 +616,8 @@ class SecurityGuardBTNode(Node):
             0.23, -2.55, -4.52, 8.60, 0.0, 0.0,
         ])
         self.declare_parameter('waypoint_dwell_secs', 2.0)
+        self.declare_parameter('zones_file', '')
+        self.declare_parameter('map_yaml', '')
         self.declare_parameter('use_track', True)
         self.declare_parameter('track_max_predict', 1.0)
         self.declare_parameter('target_timeout', 0.5)
@@ -486,6 +625,11 @@ class SecurityGuardBTNode(Node):
         self.declare_parameter('search_angular_speed', 0.6)
         self.declare_parameter('search_lead_secs', 2.0)
         self.declare_parameter('search_max_distance', 4.0)
+        self.declare_parameter('sweep_secs', 60.0)
+        self.declare_parameter('sweep_dwell_secs', 2.0)
+        self.declare_parameter('sweep_radius', 5.0)
+        self.declare_parameter('sweep_view_range', 4.0)
+        self.declare_parameter('sweep_max_points', 4)
         self.declare_parameter('incident_dir', '')
         self.declare_parameter('snapshot_topic', '/camera/image_raw')
         self.declare_parameter('desired_distance', 2.5)
@@ -511,6 +655,17 @@ class SecurityGuardBTNode(Node):
         self._sighting_pub = self.create_publisher(
             MarkerArray, '/intruder_sightings', 10)
         self._event_pub = self.create_publisher(String, '/security_events', 10)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._zones_pub = self.create_publisher(MarkerArray, '/guard_zones', latched)
+        self._sweep_pub = self.create_publisher(MarkerArray, '/sweep_viewpoints', 10)
+
+        self._zones = self._load_zones(str(gp('zones_file').value), waypoints)
+        self._cmap = self._load_map(str(gp('map_yaml').value))
+        self._sweep_cfg = {
+            'radius': float(gp('sweep_radius').value),
+            'view_range': float(gp('sweep_view_range').value),
+            'max_points': int(gp('sweep_max_points').value),
+        }
 
         self._incidents = IncidentLog(str(gp('incident_dir').value))
         if self._incidents.directory:
@@ -529,7 +684,6 @@ class SecurityGuardBTNode(Node):
         self._target = TargetEstimate(
             max_predict=float(gp('track_max_predict').value))
 
-        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Bool, '/estop', self._estop_cb, latched)
         if bool(gp('use_track').value):
             self.create_subscription(Odometry, '/intruder/track', self._track_cb, 10)
@@ -546,7 +700,9 @@ class SecurityGuardBTNode(Node):
         bb = py_trees.blackboard.Blackboard()
         bb.set(BB_ESTOP, False)
         bb.set(BB_WP_INDEX, 0)
+        bb.set(BB_WP_VISITS, 0)
         bb.set(BB_NAV_GOAL_SENT, False)
+        bb.set(BB_SWEEP, [])
         bb.set(BB_LAST_SEEN, -math.inf)
         bb.set(BB_TARGET_RANGE, -1.0)
         bb.set(BB_TARGET_BEARING, 0.0)
@@ -561,11 +717,14 @@ class SecurityGuardBTNode(Node):
         self._navigator.waitUntilNav2Active()
 
         self._bt = build_security_guard_tree(
-            self._navigator, self._vel_pub.publish, waypoints, gains,
+            self._navigator, self._vel_pub.publish,
+            lambda: self._zones.route_at(self._now()), gains,
             target_timeout=float(gp('target_timeout').value),
             search_secs=float(gp('search_secs').value),
             search_speed=float(gp('search_angular_speed').value),
             dwell_secs=float(gp('waypoint_dwell_secs').value),
+            sweep_secs=float(gp('sweep_secs').value),
+            sweep_dwell_secs=float(gp('sweep_dwell_secs').value),
             log=self.get_logger().info, clock=self._now,
             incident_open=lambda: self._incidents.is_open,
             report=self._report_incident)
@@ -574,9 +733,9 @@ class SecurityGuardBTNode(Node):
             'behaviour tree:\n' + py_trees.display.unicode_tree(self._bt.root))
 
         self._metrics = {
-            'waypoints_visited': 0,
             'intruder_detections': 0,
             'track_losses': 0,
+            'restricted_entries': 0,
             'time_following_sec': 0.0,
             'distance_traveled_m': 0.0,
             'incidents': 0,
@@ -589,12 +748,37 @@ class SecurityGuardBTNode(Node):
         self._robot_pose = None  # (x, y, yaw) in odom
         self._sightings = MarkerArray()
         self._state = ''
-        self._prev_wp_idx = 0
+        self._publish_zones()
 
         self.create_timer(0.1, self._tick)
         self.create_timer(5.0, self._publish_metrics)
 
     # ------------------------------------------------------------------
+
+    def _load_zones(self, path: str, waypoints) -> GuardZones:
+        """Zones from ``path``; the ``waypoints`` parameter if unset or bad."""
+        if path:
+            try:
+                zones = GuardZones.from_yaml(path)
+                self.get_logger().info(
+                    f'guard zones: {", ".join(zones.zones)}; restricted: '
+                    f'{", ".join(zones.restricted) or "none"}')
+                return zones
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.get_logger().error(
+                    f'zones_file {path} not usable ({exc}): patrolling the '
+                    'waypoints parameter')
+        return GuardZones.single(waypoints)
+
+    def _load_map(self, path: str) -> Optional[ClearanceMap]:
+        """Load the saved map for room sweeps; None if unset or bad (no sweep)."""
+        if not path:
+            return None
+        try:
+            return ClearanceMap.from_yaml(path)
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().error(f'map_yaml {path} not usable ({exc}): no room sweep')
+            return None
 
     def _estop_cb(self, msg: Bool):
         py_trees.blackboard.Blackboard().set(BB_ESTOP, bool(msg.data))
@@ -674,16 +858,52 @@ class SecurityGuardBTNode(Node):
                 self._metrics['track_losses'] += 1
                 where, frame = self._to_map(self._target_or_robot_xy())
                 self._publish_event(self._incidents.lost(self._now(), where, frame))
+                self._plan_sweep()
             self._state = state
         self._state_pub.publish(String(data=state))
 
         if state == 'IntruderProtocol':
             self._metrics['time_following_sec'] += 0.1
             self._record_follow_error()
-        wp_now = _bb_get(BB_WP_INDEX, 0)
-        if wp_now != self._prev_wp_idx:
-            self._metrics['waypoints_visited'] += 1
-            self._prev_wp_idx = wp_now
+            self._check_restricted()
+
+    # -- sweep and restricted areas ------------------------------------------
+
+    def _plan_sweep(self):
+        """Sweep viewpoints (map) around where the intruder was heading."""
+        bb = py_trees.blackboard.Blackboard()
+        bb.set(BB_SWEEP, [])
+        if self._cmap is None or self._robot_pose is None:
+            return
+        robot, frame = self._to_map(self._robot_pose[:2])
+        last, _ = self._to_map(self._target.target_xy)
+        goal, _ = self._to_map(_bb_get(BB_SEARCH_GOAL, None))
+        if frame != 'map':
+            self.get_logger().info('sweep: no map -> odom yet, skipping it')
+            return
+        center = goal or last or robot
+        seen = [p for p in (robot, last, goal) if p is not None]
+        points = plan_sweep(self._cmap, center, goal or robot, seen=seen,
+                            radius=self._sweep_cfg['radius'],
+                            view_range=self._sweep_cfg['view_range'],
+                            max_points=self._sweep_cfg['max_points'])
+        bb.set(BB_SWEEP, points)
+        self.get_logger().info('sweep: {} viewpoints around ({:.2f}, {:.2f})'.format(
+            len(points), *center))
+        self._publish_sweep(points)
+
+    def _check_restricted(self):
+        """Alert once per area and incident when the intruder is inside one."""
+        if not self._zones.restricted or self._target.target_xy is None:
+            return
+        where, frame = self._to_map(self._target.target_xy)
+        if frame != 'map':
+            return  # the areas are drawn on the map
+        for area in self._zones.areas_containing(*where):
+            event = self._incidents.entered_area(self._now(), area, where, frame)
+            if event is not None:
+                self._metrics['restricted_entries'] += 1
+                self._publish_event(event)
 
     # -- alerts ------------------------------------------------------------
 
@@ -729,7 +949,9 @@ class SecurityGuardBTNode(Node):
         return path
 
     def _report_incident(self):
-        """ReportProtocol: close the incident once the search gave up."""
+        """ReportProtocol: close the incident once search and sweep gave up."""
+        py_trees.blackboard.Blackboard().set(BB_SWEEP, [])
+        self._publish_sweep([])
         self._publish_event(self._incidents.close(self._now()))
 
     def _publish_event(self, event: Optional[dict]):
@@ -767,13 +989,16 @@ class SecurityGuardBTNode(Node):
         status.message = f'{self._state} | session {elapsed:.0f}s'
         status.values = [
             KeyValue(key='state', value=self._state),
+            KeyValue(key='patrol_zone', value=str(_bb_get(BB_PATROL_ZONE, ''))),
             KeyValue(key='waypoints_visited',
-                     value=str(self._metrics['waypoints_visited'])),
+                     value=str(_bb_get(BB_WP_VISITS, 0))),
             KeyValue(key='intruder_detections',
                      value=str(self._metrics['intruder_detections'])),
             KeyValue(key='track_losses',
                      value=str(self._metrics['track_losses'])),
             KeyValue(key='incidents', value=str(self._metrics['incidents'])),
+            KeyValue(key='restricted_entries',
+                     value=str(self._metrics['restricted_entries'])),
             KeyValue(key='follow_bearing_rms_deg', value=f'{bearing_rms:.1f}'),
             KeyValue(key='follow_range_rms_m', value=f'{range_rms:.2f}'),
             KeyValue(key='time_following_sec',
@@ -784,6 +1009,82 @@ class SecurityGuardBTNode(Node):
         ]
         diag.status = [status]
         self._diag_pub.publish(diag)
+
+    def _publish_zones(self):
+        """Restricted areas (red outlines) and patrol waypoints, latched."""
+        array = MarkerArray()
+        stamp = self.get_clock().now().to_msg()
+        for i, (name, poly) in enumerate(self._zones.restricted.items()):
+            outline = Marker()
+            outline.header.frame_id = 'map'
+            outline.header.stamp = stamp
+            outline.ns = 'restricted'
+            outline.id = i
+            outline.type = Marker.LINE_STRIP
+            outline.action = Marker.ADD
+            outline.pose.orientation.w = 1.0
+            outline.scale.x = 0.08
+            outline.color.r, outline.color.a = 1.0, 0.9
+            outline.points = [self._point(x, y, 0.05) for x, y in poly + poly[:1]]
+            label = Marker()
+            label.header = outline.header
+            label.ns = 'restricted_labels'
+            label.id = i
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = sum(x for x, _ in poly) / len(poly)
+            label.pose.position.y = sum(y for _, y in poly) / len(poly)
+            label.pose.position.z = 0.5
+            label.pose.orientation.w = 1.0
+            label.scale.z = 0.35
+            label.color.r, label.color.a = 1.0, 1.0
+            label.text = name
+            array.markers += [outline, label]
+        for i, (name, waypoints) in enumerate(self._zones.zones.items()):
+            route = Marker()
+            route.header.frame_id = 'map'
+            route.header.stamp = stamp
+            route.ns = 'patrol_' + name
+            route.id = i
+            route.type = Marker.LINE_STRIP
+            route.action = Marker.ADD
+            route.pose.orientation.w = 1.0
+            route.scale.x = 0.04
+            route.color.b, route.color.g, route.color.a = 1.0, 0.5, 0.6
+            route.points = [self._point(x, y, 0.05)
+                            for x, y in waypoints + waypoints[:1]]
+            array.markers.append(route)
+        self._zones_pub.publish(array)
+
+    def _publish_sweep(self, points):
+        """Sweep viewpoints as arrows (map frame); none clears them."""
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        array = MarkerArray()
+        array.markers.append(clear)
+        stamp = self.get_clock().now().to_msg()
+        for i, (x, y, yaw) in enumerate(points):
+            arrow = Marker()
+            arrow.header.frame_id = 'map'
+            arrow.header.stamp = stamp
+            arrow.ns = 'sweep'
+            arrow.id = i
+            arrow.type = Marker.ARROW
+            arrow.action = Marker.ADD
+            arrow.pose.position.x, arrow.pose.position.y = x, y
+            arrow.pose.position.z = 0.1
+            arrow.pose.orientation.z = math.sin(yaw / 2.0)
+            arrow.pose.orientation.w = math.cos(yaw / 2.0)
+            arrow.scale.x, arrow.scale.y, arrow.scale.z = 0.6, 0.12, 0.12
+            arrow.color.r, arrow.color.g, arrow.color.a = 1.0, 0.6, 0.9
+            array.markers.append(arrow)
+        self._sweep_pub.publish(array)
+
+    @staticmethod
+    def _point(x, y, z):
+        p = Point()
+        p.x, p.y, p.z = float(x), float(y), float(z)
+        return p
 
     def _add_sighting_marker(self):
         """Mark where the intruder was seen (or the robot, if not ranged)."""

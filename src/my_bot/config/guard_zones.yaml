@@ -1,0 +1,25 @@
+# Patrol zones, their schedule and restricted areas for security_guard_bt
+# (zones_file, passed by person_sim.launch.py). Map frame = Gazebo world
+# frame, metres. Format: my_bot/guard_zones.py. test_guard_zones.py checks
+# every waypoint is open floor on maps/my_map and outside restricted areas.
+
+patrol_zones:
+  # North hall, above the central enclosure
+  north_hall: [[3.28, 6.85], [6.0, 9.0], [-0.92, 6.85], [-4.52, 8.60]]
+  # South gallery, around the two plinths
+  south_gallery: [[5.13, -2.45], [4.0, -8.0], [-1.0, -8.0], [0.23, -2.55], [0.0, 0.0]]
+  # West wing, past the statue circle
+  west_wing: [[-7.5, 4.5], [-6.5, -1.5], [-7.5, -4.0], [-5.5, -7.0]]
+
+# Cycled on the node clock (simulation seconds). A zone switch waits for the
+# current leg to finish.
+patrol_schedule:
+  - {zone: north_hall, secs: 180.0}
+  - {zone: south_gallery, secs: 180.0}
+  - {zone: west_wing, secs: 120.0}
+
+# An intruder tracked inside one raises a restricted_area event on
+# /security_events (once per area and incident).
+restricted_areas:
+  statue_circle: [[-8.0, 0.5], [-5.0, 0.5], [-5.0, 3.5], [-8.0, 3.5]]
+  storage: [[6.5, -9.5], [8.8, -9.5], [8.8, -6.5], [6.5, -6.5]]
