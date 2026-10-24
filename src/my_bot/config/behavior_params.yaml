@@ -144,6 +144,11 @@ security_guard_bt:
     # hold nested lists.
     waypoints: [3.28, 6.85, -0.92, 6.85, 5.13, -2.45, 0.23, -2.55, -4.52, 8.60, 0.0, 0.0]
     waypoint_dwell_secs: 2.0
+    # Patrol zones, schedule and restricted areas (config/guard_zones.yaml)
+    # and the map the room sweep plans on: absolute paths, so the launch
+    # files pass them. '' = waypoints above as one zone / no sweep.
+    zones_file: ''
+    map_yaml: ''
     # Follow target_tracker's /intruder/track (odom-frame track with
     # velocity, extrapolated to now for at most track_max_predict s);
     # false = sensor_fusion's /target, static between detections.
@@ -162,6 +167,15 @@ security_guard_bt:
     search_angular_speed: 0.6
     search_lead_secs: 2.0
     search_max_distance: 4.0
+    # Sweep after the search: up to sweep_max_points viewpoints (picked on
+    # the map) that between them see the floor within sweep_radius of where
+    # the intruder was heading; sweep_dwell_secs looking at each. The window
+    # runs sweep_secs after the search's.
+    sweep_secs: 60.0
+    sweep_dwell_secs: 2.0
+    sweep_radius: 5.0
+    sweep_view_range: 4.0
+    sweep_max_points: 4
     # Incident log (incidents.jsonl) and alert snapshots from snapshot_topic;
     # '' = events on /security_events only
     incident_dir: ~/.ros/security_incidents

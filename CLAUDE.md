@@ -104,7 +104,9 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 - **ball_teleop.py**: hold-to-move keyboard teleop for the ball.
 - **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`; the network input size is read from the model, 320 px in the image) + OpenCV tracker (`tracker`: KCF by default, then CSRT → MIL fallback; CSRT was tens of ms per frame) + constant-velocity Kalman filter. YOLO runs in a `DetectionWorker` thread (`async_detection`, default true): every frame is tracked and published without waiting for inference; a result re-seeds the tracker on the frame YOLO saw and replays the frames since (`_history`). `async_detection: false` runs YOLO inline. `inference_threads` caps onnxruntime's threads (0 = all cores, which compete with gzserver). Publishes `/person_bbox` (PolygonStamped: top-left + bottom-right px, empty = none; header = the image's), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
 - **person_controller.py**: Pedestrian behaviour (WALK / RUN / EXHAUSTED) publishing `/person/cmd_vel` for the actor plugin. Pure `PersonBrain` steers on `clearance_map.py` (distance transform of `maps/my_map`, passed as `map_yaml`): line-of-sight wander targets, `safe_heading` fan search, speed capped to stop before walls. A `/person_detected` lock within `notice_radius` triggers a stamina-limited sprint away from the robot.
-- **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m + feedforward of the track's bearing rate, `k_ff`), SearchProtocol (Nav2 goal in odom where the track was heading, `search_lead_secs` ahead capped at `search_max_distance`, then turn to the last-seen side), ReportProtocol (closes the incident once the search window ends), PatrolProtocol (Nav2 waypoints)]. Detector-agnostic: follows target_tracker's `/intruder/track` extrapolated to now (`use_track: false` = sensor_fusion's `/target` directly). Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses, incidents and follow bearing/range RMS), `/security_events` (JSON: intruder_detected / intruder_lost / intruder_reacquired / incident_closed, position in map when TF has map → odom, else odom), `/intruder_sightings` (one sphere per re-acquisition, not a goal). All timing runs on the node clock (sim time).
+- **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m + feedforward of the track's bearing rate, `k_ff`), SearchProtocol (Nav2 goal in odom where the track was heading, `search_lead_secs` ahead capped at `search_max_distance`, then turn to the last-seen side), SweepProtocol (Nav2 to the room_sweep viewpoints planned on the map when the intruder was lost, facing what each uncovers; needs `map_yaml` and map → odom), ReportProtocol (closes the incident once search and sweep end), PatrolProtocol (Nav2 waypoints of the zone `zones_file` schedules; without one the `waypoints` parameter; a zone switch waits for the current leg)]. Detector-agnostic: follows target_tracker's `/intruder/track` extrapolated to now (`use_track: false` = sensor_fusion's `/target` directly). Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses, incidents, restricted_entries, patrol_zone and follow bearing/range RMS), `/security_events` (JSON: intruder_detected / intruder_lost / intruder_reacquired / restricted_area / incident_closed, position in map when TF has map → odom, else odom; restricted_area needs map), `/intruder_sightings` (one sphere per re-acquisition, not a goal), `/guard_zones` (latched: restricted areas, patrol routes), `/sweep_viewpoints` (arrows). All timing runs on the node clock (sim time).
+- **guard_zones.py** (library): `config/guard_zones.yaml` (passed as `zones_file` by person_sim): named patrol zones, a schedule cycled on the node clock, restricted-area polygons (map frame). A YAML file because ROS parameters cannot nest.
+- **room_sweep.py** (library): greedy set cover on a 0.5 m grid of the saved map: viewpoints reachable from the robot that between them see the floor within `sweep_radius` of where the intruder was heading (line of sight on free cells), each with the heading toward what it adds.
 - **incident_log.py** (library): incident lifecycle behind `/security_events`; appends each event to `incident_dir`/incidents.jsonl (default `~/.ros/security_incidents`, '' = off) and names the alert snapshots saved from `snapshot_topic`.
 - **perf_monitor.py**: `make perf`: real-time factor, per-topic publisher count, sim-Hz and message age (now - stamp) on `/perf_monitor` + log. person_tracker also logs frames/s and mean YOLO/tracker ms every `stats_period`. Nav2's velocity_smoother publishes /cmd_vel on a 20 Hz wall timer, so it reads 20 / RTF sim Hz (~30 at RTF 0.67) from one publisher.
 - **system_monitor.py**: heartbeats → `/system_health`; `/trigger_estop` latches `/estop` (Bool, transient local) which the BT obeys; `/clear_estop` releases.
@@ -132,12 +134,15 @@ src/my_bot/
 │   ├── person_controller.py   # WALK/RUN/EXHAUSTED pedestrian, map-aware
 │   ├── clearance_map.py       # distance-to-wall lookups on the saved map (library)
 │   ├── security_guard_bt.py   # py_trees security guard
+│   ├── guard_zones.py         # patrol zones, schedule, restricted areas (library)
+│   ├── room_sweep.py          # sweep viewpoints on the saved map (library)
 │   ├── incident_log.py        # alert events + incidents.jsonl (library)
 │   └── system_monitor.py      # watchdog + e-stop
 ├── launch/                    # sim, nav_sim, ball_sim, person_sim, yolo_sim,
 │                              # navigation, slam, rsp
 ├── config/
 │   ├── behavior_params.yaml   # one ros__parameters section per behaviour node
+│   ├── guard_zones.yaml       # patrol zones + schedule + restricted areas (not a params file)
 │   ├── nav2_params.yaml       # Nav2 tuning (AMCL initial pose = spawn)
 │   ├── mapper_params_online_async.yaml
 │   └── navigation.rviz (sim, nav-sim) / perception.rviz / person.rviz
@@ -203,7 +208,7 @@ Nav2 requires a pre-built map (`maps/my_map.yaml` + `maps/my_map.pgm`). To creat
 2. Drive robot to explore
 3. Save map: `ros2 run nav2_map_server map_saver_cli -f /root/dev_ws/src/my_bot/maps/my_map`
 
-The same map drives person_controller's wall avoidance and is checked by the ball-path and patrol-waypoint tests, so re-run `make test` after re-mapping.
+The same map drives person_controller's wall avoidance and the guard's room sweep, and is checked by the ball-path, patrol-waypoint and guard-zone tests, so re-run `make test` after re-mapping.
 
 ### Common Issues
 

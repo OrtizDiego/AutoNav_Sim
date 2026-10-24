@@ -88,6 +88,16 @@ class ClearanceMap:
             return float(self._clear[row, col])
         return 0.0
 
+    def clearance_many(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        """Vectorised clearance(): same shape as ``xs``; 0 off the map."""
+        cols = np.floor((np.asarray(xs) - self.origin[0]) / self.resolution).astype(int)
+        rows = self.height - 1 - np.floor(
+            (np.asarray(ys) - self.origin[1]) / self.resolution).astype(int)
+        inside = (rows >= 0) & (rows < self.height) & (cols >= 0) & (cols < self.width)
+        out = np.zeros(cols.shape, dtype=np.float32)
+        out[inside] = self._clear[rows[inside], cols[inside]]
+        return out
+
     def free_distance(self, x: float, y: float, heading: float,
                       max_dist: float, min_clear: float,
                       step: Optional[float] = None) -> float:
