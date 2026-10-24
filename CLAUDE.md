@@ -57,6 +57,14 @@ make person-sim GUI=false   # any scenario without the Gazebo window (gzserver o
 ```
 `GUI=false` passes `gui:=false` to `sim.launch.py`: no gzclient, RViz shows the sim. With software rendering (CPU container) the Gazebo window costs CPU the simulation needs.
 
+### Evaluation (Phase 5)
+```bash
+make scenario NAME=sprint   # scripted person (config/scenarios.yaml), headless, rosbag, scored, exits
+make scenario NAME=hide GUI=true RVIZ=true RECORD=false   # watch it instead
+make scenarios              # walk_in, sprint, hide in a row
+```
+`scenario.launch.py` = person-sim with `scenario:=<name>` (person_controller walks the script) + `ros2 bag record` (no images) + `scenario_evaluator`; when the evaluator exits the launch shuts down. Report + bag in `~/.ros/autonav_scenarios/<name>_<date-time>/` (`report.json`: metrics, targets, PASS/FAIL). `make scenarios` stops only on launch errors, not on missed targets.
+
 ### Tools (second terminal)
 ```bash
 make teleop          # drive the robot
@@ -80,7 +88,7 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 - Simulates a differential drive robot (TurtleBot3 Waffle Pi meshes/dimensions) with 2D Lidar and RGB camera (320×240 at 15 Hz: at 640×480/30 Hz software rendering delivered 2–5 Hz and dragged the real-time factor down)
 - Publishes: `/scan` (Lidar), `/odom` (odometry), `/camera/image_raw` (camera)
 - Subscribes to: `/cmd_vel` (velocity commands)
-- World files: `room.world` (museum, vanilla), `ball.world` (museum + red ball), `person.world` (museum + pedestrian actor), `yolo.world` (flat ground + standing person). Shadows are off in every world (`<scene><shadows>0`; SDF's default is on). `sim.launch.py` takes `world:=`, `rviz_config:=` (default `navigation.rviz`) and `gui:=` (default true; false = no gzclient). It includes Gazebo inside a scoped `GroupAction`: gzserver declares `params_file:=''`, and launch configurations are global, so unscoped it would override Nav2's `params_file` default in any scenario that includes Nav2 afterwards. Scenarios that include `navigation.launch.py` also pass `map`/`params_file` explicitly. The museum block (incl. its `<state>` pose) must stay identical across the museum worlds: `maps/my_map` was built in it and its frame equals the world frame (robot spawns at the origin).
+- World files: `room.world` (museum, vanilla), `ball.world` (museum + red ball), `person.world` (museum + pedestrian actor), `yolo.world` (flat ground + standing person). Shadows are off in every world (`<scene><shadows>0`; SDF's default is on). `sim.launch.py` takes `world:=`, `rviz_config:=` (default `navigation.rviz`), `gui:=` (default true; false = no gzclient) and `rviz:=` (default true; scenario.launch.py defaults both to false). It includes Gazebo inside a scoped `GroupAction`: gzserver declares `params_file:=''`, and launch configurations are global, so unscoped it would override Nav2's `params_file` default in any scenario that includes Nav2 afterwards. Scenarios that include `navigation.launch.py` also pass `map`/`params_file` explicitly. The museum block (incl. its `<state>` pose) must stay identical across the museum worlds: `maps/my_map` was built in it and its frame equals the world frame (robot spawns at the origin).
 
 **SLAM Toolbox**
 - Runs asynchronous SLAM to generate `/map` from Lidar scans and odometry
@@ -103,7 +111,10 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 - **ball_controller.py**: drives the ball (`/ball/cmd_vel`, planar_move plugin, body frame, yaw held at 0) on a figure-eight checked against the map; flees a close robot, waits for a far one, pauses/reverses at random. `/ball/teleop` (TwistStamped, frame_id `robot`|`world`) overrides it while messages arrive.
 - **ball_teleop.py**: hold-to-move keyboard teleop for the ball.
 - **person_tracker.py**: YOLOv8n detection (pre/post-processing in `object_detector.py`; the network input size is read from the model, 320 px in the image) + OpenCV tracker (`tracker`: KCF by default, then CSRT → MIL fallback; CSRT was tens of ms per frame) + constant-velocity Kalman filter. YOLO runs in a `DetectionWorker` thread (`async_detection`, default true): every frame is tracked and published without waiting for inference; a result re-seeds the tracker on the frame YOLO saw and replays the frames since (`_history`). `async_detection: false` runs YOLO inline. `inference_threads` caps onnxruntime's threads (0 = all cores, which compete with gzserver). Publishes `/person_bbox` (PolygonStamped: top-left + bottom-right px, empty = none; header = the image's), `/person_track`, `/person_detected` (Bool), `/person_tracker/image`.
-- **person_controller.py**: Pedestrian behaviour (WALK / RUN / EXHAUSTED) publishing `/person/cmd_vel` for the actor plugin. Pure `PersonBrain` steers on `clearance_map.py` (distance transform of `maps/my_map`, passed as `map_yaml`): line-of-sight wander targets, `safe_heading` fan search, speed capped to stop before walls. A `/person_detected` lock within `notice_radius` triggers a stamina-limited sprint away from the robot.
+- **person_controller.py**: Pedestrian behaviour (WALK / RUN / EXHAUSTED) publishing `/person/cmd_vel` for the actor plugin. Pure `PersonBrain` steers on `clearance_map.py` (distance transform of `maps/my_map`, passed as `map_yaml`): line-of-sight wander targets, `safe_heading` fan search, speed capped to stop before walls. A `/person_detected` lock within `notice_radius` triggers a stamina-limited sprint away from the robot. With `scenario` set (from `scenarios_file`), `ScriptedWalker` walks that scenario's legs instead (same human limits, no stamina) and publishes `/scenario/status` (JSON, phase `done` at the end).
+- **scenario_script.py** (library): loads `config/scenarios.yaml`: per scenario a list of legs, each with an optional trigger (`wait_detected`, `wait_robot_within`), a point (`to`, `speed`) and a `pause`. test_scenarios.py walks every scenario on `maps/my_map` (routes keep `min_clearance`).
+- **scenario_metrics.py** (library): scores a run against ground truth. "In view" = inside the camera HFOV and `view_range`, line of sight on the map. Time to detect (first in view → first confirmed track within `match_radius` of the person), % in view after detection, % tracked while in view, track breaks (/min), false alarms (confirmed episodes never on the person), patrol coverage (0.5 m floor cells the camera has seen), guard state shares, `/security_events` counts; `check_targets()` against the limits.
+- **scenario_evaluator.py**: samples `/odom` (robot; odom = world at spawn), `/person/odom` (truth), `/intruder/track` (extrapolated with its velocity up to `track_timeout`), `/intruder/state`, `/security_guard/state`, `/security_events` at 10 Hz sim time; `linger_secs` after the scenario is done (or at `timeout_secs`, or on Ctrl+C) writes `report_path`, publishes `/scenario/report`, logs PASS/FAIL and exits.
 - **security_guard_bt.py**: py_trees tree Selector → [EmergencyStop, IntruderProtocol (follow at 2.5 m + feedforward of the track's bearing rate, `k_ff`), SearchProtocol (Nav2 goal in odom where the track was heading, `search_lead_secs` ahead capped at `search_max_distance`, then turn to the last-seen side), SweepProtocol (Nav2 to the room_sweep viewpoints planned on the map when the intruder was lost, facing what each uncovers; needs `map_yaml` and map → odom), ReportProtocol (closes the incident once search and sweep end), PatrolProtocol (Nav2 waypoints of the zone `zones_file` schedules; without one the `waypoints` parameter; a zone switch waits for the current leg)]. Detector-agnostic: follows target_tracker's `/intruder/track` extrapolated to now (`use_track: false` = sensor_fusion's `/target` directly). Publishes `/security_guard/state`, `/security_guard/metrics` (incl. track_losses, incidents, restricted_entries, patrol_zone and follow bearing/range RMS), `/security_events` (JSON: intruder_detected / intruder_lost / intruder_reacquired / restricted_area / incident_closed, position in map when TF has map → odom, else odom; restricted_area needs map), `/intruder_sightings` (one sphere per re-acquisition, not a goal), `/guard_zones` (latched: restricted areas, patrol routes), `/sweep_viewpoints` (arrows). All timing runs on the node clock (sim time).
 - **guard_zones.py** (library): `config/guard_zones.yaml` (passed as `zones_file` by person_sim): named patrol zones, a schedule cycled on the node clock, restricted-area polygons (map frame). A YAML file because ROS parameters cannot nest.
 - **room_sweep.py** (library): greedy set cover on a 0.5 m grid of the saved map: viewpoints reachable from the robot that between them see the floor within `sweep_radius` of where the intruder was heading (line of sight on free cells), each with the heading toward what it adds.
@@ -137,13 +148,17 @@ src/my_bot/
 │   ├── guard_zones.py         # patrol zones, schedule, restricted areas (library)
 │   ├── room_sweep.py          # sweep viewpoints on the saved map (library)
 │   ├── incident_log.py        # alert events + incidents.jsonl (library)
+│   ├── scenario_script.py     # scripted scenarios from scenarios.yaml (library)
+│   ├── scenario_metrics.py    # run metrics against ground truth (library)
+│   ├── scenario_evaluator.py  # make scenario: scores a run, writes report.json
 │   └── system_monitor.py      # watchdog + e-stop
 ├── launch/                    # sim, nav_sim, ball_sim, person_sim, yolo_sim,
-│                              # navigation, slam, rsp
+│                              # scenario, navigation, slam, rsp
 ├── config/
 │   ├── behavior_params.yaml   # one ros__parameters section per behaviour node
 │   ├── guard_zones.yaml       # patrol zones + schedule + restricted areas (not a params file)
 │   ├── nav2_params.yaml       # Nav2 tuning (AMCL initial pose = spawn)
+│   ├── scenarios.yaml         # scripted intruder scenarios (make scenario)
 │   ├── mapper_params_online_async.yaml
 │   └── navigation.rviz (sim, nav-sim) / perception.rviz / person.rviz
 ├── meshes/                    # TurtleBot3 Waffle Pi STL meshes (Apache-2.0, see meshes/README.md)
@@ -228,7 +243,7 @@ ros2 topic pub -1 /initialpose geometry_msgs/PoseWithCovarianceStamped "{ header
 ## Entry Points (Console Scripts)
 
 Defined in `setup.py` (test_scripts.py checks they match the modules):
-`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`, `perf_monitor`, `target_tracker`.
+`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`, `perf_monitor`, `target_tracker`, `scenario_evaluator`.
 
 Run with `ros2 run my_bot <script_name>`, but prefer the scenario make targets, which load `behavior_params.yaml` and `use_sim_time`.
 

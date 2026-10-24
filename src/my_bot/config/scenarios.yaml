@@ -1,0 +1,50 @@
+# Scripted intruder scenarios for `make scenario NAME=<name>` (Phase 5).
+#
+# person_controller walks the legs in order (scenario_script.py documents
+# the keys); scenario_evaluator scores the guard against the person's
+# ground truth and writes a report. Points are in the map frame (= world:
+# the robot spawns at the origin). The person starts at person.world's
+# actor pose, (0.5, 7.5) in the north hall.
+#
+# test_scenarios.py walks every scenario on maps/my_map: each leg must keep
+# person_controller's min_clearance from the walls and exhibits.
+
+walk_in:
+  description: >-
+    Waits in the north hall until the patrol comes close, then walks
+    calmly across the hall and into the west gallery. Time to detect,
+    following, track breaks.
+  legs:
+    - {wait_robot_within: 6.0}
+    - {to: [-3.0, 9.0]}
+    - {to: [-6.5, 8.5]}
+    - {to: [-4.3, 7.0]}
+    - {to: [-4.3, 4.5]}
+    - {to: [-4.0, 1.0], pause: 20.0}
+
+sprint:
+  description: >-
+    Waits to be seen, then sprints (2.5 m/s, about as far as person
+    controller's stamina allows) out of the hall into the west gallery
+    and walks on, out of breath. Re-acquisition and the search.
+  legs:
+    - {wait_detected: true}
+    - {to: [-4.2, 7.5], speed: 2.5}
+    - {to: [-4.2, 4.0], speed: 2.5}
+    - {to: [-4.0, 0.8], speed: 0.5}
+    - {to: [-6.0, -1.5], speed: 0.5, pause: 20.0}
+
+hide:
+  description: >-
+    Waits to be seen, walks briskly down the east side and hides behind
+    the south-east exhibit block for 40 s, then steps out. Track breaks
+    behind an exhibit, false alarms, the search.
+  legs:
+    - {wait_detected: true}
+    - {to: [4.5, 5.5], speed: 1.2}
+    - {to: [4.3, -3.5], speed: 1.2}
+    - {to: [3.0, -4.6], speed: 1.2}
+    - {to: [3.0, -7.4], speed: 1.2}
+    - {to: [1.7, -7.6], speed: 1.2, pause: 40.0}
+    - {to: [3.0, -7.4]}
+    - {to: [3.0, -4.6], pause: 20.0}
