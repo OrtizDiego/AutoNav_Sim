@@ -150,11 +150,15 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.26
+      # 0.8 m/s (TurtleBot3's 0.26 before Phase 4): faster than the
+      # pedestrian's walk (0.7 m/s) so the guard's Nav2 search can catch
+      # up, and below its direct-follow cap (security_guard_bt
+      # max_linear_speed 1.0). test_nav2_params.py keeps these in sync.
+      max_vel_x: 0.8
       max_vel_y: 0.0
       max_vel_theta: 1.0
       min_speed_xy: 0.0
-      max_speed_xy: 0.26
+      max_speed_xy: 0.8
       min_speed_theta: 0.0
       # Add high threshold velocity for turtlebot 3 issue.
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
@@ -196,8 +200,10 @@ local_costmap:
       robot_base_frame: base_link
       use_sim_time: True
       rolling_window: true
-      width: 3
-      height: 3
+      # 5 m: DWB looks sim_time (1.7 s) * 0.8 m/s = 1.4 m ahead, beyond
+      # the 1.5 m half-width minus the robot's offset of the old 3 m window
+      width: 5
+      height: 5
       resolution: 0.05
       robot_radius: 0.2
       # footprint: "[ [0.15, 0.15], [0.15, -0.15], [-0.15, -0.15], [-0.15, 0.15] ]"
@@ -353,8 +359,8 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.26, 0.0, 1.0]
-    min_velocity: [-0.26, 0.0, -1.0]
+    max_velocity: [0.8, 0.0, 1.0]
+    min_velocity: [-0.8, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
     odom_topic: "odom"

@@ -23,6 +23,7 @@ published. ``wire`` connects nodes like a ROS graph for integration tests.
 Tests that need a real ROS environment (launch files) run in a subprocess.
 """
 
+import math
 import os
 import sys
 import types
@@ -353,6 +354,31 @@ class BasicNavigator:
         self.done = False
 
 
+class TransformException(Exception):
+    pass
+
+
+class TfBuffer:
+    """Fake tf2_ros.Buffer: ``transforms[(target, source)]`` = (x, y, yaw)."""
+
+    def __init__(self, *args, **kwargs):
+        self.transforms = {}
+
+    def lookup_transform(self, target, source, time, *args, **kwargs):
+        if (target, source) not in self.transforms:
+            raise TransformException(f'{source} -> {target} unknown')
+        x, y, yaw = self.transforms[(target, source)]
+        rotation = _quat()
+        rotation.z, rotation.w = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+        return types.SimpleNamespace(transform=types.SimpleNamespace(
+            translation=_Vec(x, y), rotation=rotation))
+
+
+class TransformListener:
+    def __init__(self, buffer, node, *args, **kwargs):
+        self.buffer = buffer
+
+
 def _module(name, **attrs):
     """Install a fake module, replacing the real one if a plugin loaded it.
 
@@ -372,6 +398,9 @@ def _plain(*names):
 _module('rclpy', ok=lambda: True, init=lambda **kw: None,
         spin=lambda node: None, shutdown=lambda: None)
 _module('rclpy.node', Node=Node)
+_module('rclpy.time', Time=Time)
+_module('tf2_ros', Buffer=TfBuffer, TransformListener=TransformListener,
+        TransformException=TransformException)
 _module('rclpy.qos', qos_profile_sensor_data=None, QoSProfile=_Msg,
         DurabilityPolicy=types.SimpleNamespace(TRANSIENT_LOCAL=1, VOLATILE=2),
         HistoryPolicy=types.SimpleNamespace(KEEP_LAST=1, KEEP_ALL=2),

@@ -19,7 +19,11 @@ the detection latency with odometry), so the same proportional law follows
 a ball or a person:
 
   linear.x  = k_lin * (range - desired_distance), slowed while turning
-  angular.z = k_yaw * bearing
+  angular.z = k_yaw * bearing + yaw_rate_ff
+
+``yaw_rate_ff`` is an optional feedforward: the rate at which the target's
+own motion turns its bearing (see target_estimate.TargetEstimate.bearing_rate).
+A P-loop alone lags a target crossing the view by rate / k_yaw.
 
 Forward motion stops if anything is closer than ``safety_distance`` ahead.
 """
@@ -33,13 +37,14 @@ def compute_command(angle: float, range_m: Optional[float],
                     max_lin: float, max_back: float, max_yaw: float,
                     deadband: float = 0.15,
                     front_clear: float = float('inf'),
-                    safety_distance: float = 0.6) -> Tuple[float, float]:
+                    safety_distance: float = 0.6,
+                    yaw_rate_ff: float = 0.0) -> Tuple[float, float]:
     """Return (linear.x, angular.z) for one control step.
 
     ``angle`` is the robot-frame angle to the target (positive = left).
     Without a range the robot only turns toward the target.
     """
-    w = max(-max_yaw, min(max_yaw, k_yaw * angle))
+    w = max(-max_yaw, min(max_yaw, k_yaw * angle + yaw_rate_ff))
     if range_m is None or not math.isfinite(range_m) or range_m <= 0.0:
         return 0.0, w
     error = range_m - desired_distance

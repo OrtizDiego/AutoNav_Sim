@@ -24,13 +24,16 @@
   6. target_tracker: odom-frame EKF (position + velocity) on /target and
      person-sized lidar clusters -> /intruder/track once confirmed.
   7. security_guard_bt: py_trees tree. Patrols Nav2 waypoints; when the
-     intruder track is confirmed it cancels the patrol and follows at 2.5 m; when the
-     intruder is lost it searches toward the last-seen side, then resumes
-     the patrol. Latched e-stop from system_monitor overrides everything.
+     intruder track is confirmed it cancels the patrol, raises an alert
+     and follows at 2.5 m; when the intruder is lost it drives (Nav2) to
+     where the track was heading, turns toward the last-seen side, then
+     reports the incident and resumes the patrol. Latched e-stop from
+     system_monitor overrides everything.
   8. system_monitor: sensor watchdog, /trigger_estop and /clear_estop.
 
 Watch /security_guard/state for PatrolProtocol / IntruderProtocol /
-SearchProtocol / EmergencyStop.
+SearchProtocol / ReportProtocol / EmergencyStop, and /security_events for
+the alerts (also in ~/.ros/security_incidents/incidents.jsonl).
 """
 
 import os

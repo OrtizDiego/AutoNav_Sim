@@ -31,19 +31,23 @@ from my_bot.security_guard_bt import (
     BB_FRONT_CLEAR,
     BB_LAST_SEEN,
     BB_NAV_GOAL_SENT,
+    BB_SEARCH_GOAL,
     BB_TARGET_BEARING,
     BB_TARGET_RANGE,
+    BB_TARGET_YAW_RATE,
     BB_WP_INDEX,
     CancelPatrol,
     EStopActive,
     FollowGains,
     FollowIntruder,
     HaltRobot,
+    IncidentOpen,
     IncrementWaypoint,
     IntruderRecentlyLost,
     IntruderVisible,
     NavigateToWaypoint,
-    SearchLastSeen,
+    ReportIncident,
+    SearchPredictedPath,
     WaitAtWaypoint,
     active_protocol,
     build_security_guard_tree,
@@ -165,14 +169,66 @@ class TestActions:
         FollowIntruder(pub, FollowGains()).update()
         assert pub.last.linear.x == 0.0
 
-    def test_search_turns_to_last_seen_side(self):
+    def test_follow_feedforward_leads_a_crossing_target(self):
+        _bb(**{BB_TARGET_BEARING: 0.0, BB_TARGET_RANGE: 2.5, BB_TARGET_YAW_RATE: 0.4})
         pub = Recorder()
+        FollowIntruder(pub, FollowGains()).update()
+        assert pub.last.angular.z == pytest.approx(0.4)
+        FollowIntruder(pub, FollowGains(k_ff=0.0)).update()
+        assert pub.last.angular.z == 0.0
+
+    def _search(self, nav, pub):
+        node = SearchPredictedPath(nav, pub, 0.6)
+        node.initialise()
+        return node
+
+    def test_search_without_a_goal_turns_to_last_seen_side(self):
+        nav, pub = FakeNavigator(), Recorder()
         _bb(**{BB_TARGET_BEARING: -0.2})
-        SearchLastSeen(pub, 0.6).update()
+        assert self._search(nav, pub).update() == Status.RUNNING
         assert pub.last.angular.z == pytest.approx(-0.6)
         _bb(**{BB_TARGET_BEARING: 0.2})
-        SearchLastSeen(pub, 0.6).update()
+        self._search(nav, pub).update()
         assert pub.last.angular.z == pytest.approx(0.6)
+        assert nav.goals == []
+
+    def test_search_drives_to_the_goal_then_turns(self):
+        nav, pub = FakeNavigator(), Recorder()
+        _bb(**{BB_SEARCH_GOAL: (4.0, 1.5), BB_TARGET_BEARING: 0.5})
+        node = self._search(nav, pub)
+        assert len(nav.goals) == 1
+        goal = nav.goals[0]
+        assert goal.header.frame_id == 'odom'
+        assert (goal.pose.position.x, goal.pose.position.y) == (4.0, 1.5)
+        assert node.update() == Status.RUNNING
+        assert pub.msgs == []                         # Nav2 drives
+        nav.done = True                               # arrived (or failed)
+        _bb(**{BB_TARGET_BEARING: -0.1})              # last seen on the right
+        node.update()
+        assert pub.last.angular.z == pytest.approx(-0.6)
+        _bb(**{BB_TARGET_BEARING: 0.3})               # latched: keeps turning
+        node.update()
+        assert pub.last.angular.z == pytest.approx(-0.6)
+
+    def test_search_cancels_the_patrol_and_its_own_drive(self):
+        nav, pub = FakeNavigator(), Recorder()
+        nav.done = False                              # patrol goal active
+        _bb(**{BB_NAV_GOAL_SENT: True, BB_SEARCH_GOAL: (1.0, 0.0)})
+        node = self._search(nav, pub)
+        assert nav.cancelled == 1
+        assert py_trees.blackboard.Blackboard.get(BB_NAV_GOAL_SENT) is False
+        node.terminate(Status.INVALID)                # e.g. intruder seen again
+        assert nav.cancelled == 2
+        node.terminate(Status.INVALID)
+        assert nav.cancelled == 2
+
+    def test_report(self):
+        is_open, reports = [True], []
+        assert IncidentOpen(lambda: is_open[0]).update() == Status.SUCCESS
+        is_open[0] = False
+        assert IncidentOpen(lambda: is_open[0]).update() == Status.FAILURE
+        assert ReportIncident(lambda: reports.append(1)).update() == Status.SUCCESS
+        assert reports == [1]
 
     def test_cancel_patrol(self):
         nav = FakeNavigator()
@@ -227,7 +283,8 @@ class TestTree:
         tree = self._tree(FakeNavigator(), Recorder())
         assert isinstance(tree.root, py_trees.composites.Selector)
         assert [c.name for c in tree.root.children] == [
-            'EmergencyStop', 'IntruderProtocol', 'SearchProtocol', 'PatrolProtocol']
+            'EmergencyStop', 'IntruderProtocol', 'SearchProtocol',
+            'ReportProtocol', 'PatrolProtocol']
         for child in tree.root.children:
             assert isinstance(child, py_trees.composites.Sequence)
 
@@ -272,6 +329,34 @@ class TestTree:
         tree.tick()
         assert len(nav.goals) == 2
         assert nav.goals[1].pose.position.x == nav.goals[0].pose.position.x == 5.13
+
+    def test_search_drives_then_reports_then_patrols(self):
+        nav, pub = FakeNavigator(), Recorder()
+        incident = {'open': False, 'reports': 0}
+
+        def report():
+            incident['reports'] += 1
+            incident['open'] = False
+        tree = build_security_guard_tree(
+            nav, pub, WAYPOINTS, search_secs=6.0,
+            incident_open=lambda: incident['open'], report=report)
+        tree.tick()                                   # patrol goal
+        assert active_protocol(tree) == 'PatrolProtocol'
+        incident['open'] = True                       # the node alerted
+        _bb(**{BB_LAST_SEEN: time.monotonic() - 2.0, BB_SEARCH_GOAL: (2.0, 3.0)})
+        tree.tick()
+        assert active_protocol(tree) == 'SearchProtocol'
+        assert nav.cancelled == 1                     # patrol goal dropped
+        assert nav.goals[-1].header.frame_id == 'odom'
+        _bb(**{BB_LAST_SEEN: time.monotonic() - 60.0})  # search gave up
+        tree.tick()
+        assert active_protocol(tree) == 'ReportProtocol'
+        assert nav.cancelled == 2                     # search drive dropped
+        assert incident['reports'] == 1
+        tree.tick()
+        assert active_protocol(tree) == 'PatrolProtocol'
+        assert nav.goals[-1].header.frame_id == 'map'
+        assert incident['reports'] == 1
 
     def test_estop_overrides_everything(self):
         nav, pub = FakeNavigator(), Recorder()
