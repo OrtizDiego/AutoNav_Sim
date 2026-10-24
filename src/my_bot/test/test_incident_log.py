@@ -18,7 +18,7 @@ import json
 import os
 
 from my_bot.incident_log import (
-    CLOSED, DETECTED, IncidentLog, LOG_NAME, LOST, REACQUIRED)
+    CLOSED, DETECTED, IncidentLog, LOG_NAME, LOST, REACQUIRED, RESTRICTED)
 
 
 def _log(directory=''):
@@ -66,3 +66,16 @@ def test_home_directory_is_expanded(monkeypatch, tmp_path):
     log = IncidentLog('~/guard')
     assert log.directory == str(tmp_path / 'guard')
     assert log.sighted(0.0, None, '')['wall']         # real wall clock
+
+
+def test_restricted_area_is_reported_once_per_incident():
+    log = _log()
+    assert log.entered_area(1.0, 'vault', (1.0, 1.0), 'map') is None  # nothing open
+    log.sighted(2.0, (0.0, 0.0), 'map')
+    event = log.entered_area(3.0, 'vault', (1.0, 1.0), 'map')
+    assert (event['event'], event['area'], event['x']) == (RESTRICTED, 'vault', 1.0)
+    assert log.entered_area(4.0, 'vault', (1.2, 1.0), 'map') is None
+    assert log.entered_area(5.0, 'storage', (9.0, 1.0), 'map')['area'] == 'storage'
+    assert log.close(6.0)['areas'] == ['vault', 'storage']
+    log.sighted(7.0, None, '')
+    assert log.entered_area(8.0, 'vault', (1.0, 1.0), 'map') is not None

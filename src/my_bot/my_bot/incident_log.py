@@ -22,7 +22,9 @@ step is an event dict, published by security_guard_bt as JSON on
   intruder_detected   incident opened (position, snapshot)
   intruder_lost       out of sight, searching
   intruder_reacquired seen again before the search gave up (position)
-  incident_closed     search gave up (duration, sightings, losses)
+  restricted_area     the intruder entered a restricted area (area, position)
+  incident_closed     search and sweep gave up (duration, sightings,
+                      losses, areas)
 
 Positions carry the frame they are in (``map`` when the node could
 transform them, else ``odom``). Times are simulation seconds (``t``) plus
@@ -39,6 +41,7 @@ from typing import Optional, Tuple
 DETECTED = 'intruder_detected'
 LOST = 'intruder_lost'
 REACQUIRED = 'intruder_reacquired'
+RESTRICTED = 'restricted_area'
 CLOSED = 'incident_closed'
 
 LOG_NAME = 'incidents.jsonl'
@@ -80,7 +83,7 @@ class IncidentLog:
         if self.current is None:
             self.count += 1
             self.current = {'id': self.count, 'start': t, 'sightings': 0,
-                            'losses': 0}
+                            'losses': 0, 'areas': []}
             kind = DETECTED
         else:
             kind = REACQUIRED
@@ -99,6 +102,20 @@ class IncidentLog:
         self.current['losses'] += 1
         return self._write(event)
 
+    def entered_area(self, t: float, area: str,
+                     where: Optional[Tuple[float, float]],
+                     frame: str) -> Optional[dict]:
+        """Intruder inside restricted ``area``: once per area and incident.
+
+        None if no incident is open or this area was already reported.
+        """
+        if self.current is None or area in self.current['areas']:
+            return None
+        event = self._event(RESTRICTED, t, where, frame)
+        event['area'] = area
+        self.current['areas'].append(area)
+        return self._write(event)
+
     def close(self, t: float) -> Optional[dict]:
         """Search gave up: report the incident; None if none is open."""
         if self.current is None:
@@ -106,7 +123,8 @@ class IncidentLog:
         event = self._event(CLOSED, t, None, '')
         event.update(duration=round(t - self.current['start'], 2),
                      sightings=self.current['sightings'],
-                     losses=self.current['losses'])
+                     losses=self.current['losses'],
+                     areas=list(self.current['areas']))
         self.current = None
         return self._write(event)
 

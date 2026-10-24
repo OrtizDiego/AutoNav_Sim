@@ -248,6 +248,28 @@ Visualization Manager:
       Reliability Policy: Reliable
       Value: /intruder/markers
     Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Guard zones
+    Namespaces: {}
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /guard_zones
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Sweep viewpoints
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /sweep_viewpoints
+    Value: true
   - Class: rviz_default_plugins/Image
     Enabled: true
     Max Value: 1
