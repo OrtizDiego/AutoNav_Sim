@@ -396,16 +396,21 @@ def test_person_params_dataclass_matches_node_defaults():
         assert declared[name] == value, name
 
 
-def _actor(world):
+def _actor(world, name='person_intruder'):
     root = ET.parse(os.path.join(PKG_DIR, 'worlds', world)).getroot()
-    actor = root.find('.//actor[@name="person_intruder"]')
+    actor = root.find(f'.//actor[@name="{name}"]')
     assert actor is not None
     return actor
 
 
-@pytest.mark.parametrize('world', ['person.world', 'yolo.world'])
-def test_actor_uses_plugin_not_script(world):
-    actor = _actor(world)
+@pytest.mark.parametrize('world, name, namespace', [
+    ('person.world', 'person_intruder', '/person'),
+    ('yolo.world', 'person_intruder', '/person'),
+    ('two_person.world', 'person_intruder', '/person'),
+    ('two_person.world', 'second_person', '/person2'),
+])
+def test_actor_uses_plugin_not_script(world, name, namespace):
+    actor = _actor(world, name)
     # A <script> trajectory would override the plugin's pose every frame
     assert actor.find('script') is None
     anims = {a.get('name'): a.findtext('filename')
@@ -413,12 +418,25 @@ def test_actor_uses_plugin_not_script(world):
     assert anims == {'walking': 'walk.dae', 'running': 'run.dae'}
     plugin = actor.find('plugin')
     assert plugin.get('filename') == 'libperson_actor_plugin.so'
-    assert plugin.findtext('ros/namespace') == '/person'
+    assert plugin.findtext('ros/namespace') == namespace
 
 
 def test_person_spawns_on_open_floor(museum):
     x, y = (float(v) for v in _actor('person.world').findtext('pose').split()[:2])
     assert museum.clearance(x, y) >= 1.0
+
+
+def test_two_person_world_is_person_world_plus_one():
+    """Same intruder spawn; the second actor where scenarios.yaml expects it."""
+    def actors(world):
+        root = ET.parse(os.path.join(PKG_DIR, 'worlds', world)).getroot()
+        return {a.get('name'): a.findtext('pose') for a in root.iter('actor')}
+    person, two = actors('person.world'), actors('two_person.world')
+    assert set(two) == set(person) | {'second_person'}
+    assert two['person_intruder'] == person['person_intruder']
+    x, y, *_, yaw = (float(v) for v in two['second_person'].split())
+    assert (x, y) == (5.0, 6.0)  # test_scenarios.SECOND_SPAWN
+    assert math.cos(yaw) < -0.99  # facing west, into the hall
 
 
 def test_yolo_person_stands_in_front_of_the_camera():
@@ -430,7 +448,7 @@ def test_yolo_person_stands_in_front_of_the_camera():
 
 
 @pytest.mark.parametrize('world', ['room.world', 'ball.world', 'person.world',
-                                   'yolo.world'])
+                                   'two_person.world', 'yolo.world'])
 def test_world_has_its_own_floor_and_sun(world):
     # An <include> of model://ground_plane only resolves with Gazebo's model
     # path set; without it the world has no floor and the robot falls.

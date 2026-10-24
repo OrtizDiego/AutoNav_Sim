@@ -25,9 +25,11 @@ import pytest
 from std_msgs.msg import String
 
 from my_bot import scenario_evaluator as se
+from my_bot import scenario_metrics as sm
 from my_bot.clearance_map import ClearanceMap
 from my_bot.scenario_metrics import (
-    FloorCoverage, ScenarioMetrics, check_targets, format_report, in_camera_view)
+    FloorCoverage, ScenarioMetrics, check_targets, format_report, in_camera_view,
+    smoke_failures)
 
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_YAML = os.path.join(PKG_DIR, 'maps', 'my_map.yaml')
@@ -159,6 +161,50 @@ class TestScenarioMetrics:
         assert check_targets(r, {'max_time_to_detect_s': 5.0}) == [
             'the person was never detected']
 
+    def test_a_single_person_run_reports_no_second_person(self):
+        m = self._metrics()
+        _feed(m, [(2.0, self.ROBOT, (4.0, 0.0), 'confirmed', (4.0, 0.0), '')])
+        r = m.report()
+        assert r['track_switches'] == 0 and r['second_person_track_pct'] is None
+
+    def test_a_track_on_the_second_person_is_a_switch_not_a_false_alarm(self):
+        m = self._metrics()
+        intruder, second = (4.0, 0.0), (4.0, 2.5)
+        t = 0.0
+        for secs, track in [(2.0, intruder), (1.0, second), (1.0, intruder)]:
+            for _ in range(int(round(secs / 0.1))):
+                m.add(t, self.ROBOT, intruder, 'confirmed', track, '', others=[second])
+                t += 0.1
+        r = m.report()
+        assert r['track_switches'] == 2   # intruder -> second -> intruder
+        assert r['track_breaks'] == 0
+        assert r['false_alarms'] == 0 and r['false_track_pct'] == 0.0
+        assert r['second_person_track_pct'] == pytest.approx(25.0, abs=3.0)
+        assert r['tracked_in_view_pct'] == pytest.approx(75.0, abs=3.0)
+        assert check_targets(r, {'max_track_switches': 0.0}) == [
+            'track_switches 2 (max 0.0)']
+
+    def test_an_episode_only_on_the_second_person_is_no_false_alarm(self):
+        m = self._metrics()
+        t = 0.0
+        for _ in range(20):
+            m.add(t, self.ROBOT, (5.0, 6.0), 'confirmed', (4.0, 2.4), '',
+                  others=[(4.0, 2.5)])
+            t += 0.1
+        r = m.report()
+        assert r['false_alarms'] == 0 and r['track_switches'] == 0
+        assert r['time_to_detect_s'] is None  # the intruder was never tracked
+        assert r['second_person_track_pct'] == pytest.approx(100.0)
+
+    def test_the_nearer_person_wins(self):
+        m = self._metrics()
+        # Both within match_radius; the track is nearer the second person
+        m.add(0.0, self.ROBOT, (4.0, 0.0), 'confirmed', (4.0, 0.7), '',
+              others=[(4.0, 1.0)])
+        m.add(0.1, self.ROBOT, (4.0, 0.0), 'confirmed', (4.0, 0.7), '',
+              others=[(4.0, 1.0)])
+        assert m.report()['second_person_track_pct'] == 100.0
+
     def test_events_are_counted(self):
         m = self._metrics()
         for kind in ('intruder_detected', 'intruder_lost', 'intruder_detected'):
@@ -178,6 +224,39 @@ def test_check_targets():
     text = format_report('sprint', report, ['x'])
     assert text.startswith('scenario sprint: FAIL') and 'missed: x' in text
     assert format_report('sprint', report, []).startswith('scenario sprint: PASS')
+
+
+class TestSmoke:
+
+    GOOD = {'outcome': 'completed', 'time_to_detect_s': 3.0,
+            'events': {'intruder_detected': 1},
+            'guard_state_pct': {'PatrolProtocol': 80.0}}
+
+    def test_a_run_that_closed_the_loop_passes(self):
+        assert smoke_failures(self.GOOD) == []
+
+    def test_what_fails(self):
+        assert smoke_failures(None) == ['no report: the evaluator never finished']
+        bad = {'outcome': 'timeout', 'time_to_detect_s': None, 'events': {},
+               'guard_state_pct': {}}
+        assert smoke_failures(bad) == [
+            'outcome timeout (want completed)', 'the person was never detected',
+            'no intruder_detected event from the guard',
+            'no /security_guard/state received']
+
+    def test_the_targets_are_not_checked(self):
+        # A slow runner misses the run's targets; the smoke test does not care
+        assert smoke_failures({**self.GOOD, 'passed': False, 'time_to_detect_s': 40.0}) == []
+
+    def test_cli(self, tmp_path, capsys):
+        path = tmp_path / 'report.json'
+        path.write_text(json.dumps(self.GOOD))
+        assert sm.main(['smoke', str(path)]) == 0
+        assert 'smoke test: PASS' in capsys.readouterr().out
+        assert sm.main(['smoke', str(tmp_path / 'missing.json')]) == 1
+        out = capsys.readouterr().out
+        assert 'FAIL' in out and 'never finished' in out
+        assert sm.main([]) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +287,9 @@ class TestEvaluatorNode:
 
     def test_interface(self, node):
         assert set(node.subscriptions) == {
-            '/odom', '/person/odom', '/intruder/track', '/intruder/state',
-            '/security_guard/state', '/security_events', '/scenario/status'}
+            '/odom', '/person/odom', '/person2/odom', '/intruder/track',
+            '/intruder/state', '/security_guard/state', '/security_events',
+            '/scenario/status'}
         assert set(node.publishers) == {'/scenario/report'}
         assert node.timers[0].period == pytest.approx(0.1)
 
@@ -285,6 +365,21 @@ class TestEvaluatorNode:
         report = node.metrics.report()
         assert report['tracked_in_view_pct'] == pytest.approx(50.0, abs=3.0)
         assert report['false_track_pct'] == 0.0 and report['false_alarms'] == 0
+
+    def test_scores_the_second_person(self, node):
+        sub = node.subscriptions
+        sub['/odom'](_odom(0.0, 0.0, yaw=math.pi / 2))
+        sub['/person/odom'](_odom(0.0, 2.0))
+        sub['/person2/odom'](_odom(1.5, 3.0))
+        sub['/intruder/state'](String(data='confirmed'))
+        for track, secs in [((0.0, 2.0), 1.0), ((1.5, 3.0), 1.0)]:
+            for _ in range(10):
+                sub['/intruder/track'](_odom(*track))
+                self._tick(node, 0.1)
+        report = node.metrics.report()
+        assert report['track_switches'] == 1 and report['false_alarms'] == 0
+        assert report['second_person_track_pct'] == pytest.approx(50.0, abs=6.0)
+        assert node.limits['max_track_switches'] == 0.0
 
     def test_timeout(self, node):
         node.subscriptions['/odom'](_odom(0.0, 0.0))

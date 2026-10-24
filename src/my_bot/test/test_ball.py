@@ -94,7 +94,7 @@ def test_vanilla_world_has_no_ball_or_person():
     assert root.find('.//actor') is None
 
 
-@pytest.mark.parametrize('world', ['ball.world', 'person.world'])
+@pytest.mark.parametrize('world', ['ball.world', 'person.world', 'two_person.world'])
 def test_museum_matches_the_mapped_world(world):
     """The map was built in room.world; scenario worlds must not move it."""
     def museum_xml(root):

@@ -31,6 +31,7 @@ Subscribes
 ----------
 /odom                    nav_msgs/Odometry  robot pose (odom = world at spawn)
 /person/odom             nav_msgs/Odometry  person ground truth (actor plugin)
+/person2/odom            nav_msgs/Odometry  second person (two-person scenarios)
 /intruder/track          nav_msgs/Odometry  target_tracker's confirmed track
 /intruder/state          std_msgs/String    none | tentative | confirmed | lost
 /security_guard/state    std_msgs/String    the guard's active protocol
@@ -78,6 +79,7 @@ class ScenarioEvaluatorNode(Node):
         self.declare_parameter('match_radius', 1.5)
         self.declare_parameter('coverage_cell', 0.5)
         self.declare_parameter('track_timeout', 2.0)
+        self.declare_parameter('second_person_topic', '/person2/odom')
         self.declare_parameter('linger_secs', 30.0)
         self.declare_parameter('timeout_secs', 600.0)
         # Targets (< 0 = not checked); the first three are the plan's.
@@ -85,6 +87,7 @@ class ScenarioEvaluatorNode(Node):
         self.declare_parameter('min_tracked_in_view_pct', 80.0)
         self.declare_parameter('max_track_breaks_per_min', 1.0)
         self.declare_parameter('max_false_alarms', 0.0)
+        self.declare_parameter('max_track_switches', 0.0)
         self.declare_parameter('min_patrol_coverage_pct', -1.0)
 
         def gp(name):
@@ -109,6 +112,7 @@ class ScenarioEvaluatorNode(Node):
 
         self._robot = None
         self._person = None
+        self._second = None
         self._track = None  # (x, y, vx, vy, receipt time)
         self._track_state = 'none'
         self._guard_state = ''
@@ -120,6 +124,8 @@ class ScenarioEvaluatorNode(Node):
         self._report_pub = self.create_publisher(String, '/scenario/report', 10)
         self.create_subscription(Odometry, '/odom', self._robot_cb, 10)
         self.create_subscription(Odometry, '/person/odom', self._person_cb, 10)
+        self.create_subscription(
+            Odometry, str(gp('second_person_topic')), self._second_cb, 10)
         self.create_subscription(Odometry, '/intruder/track', self._track_cb, 10)
         self.create_subscription(String, '/intruder/state', self._track_state_cb, 10)
         self.create_subscription(String, '/security_guard/state', self._guard_cb, 10)
@@ -141,6 +147,9 @@ class ScenarioEvaluatorNode(Node):
 
     def _person_cb(self, msg: Odometry) -> None:
         self._person = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+
+    def _second_cb(self, msg: Odometry) -> None:
+        self._second = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
     def _track_cb(self, msg: Odometry) -> None:
         p, v = msg.pose.pose.position, msg.twist.twist.linear
@@ -190,7 +199,8 @@ class ScenarioEvaluatorNode(Node):
             return  # no odometry yet: the simulation is still starting
         now = self._now()
         self.metrics.add(now, self._robot, self._person, self._track_state,
-                         self._track_now(now), self._guard_state)
+                         self._track_now(now), self._guard_state,
+                         others=[self._second] if self._second else [])
         if self._finish_at is not None and now >= self._finish_at:
             self.finish('completed')
         elif now - self.metrics.start >= self._timeout:

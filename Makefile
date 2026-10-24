@@ -32,12 +32,13 @@ SCENARIO_ARGS := gui:=$(GUI)
 # is given on the command line. Report + rosbag in ~/.ros/autonav_scenarios.
 NAME ?= walk_in
 RECORD ?= true
-SCENARIO_NAMES := walk_in sprint hide
+# smoke is left out: it is the CI smoke test's short run (make smoke)
+SCENARIO_NAMES := walk_in sprint hide crossing
 ON_REQUEST = $(if $(filter command line,$(origin $(1))),$($(1)),false)
 
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
-        ball-sim teleop-ball person-sim yolo-sim scenario scenarios perf stop
+        ball-sim teleop-ball person-sim yolo-sim scenario scenarios smoke perf stop
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -69,6 +70,7 @@ help:
 	@echo "  scenario NAME=x - One scripted run: $(SCENARIO_NAMES)"
 	@echo "                    (GUI=true RVIZ=true to watch, RECORD=false: no rosbag)"
 	@echo "  scenarios       - All of them in a row; reports in ~/.ros/autonav_scenarios"
+	@echo "  smoke           - Headless smoke test (as in CI): short run, checks the stack came up"
 	@echo ""
 	@echo "Tools (run next to a scenario, in a second terminal):"
 	@echo "  teleop          - Drive the robot with the keyboard"
@@ -149,6 +151,9 @@ scenario:
 
 scenarios:
 	@for name in $(SCENARIO_NAMES); do $(MAKE) --no-print-directory scenario NAME=$$name || exit 1; done
+
+smoke:
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && bash src/smoke_test.sh"
 
 # --- TOOLS ---
 

@@ -219,6 +219,7 @@ scenario_evaluator:
     # extrapolated with its velocity for up to this long (> target_tracker's
     # lost_timeout, so a confirmed track always has a position)
     track_timeout: 2.0
+    second_person_topic: /person2/odom
     # After person_controller reports the scenario done: time for the
     # search and the report
     linger_secs: 30.0
@@ -228,4 +229,6 @@ scenario_evaluator:
     min_tracked_in_view_pct: 80.0
     max_track_breaks_per_min: 1.0
     max_false_alarms: 0.0
+    # Two-person scenarios: the track must not jump between people
+    max_track_switches: 0.0
     min_patrol_coverage_pct: -1.0
