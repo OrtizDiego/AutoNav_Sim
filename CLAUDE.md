@@ -49,6 +49,7 @@ Each scenario is one command (Gazebo + RViz layout + every node it needs). Make 
 ```bash
 make sim         # robot in the museum (room.world), navigation.rviz; add `make nav` for the map
 make nav-sim     # sim + Nav2 (map, AMCL with initial pose from nav2_params.yaml)
+make nav-sim WORLD=warehouse  # another world (config/worlds.yaml); no map yet -> explores + saves it
 make ball-sim    # ball chase: ball_controller + sensor_fusion(hsv) + ball_chaser
 make person-sim  # demo: Nav2 + person_controller + person_tracker + sensor_fusion(person)
                  #       + target_tracker + security_guard_bt + system_monitor
@@ -56,6 +57,9 @@ make yolo-sim    # static person ahead: person_tracker + sensor_fusion(person) +
 make person-sim GUI=false   # any scenario without the Gazebo window (gzserver only)
 ```
 `GUI=false` passes `gui:=false` to `sim.launch.py`: no gzclient, RViz shows the sim. With software rendering (CPU container) the Gazebo window costs CPU the simulation needs.
+
+### Worlds (Phase 6)
+`config/worlds.yaml` names the environments; `WORLD=<name>` (default museum) works for `make sim` and `make nav-sim` (`world_name:=` in sim.launch.py / nav_sim.launch.py). `museum` = room.world + maps/my_map. `warehouse` = AWS RoboMaker small warehouse (MIT-0), cloned by the Dockerfile at a pinned commit into `/opt/worlds/aws-robomaker-small-warehouse-world` (`make image` once); its `models/` goes on GAZEBO_MODEL_PATH and its root on GAZEBO_RESOURCE_PATH (meshes are `file://models/...`; Gazebo's `/usr/share/gazebo-11` is kept), and sim.launch.py runs a copy with shadows off from `~/.ros/autonav_worlds`. nav-sim looks for `maps/<map>.yaml` in `src/my_bot/maps` (worlds.maps_source_dir: where the symlink install points): with it, Nav2 + AMCL as before; without it, SLAM Toolbox + Nav2's navigation_launch.py (no map_server/AMCL) + the explorer, which saves the map there when no frontier is left and drives back to the spawn. A map built that way has its origin at the spawn pose, so AMCL's (0, 0, 0) initial pose fits every world. person-sim, ball-sim, yolo-sim and the scenarios stay museum-only (zones, scripts, ball path are museum-specific).
 
 ### Evaluation (Phase 5)
 ```bash
@@ -122,6 +126,10 @@ Every scenario target runs `src/stop_sim.sh` first: closing a terminal does not 
 - **guard_zones.py** (library): `config/guard_zones.yaml` (passed as `zones_file` by person_sim): named patrol zones, a schedule cycled on the node clock, restricted-area polygons (map frame). A YAML file because ROS parameters cannot nest.
 - **room_sweep.py** (library): greedy set cover on a 0.5 m grid of the saved map: viewpoints reachable from the robot that between them see the floor within `sweep_radius` of where the intruder was heading (line of sight on free cells), each with the heading toward what it adds.
 - **incident_log.py** (library): incident lifecycle behind `/security_events`; appends each event to `incident_dir`/incidents.jsonl (default `~/.ros/security_incidents`, '' = off) and names the alert snapshots saved from `snapshot_topic`.
+- **worlds.py** (library): `config/worlds.yaml` → `World` (world file, root, model/resource paths, map, spawn); `gazebo_env()`, `without_shadows()`, `maps_source_dir()`.
+- **frontier.py** (library): frontiers on an OccupancyGrid (free cells next to unknown, 8-connected, `min_size`), one goal per frontier at its cell farthest from obstacles (≥ `min_clearance`), `choose_frontier()` (distance − `size_weight` × frontier length, blacklist), `unknown_near()`.
+- **map_io.py** (library): saves a grid as map_server YAML + trinary PGM (what map_saver_cli writes).
+- **explorer.py**: nav-sim without a map: every `update_period` picks a frontier on SLAM's /map and sends Nav2 there (BasicNavigator; waits on controller_server, not AMCL); a goal ends when Nav2 finishes (failure → blacklist), its frontier is seen (`seen_radius`) or `goal_timeout`; after `done_checks` frontier-free checks saves `map_save_path` and returns home. Publishes `/exploration/status` (JSON).
 - **perf_monitor.py**: `make perf`: real-time factor, per-topic publisher count, sim-Hz and message age (now - stamp) on `/perf_monitor` + log. person_tracker also logs frames/s and mean YOLO/tracker ms every `stats_period`. Nav2's velocity_smoother publishes /cmd_vel on a 20 Hz wall timer, so it reads 20 / RTF sim Hz (~30 at RTF 0.67) from one publisher.
 - **system_monitor.py**: heartbeats → `/system_health`; `/trigger_estop` latches `/estop` (Bool, transient local) which the BT obeys; `/clear_estop` releases.
 
@@ -154,6 +162,10 @@ src/my_bot/
 │   ├── scenario_script.py     # scripted scenarios from scenarios.yaml (library)
 │   ├── scenario_metrics.py    # run metrics against ground truth (library)
 │   ├── scenario_evaluator.py  # make scenario: scores a run, writes report.json
+│   ├── worlds.py              # world registry (config/worlds.yaml) (library)
+│   ├── frontier.py            # frontier detection + choice (library)
+│   ├── map_io.py              # save a grid as a map_server map (library)
+│   ├── explorer.py            # nav-sim without a map: explore, save the map
 │   └── system_monitor.py      # watchdog + e-stop
 ├── launch/                    # sim, nav_sim, ball_sim, person_sim, yolo_sim,
 │                              # scenario, navigation, slam, rsp
@@ -162,13 +174,14 @@ src/my_bot/
 │   ├── guard_zones.yaml       # patrol zones + schedule + restricted areas (not a params file)
 │   ├── nav2_params.yaml       # Nav2 tuning (AMCL initial pose = spawn)
 │   ├── scenarios.yaml         # scripted intruder scenarios (make scenario, make smoke)
+│   ├── worlds.yaml            # environments for WORLD= (museum, warehouse)
 │   ├── mapper_params_online_async.yaml
 │   └── navigation.rviz (sim, nav-sim) / perception.rviz / person.rviz
 ├── meshes/                    # TurtleBot3 Waffle Pi STL meshes (Apache-2.0, see meshes/README.md)
 ├── models/                    # Gazebo models the worlds load (iscas_museum, CC BY 3.0; models/README.md)
 ├── urdf/                      # Xacro: robot_core (cylinder chassis collision: ODE ray-box gives lidar ghost hits), gazebo_control, lidar (min range 0.12 m, noise 0.01 m), camera (320×240 at 15 Hz, noise 0.007; must match sensor_fusion's `image_width`/`image_height`, test_urdf.py checks)
 ├── worlds/                    # room, ball, person, two_person, yolo
-├── maps/                      # my_map.yaml / my_map.pgm (museum; also used by tests)
+├── maps/                      # my_map.yaml / my_map.pgm (museum; also used by tests); <world>.yaml saved by nav-sim
 ├── test/                      # pytest; conftest.py fakes rclpy + msgs (recording Node, manual
 │                              # clock, wire() for multi-node integration tests), no ROS needed
 └── package.xml
@@ -224,7 +237,7 @@ ros2 param get /slam_toolbox use_sim_time  # Should be "True"
 ```
 
 ### Map Files
-Nav2 requires a pre-built map (`maps/my_map.yaml` + `maps/my_map.pgm`). To create:
+Nav2 requires a pre-built map (`maps/my_map.yaml` + `maps/my_map.pgm` for the museum, `maps/<map>.yaml` per world in config/worlds.yaml). `make nav-sim WORLD=<name>` builds a missing one by itself (explorer). To create one by hand:
 1. Launch SLAM: `make slam` + `make teleop` in separate terminal
 2. Drive robot to explore
 3. Save map: `ros2 run nav2_map_server map_saver_cli -f /root/dev_ws/src/my_bot/maps/my_map`
@@ -249,7 +262,7 @@ ros2 topic pub -1 /initialpose geometry_msgs/PoseWithCovarianceStamped "{ header
 ## Entry Points (Console Scripts)
 
 Defined in `setup.py` (test_scripts.py checks they match the modules):
-`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`, `perf_monitor`, `target_tracker`, `scenario_evaluator`.
+`ball_controller`, `ball_teleop`, `ball_chaser`, `sensor_fusion`, `person_controller`, `person_tracker`, `security_guard_bt`, `system_monitor`, `perf_monitor`, `target_tracker`, `scenario_evaluator`, `explorer`.
 
 Run with `ros2 run my_bot <script_name>`, but prefer the scenario make targets, which load `behavior_params.yaml` and `use_sim_time`.
 

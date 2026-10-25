@@ -88,6 +88,7 @@ Each scenario is one command: Gazebo, an RViz layout made for it and every node 
 | `make person-sim` | **The full demo.** A security guard that patrols, spots a running person with YOLO, tracks and follows them, searches when they escape and resumes the patrol. |
 | `make sim` | The robot in the museum (`room.world`), nothing else. Drive it with `make teleop`. |
 | `make nav-sim` | `sim` + Nav2 in one go: map, costmaps and AMCL pose appear immediately. Send goals with RViz's **Nav2 Goal** tool. |
+| `make nav-sim WORLD=warehouse` | Another world from `config/worlds.yaml` (the AWS RoboMaker small warehouse, fetched by the Dockerfile). The first run has no map: SLAM + Nav2 + a frontier explorer map it autonomously and save `maps/warehouse.yaml`; later runs navigate on it. `make sim WORLD=...` shows the world alone. |
 
 > **Slow machine?** Add `GUI=false` to any scenario (`make person-sim GUI=false`): Gazebo runs without its window and RViz shows the robot, scan, map and camera. With software rendering the Gazebo window costs CPU the simulation needs.
 
@@ -153,7 +154,7 @@ The ball is the simplest target (a saturated red blob) and was used to build and
 
 ## 🛠️ Other Features
 
-* **Mapping:** `make slam` (with `make sim` + `make teleop`), then `make save-map NAME=x`.
+* **Mapping:** automatic for a world without a map (`make nav-sim WORLD=<name>`: frontier exploration, map saved when no frontier is left), or by hand: `make slam` (with `make sim` + `make teleop`), then `make save-map NAME=x`.
 * **Realistic sensor noise** in the Xacro URDF: lidar range σ = 0.01 m, camera pixel σ = 0.007. The camera is 320×240 at 15 Hz, which is cheap enough to render in software.
 * **System watchdog** (`make system-monitor`, built into `person-sim`): `/system_health` diagnostics from `/scan` and camera heartbeats, plus the e-stop services.
 * **Scripted evaluation:** `make scenario NAME=walk_in|sprint|hide` runs a scripted intruder headless, records a rosbag and scores the guard against the person's ground truth (time to detect, % in view, track breaks, false alarms, patrol coverage) in a `report.json`; `make scenarios` runs all three.
@@ -262,7 +263,7 @@ src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walkin
 | `make build` / `make clean` | Build the workspace / remove build artifacts |
 | `make test` / `make lint` | Unit tests / linters |
 | `make sim` | Robot in the museum, Gazebo + RViz (any scenario: `GUI=false` for no Gazebo window) |
-| `make nav-sim` | `sim` + Nav2 in one command |
+| `make nav-sim` | `sim` + Nav2 in one command (`WORLD=warehouse`: another world, mapped on its first run) |
 | `make ball-sim` | Ball chase (fusion + chaser + ball autopilot) |
 | `make person-sim` | Security guard demo (Nav2 + YOLO + fusion + tracker + BT + watchdog) |
 | `make yolo-sim` | Static person: YOLO + fusion + tracking proof |

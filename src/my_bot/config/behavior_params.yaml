@@ -232,3 +232,26 @@ scenario_evaluator:
     # Two-person scenarios: the track must not jump between people
     max_track_switches: 0.0
     min_patrol_coverage_pct: -1.0
+
+# make nav-sim WORLD=<name> for a world without a map: frontier exploration
+# with Nav2 next to SLAM Toolbox; map_save_path comes from the launch file.
+explorer:
+  ros__parameters:
+    update_period: 1.0
+    # SLAM's first map and Nav2's costmaps need a moment after launch
+    start_delay: 5.0
+    # Frontiers shorter than this (cells, 0.05 m each) are noise
+    min_frontier_size: 8
+    # The goal cell must be this far from walls (robot radius 0.22 m)
+    min_clearance: 0.3
+    # Metres of travel one metre of frontier is worth when choosing
+    size_weight: 0.5
+    blacklist_radius: 0.5
+    # A goal is moot once no unknown cell is within this of it
+    seen_radius: 0.6
+    goal_timeout: 60.0
+    # Frontier-free checks in a row before the map counts as complete
+    done_checks: 3
+    return_home: true
+    map_frame: map
+    robot_frame: base_link

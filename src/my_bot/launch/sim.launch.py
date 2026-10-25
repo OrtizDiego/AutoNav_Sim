@@ -25,6 +25,11 @@ the robot, scan, map and camera anyway. Every scenario passes it through
 
 The museum (``model://iscas_museum``) is vendored in models/ and put on
 GAZEBO_MODEL_PATH here, so no world needs Gazebo's online model database.
+
+``world_name:=<name>`` picks an environment from config/worlds.yaml instead
+of a ``world`` file (`make sim WORLD=warehouse`): its world file, the robot's
+spawn pose and, for an external world, its Gazebo model/resource paths and
+a copy of the world with shadows off (~/.ros/autonav_worlds).
 """
 
 import os
@@ -32,11 +37,65 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
-    AppendEnvironmentVariable, DeclareLaunchArgument, GroupAction, IncludeLaunchDescription)
+    AppendEnvironmentVariable, DeclareLaunchArgument, GroupAction, IncludeLaunchDescription,
+    OpaqueFunction, SetEnvironmentVariable)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+from my_bot.worlds import gazebo_env, get_world, load_worlds, without_shadows
+
+
+def _world_file(world, pkg_share):
+    """World file for ``world``: external ones get a copy with shadows off."""
+    path = world.world_file(pkg_share)
+    if not os.path.exists(path):
+        hint = ' (cloned by the Dockerfile: run make image)' if world.external else ''
+        raise RuntimeError(f'world {world.name!r}: {path} not found{hint}')
+    if not world.external:
+        return path  # ours already have <shadows>0
+    with open(path) as f:
+        sdf = without_shadows(f.read())
+    out_dir = os.path.expanduser('~/.ros/autonav_worlds')
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, world.name + '.world')
+    with open(out, 'w') as f:
+        f.write(sdf)
+    return out
+
+
+def _gazebo_and_robot(context):
+    """Gazebo with the chosen world, and the robot at its spawn pose."""
+    pkg_share = get_package_share_directory('my_bot')
+    world_path = LaunchConfiguration('world').perform(context)
+    spawn = (0.0, 0.0, 0.0)
+    actions = []
+    name = LaunchConfiguration('world_name').perform(context)
+    if name:
+        world = get_world(load_worlds(os.path.join(pkg_share, 'config', 'worlds.yaml')), name)
+        world_path = _world_file(world, pkg_share)
+        spawn = world.spawn
+        actions += [SetEnvironmentVariable(var, value)
+                    for var, value in gazebo_env(world, context.environment).items()]
+
+    # gzserver.launch.py declares ~25 launch arguments, among them
+    # params_file:=''. Launch configurations are global, so without a scope
+    # that empty params_file leaks into anything a scenario includes later
+    # (Nav2's bringup then fails with "No such file or directory: ''").
+    actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([os.path.join(
+            get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py'
+        )]),
+        launch_arguments={'world': world_path,
+                          'gui': LaunchConfiguration('gui')}.items()
+    )]))
+    actions.append(Node(
+        package='gazebo_ros', executable='spawn_entity.py',
+        arguments=['-topic', 'robot_description', '-entity', 'my_bot',
+                   '-x', str(spawn[0]), '-y', str(spawn[1]), '-Y', str(spawn[2])],
+        output='screen'))
+    return actions
 
 
 def generate_launch_description():
@@ -67,29 +126,14 @@ def generate_launch_description():
     rviz_on_arg = DeclareLaunchArgument(
         'rviz', default_value='true',
         description='Start RViz; false for unattended runs (make scenario)')
+    world_name_arg = DeclareLaunchArgument(
+        'world_name', default_value='',
+        description='Environment from config/worlds.yaml; overrides world')
 
     # model://iscas_museum and any other vendored model (models/README.md)
     model_path = AppendEnvironmentVariable(
         'GAZEBO_MODEL_PATH',
         os.path.join(get_package_share_directory(pkg_name), 'models'))
-
-    # gzserver.launch.py declares ~25 launch arguments, among them
-    # params_file:=''. Launch configurations are global, so without a scope
-    # that empty params_file leaks into anything a scenario includes later
-    # (Nav2's bringup then fails with "No such file or directory: ''").
-    gazebo = GroupAction(scoped=True, actions=[IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([os.path.join(
-            get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py'
-        )]),
-        launch_arguments={'world': LaunchConfiguration('world'),
-                          'gui': LaunchConfiguration('gui')}.items()
-    )])
-
-    # 3. Spawn Entity
-    spawn_entity = Node(package='gazebo_ros', executable='spawn_entity.py',
-                        arguments=['-topic', 'robot_description',
-                                   '-entity', 'my_bot'],
-                        output='screen')
 
     # 4. Launch RViz
     rviz_node = Node(
@@ -106,9 +150,10 @@ def generate_launch_description():
         rviz_arg,
         gui_arg,
         rviz_on_arg,
+        world_name_arg,
         model_path,
         rsp,
-        gazebo,
-        spawn_entity,
+        # 3. Gazebo + the robot (world and spawn pose depend on world_name)
+        OpaqueFunction(function=_gazebo_and_robot),
         rviz_node,
     ])
