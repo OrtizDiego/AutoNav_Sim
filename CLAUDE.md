@@ -50,6 +50,7 @@ Each scenario is one command (Gazebo + RViz layout + every node it needs). Make 
 make sim         # robot in the museum (room.world), navigation.rviz; add `make nav` for the map
 make nav-sim     # sim + Nav2 (map, AMCL with initial pose from nav2_params.yaml)
 make nav-sim WORLD=warehouse  # another world (config/worlds.yaml); no map yet -> explores + saves it
+make person-sim WORLD=warehouse  # the security guard in the warehouse (needs maps/warehouse.yaml)
 make ball-sim    # ball chase: ball_controller + sensor_fusion(hsv) + ball_chaser
 make person-sim  # demo: Nav2 + person_controller + person_tracker + sensor_fusion(person)
                  #       + target_tracker + security_guard_bt + system_monitor
@@ -59,7 +60,7 @@ make person-sim GUI=false   # any scenario without the Gazebo window (gzserver o
 `GUI=false` passes `gui:=false` to `sim.launch.py`: no gzclient, RViz shows the sim. With software rendering (CPU container) the Gazebo window costs CPU the simulation needs.
 
 ### Worlds (Phase 6)
-`config/worlds.yaml` names the environments; `WORLD=<name>` (default museum) works for `make sim` and `make nav-sim` (`world_name:=` in sim.launch.py / nav_sim.launch.py). `museum` = room.world + maps/my_map. `warehouse` = AWS RoboMaker small warehouse (MIT-0), cloned by the Dockerfile at a pinned commit into `/opt/worlds/aws-robomaker-small-warehouse-world` (`make image` once); its `models/` goes on GAZEBO_MODEL_PATH and its root on GAZEBO_RESOURCE_PATH (meshes are `file://models/...`; Gazebo's `/usr/share/gazebo-11` is kept), and sim.launch.py runs a copy with shadows off from `~/.ros/autonav_worlds`. nav-sim looks for `maps/<map>.yaml` in `src/my_bot/maps` (worlds.maps_source_dir: where the symlink install points): with it, Nav2 + AMCL as before; without it, SLAM Toolbox + Nav2's navigation_launch.py (no map_server/AMCL) + the explorer, which saves the map there when no frontier is left and drives back to the spawn. A map built that way has its origin at the spawn pose, so AMCL's (0, 0, 0) initial pose fits every world. person-sim, ball-sim, yolo-sim and the scenarios stay museum-only (zones, scripts, ball path are museum-specific).
+`config/worlds.yaml` names the environments; `WORLD=<name>` (default museum) works for `make sim`, `make nav-sim` and `make person-sim` (`world_name:=` in sim.launch.py / nav_sim.launch.py / person_sim.launch.py). `museum` = room.world + maps/my_map. `warehouse` = AWS RoboMaker small warehouse (MIT-0), cloned by the Dockerfile at a pinned commit into `/opt/worlds/aws-robomaker-small-warehouse-world` (`make image` once); its `models/` goes on GAZEBO_MODEL_PATH and its root on GAZEBO_RESOURCE_PATH (meshes are `file://models/...`; Gazebo's `/usr/share/gazebo-11` is kept), and sim.launch.py runs a copy with shadows off from `~/.ros/autonav_worlds`. nav-sim looks for `maps/<map>.yaml` in `src/my_bot/maps` (worlds.maps_source_dir: where the symlink install points): with it, Nav2 + AMCL as before; without it, SLAM Toolbox + Nav2's navigation_launch.py (no map_server/AMCL) + the explorer, which saves the map there when no frontier is left and drives back to the spawn. A map built that way has its origin at the spawn pose, so AMCL's (0, 0, 0) initial pose fits every world. person-sim takes a world that has `person_world` (worlds/ file: the world plus the `person_intruder` actor; `warehouse_person.world` is a copy of the warehouse world with the actor on open floor at (0.5, -3.5), its `model://` URIs resolve through the same GAZEBO_MODEL_PATH; sim.launch.py `with_person:=true` picks it) and `zones` (config/ guard-zones file on that world's map: `guard_zones_warehouse.yaml`); person-sim also needs the world's map to exist (it stops with the `make nav-sim WORLD=...` hint otherwise) and uses it for Nav2, person_controller and the sweep. Without `world_name:=` it is the museum as before (person.world, my_map, guard_zones.yaml; scenario.launch.py passes `world:=` instead). ball-sim, yolo-sim and the scripted scenarios stay museum-only (scripts, ball path are museum-specific; person-sim refuses `scenario:=` outside the museum). test_guard_zones.py checks both zone files against their maps.
 
 ### Evaluation (Phase 5)
 ```bash
@@ -174,6 +175,7 @@ src/my_bot/
 │   ├── guard_zones.yaml       # patrol zones + schedule + restricted areas (not a params file)
 │   ├── nav2_params.yaml       # Nav2 tuning (AMCL initial pose = spawn)
 │   ├── scenarios.yaml         # scripted intruder scenarios (make scenario, make smoke)
+│   ├── guard_zones_warehouse.yaml  # the same for the warehouse (worlds.yaml `zones`)
 │   ├── worlds.yaml            # environments for WORLD= (museum, warehouse)
 │   ├── mapper_params_online_async.yaml
 │   └── navigation.rviz (sim, nav-sim) / perception.rviz / person.rviz

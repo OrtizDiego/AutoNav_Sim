@@ -7,14 +7,19 @@
 # (SLAM starts the map frame at the robot), which is why AMCL's initial pose
 # in nav2_params.yaml is (0, 0, 0) for every world.
 #
-# Only the museum has scenario content (person, ball, patrol zones,
-# scripts): person-sim, ball-sim, yolo-sim and make scenario stay there.
+# person-sim (`make person-sim WORLD=<name>`) needs a world with
+# person_world (the world plus the person_intruder actor, in worlds/) and
+# zones (the guard's patrol routes and restricted areas on the world's map,
+# in config/); it also needs the map to exist (nav-sim builds it). The other
+# scenario content (ball, yolo-sim, scripted scenarios) stays in the museum.
 
 museum:
   description: ISCAS museum (models/iscas_museum, vendored)
   world: room.world          # relative path: this package's worlds/
   map: my_map                # built in this world, frame = world frame
   spawn: [0.0, 0.0, 0.0]
+  person_world: person.world
+  zones: guard_zones.yaml
 
 warehouse:
   description: >-
@@ -28,3 +33,5 @@ warehouse:
   # Clear of every model pose in the world file (nearest: clutter at
   # (-1.6, 2.3), shelves at x = 4.7); not yet checked in Gazebo
   spawn: [0.0, 0.0, 0.0]
+  person_world: warehouse_person.world
+  zones: guard_zones_warehouse.yaml

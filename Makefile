@@ -34,8 +34,9 @@ STOP_LEFTOVERS := bash src/stop_sim.sh;
 # the window costs CPU the simulation needs. make person-sim GUI=false
 GUI ?= true
 SCENARIO_ARGS := gui:=$(GUI)
-# WORLD=<name> (config/worlds.yaml) for sim and nav-sim; nav-sim maps a world
-# that has no map yet (SLAM + frontier exploration, saved to maps/)
+# WORLD=<name> (config/worlds.yaml) for sim, nav-sim and person-sim; nav-sim
+# maps a world that has no map yet (SLAM + frontier exploration, saved to
+# maps/), person-sim needs the map to exist
 WORLD ?= museum
 # Scripted, scored runs (make scenario): headless unless GUI=true / RVIZ=true
 # is given on the command line. Report + rosbag in ~/.ros/autonav_scenarios.
@@ -70,7 +71,7 @@ help:
 	@echo "Scenarios (each is a single command):"
 	@echo "  sim             - Robot in the museum, Gazebo + RViz, nothing else"
 	@echo "  nav-sim         - sim + Nav2 (map, AMCL, planners) in one go"
-	@echo "  sim / nav-sim WORLD=warehouse - another world (config/worlds.yaml); nav-sim"
+	@echo "  sim / nav-sim / person-sim WORLD=warehouse - another world (config/worlds.yaml); nav-sim"
 	@echo "                    explores and saves the map first if it has none"
 	@echo "  ball-sim        - Robot chases the red ball (HSV + lidar fusion)"
 	@echo "  person-sim      - Security guard: patrol + YOLO + fusion + follow (the demo)"
@@ -150,7 +151,7 @@ ball-sim:
 	$(EXEC) "$(STOP_LEFTOVERS) $(SOURCE) && ros2 launch $(PACKAGE_NAME) ball_sim.launch.py $(SCENARIO_ARGS)"
 
 person-sim:
-	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py $(SCENARIO_ARGS)"
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) person_sim.launch.py $(SCENARIO_ARGS) world_name:=$(WORLD)"
 
 yolo-sim:
 	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && ros2 launch $(PACKAGE_NAME) yolo_sim.launch.py $(SCENARIO_ARGS)"

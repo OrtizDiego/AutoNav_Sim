@@ -121,8 +121,8 @@ def test_scenarios_can_run_without_the_gazebo_window():
     """make <scenario> GUI=false reaches gazebo.launch.py's gui argument."""
     targets = _make_targets()
     for target in SCENARIOS:
-        # sim and nav-sim also take the world (make nav-sim WORLD=warehouse)
-        world = ' world_name:=$(WORLD)' if target in ('sim', 'nav-sim') else ''
+        # sim, nav-sim and person-sim also take the world (make nav-sim WORLD=warehouse)
+        world = ' world_name:=$(WORLD)' if target in ('sim', 'nav-sim', 'person-sim') else ''
         assert targets[target].endswith(f'.launch.py $(SCENARIO_ARGS){world}"'), target
     with open(os.path.join(REPO_ROOT, 'Makefile')) as f:
         assert 'SCENARIO_ARGS := gui:=$(GUI)' in f.read()

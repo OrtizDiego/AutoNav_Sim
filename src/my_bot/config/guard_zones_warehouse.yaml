@@ -1,0 +1,35 @@
+# Patrol zones, schedule and restricted areas for security_guard_bt in the
+# warehouse (`make person-sim WORLD=warehouse`; config/worlds.yaml `zones`).
+# Same format as guard_zones.yaml (my_bot/guard_zones.py). Map frame =
+# Gazebo world frame, metres: maps/warehouse was built from the spawn pose
+# (0, 0, 0). test_guard_zones.py checks every waypoint is open floor on
+# that map, every leg is a clear straight line and no waypoint is inside a
+# restricted area.
+
+patrol_zones:
+  # The open floor in the middle, a loop around its centre
+  central_floor: [[1.0, -0.5], [1.0, -4.0], [-2.0, -4.0], [-2.0, -0.5]]
+  # Channel along the south wall, between the pallet jack and the shelves
+  south_channel: [[0.75, -5.5], [1.0, -8.0], [0.0, -8.0]]
+  # West aisle (x = -3.5), south half, then north half
+  west_aisle_south: [[-3.5, -1.5], [-3.5, -5.0], [-3.5, -8.5]]
+  west_aisle_north: [[-3.5, 8.5], [-3.5, 5.0], [-3.5, 1.5]]
+  # Aisle between the clutter piles, north of the open floor
+  north_aisle: [[0.75, 7.0], [0.75, 2.5], [1.0, 1.0]]
+
+# Cycled on the node clock (simulation seconds), in the order that keeps
+# the legs between zones short. A zone switch waits for the current leg.
+patrol_schedule:
+  - {zone: central_floor, secs: 120.0}
+  - {zone: south_channel, secs: 90.0}
+  - {zone: west_aisle_south, secs: 90.0}
+  - {zone: west_aisle_north, secs: 90.0}
+  - {zone: north_aisle, secs: 90.0}
+
+# An intruder tracked inside one raises a restricted_area event on
+# /security_events (once per area and incident).
+restricted_areas:
+  # The room in the south-west corner
+  storage_room: [[-6.0, -8.5], [-4.0, -8.5], [-4.0, -6.0], [-6.0, -6.0]]
+  # The shelving block along the east wall
+  high_value_racks: [[3.0, -9.0], [6.5, -9.0], [6.5, 0.5], [3.0, 0.5]]
