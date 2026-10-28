@@ -20,8 +20,9 @@ FROM osrf/ros:humble-desktop-full
 # 2. Set environment variables to non-interactive (prevents installation prompts)
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Set the terminal to support 256 colors
-ENV TERM xterm-256color
+# Set the terminal to support 256 colors (also the default for `docker exec`
+# without -e TERM, e.g. from a Windows console or CI)
+ENV TERM=xterm-256color
 
 # 3. Update and Install Essential Robotics Tools
 # numpy<2: onnxruntime would otherwise pull NumPy 2, which breaks the
@@ -64,6 +65,10 @@ COPY src ./src
 # 5. Build the workspace (initially empty)
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && colcon build"
 
+# Colored prompt in every interactive bash: uncomment Ubuntu's stock line, or
+# add it at the top (before the PS1 block) if this .bashrc has none.
+RUN sed -i 's/^#\s*force_color_prompt=yes/force_color_prompt=yes/' /root/.bashrc \
+    && (grep -q '^force_color_prompt=yes' /root/.bashrc || sed -i '1i force_color_prompt=yes' /root/.bashrc)
 # 6. Add sourcing to bashrc so we don't have to type it every time
 RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
 RUN echo "source /root/dev_ws/install/setup.bash" >> /root/.bashrc

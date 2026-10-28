@@ -10,8 +10,14 @@ SERVICE := $(patsubst autonav_%,%,$(CONTAINER_NAME))
 WS_PATH := /root/dev_ws
 PACKAGE_NAME := my_bot
 
-# Helper to run commands inside the container
-EXEC := docker exec -it $(CONTAINER_NAME) bash -c
+# Helper to run commands inside the container.
+# -it only when make runs on a terminal: without one (GitHub Actions, cron,
+# pipes) docker exec -t fails with "the input device is not a TTY".
+# TERM is passed so colors work from any host terminal (Terminator, WSL,
+# cmd.exe, macOS Terminal). Override: make test DOCKER_TTY=
+DOCKER_TTY ?= $(shell [ -t 0 ] && [ -t 2 ] && echo -it)
+DOCKER_ENV := -e TERM=xterm-256color
+EXEC := docker exec $(DOCKER_TTY) $(DOCKER_ENV) $(CONTAINER_NAME) bash -c
 SOURCE := source /opt/ros/humble/setup.bash && source install/setup.bash
 # The YOLO scenarios stop here instead of tracking nothing when the container
 # runs an image from before the model export (docker compose build alone
@@ -100,7 +106,7 @@ down:
 	docker compose down
 
 shell:
-	docker exec -it $(CONTAINER_NAME) bash
+	docker exec $(DOCKER_TTY) $(DOCKER_ENV) $(CONTAINER_NAME) bash
 
 # docker compose build alone does not touch the running container, so every
 # make target would keep using the old image. Recreate it, then rebuild the
