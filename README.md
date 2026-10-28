@@ -157,9 +157,9 @@ The ball is the simplest target (a saturated red blob) and was used to build and
 * **Mapping:** automatic for a world without a map (`make nav-sim WORLD=<name>`: frontier exploration, map saved when no frontier is left), or by hand: `make slam` (with `make sim` + `make teleop`), then `make save-map NAME=x`.
 * **Realistic sensor noise** in the Xacro URDF: lidar range σ = 0.01 m, camera pixel σ = 0.007. The camera is 320×240 at 15 Hz, which is cheap enough to render in software.
 * **System watchdog** (`make system-monitor`, built into `person-sim`): `/system_health` diagnostics from `/scan` and camera heartbeats, plus the e-stop services.
-* **Scripted evaluation:** `make scenario NAME=walk_in|sprint|hide` runs a scripted intruder headless, records a rosbag and scores the guard against the person's ground truth (time to detect, % in view, track breaks, false alarms, patrol coverage) in a `report.json`; `make scenarios` runs all three.
+* **Scripted evaluation:** `make scenario NAME=walk_in|sprint|hide|crossing` runs a scripted intruder headless, records a rosbag and scores the guard against the person's ground truth (time to detect, % in view, track breaks, false alarms, track switches, patrol coverage) in a `report.json`; `make scenarios` runs all four and prints one table of the results.
 * **Performance tooling:** `make perf` reports the real-time factor, per-topic rates in sim time and message age (latency); `person_tracker` also logs frames/s and mean YOLO/tracker milliseconds.
-* **CI/CD:** GitHub Actions builds the workspace, runs the tests (launch files are built against a real ROS install) and uploads coverage.
+* **CI/CD:** GitHub Actions builds the workspace, runs the tests (launch files are built against a real ROS install) and uploads coverage. A second workflow runs the whole stack headless on GitHub runners: the smoke test plus every scripted scenario, one runner each, with a table of their metrics in the job summary.
 
 ---
 

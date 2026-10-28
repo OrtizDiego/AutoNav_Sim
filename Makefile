@@ -47,7 +47,7 @@ ON_REQUEST = $(if $(filter command line,$(origin $(1))),$($(1)),false)
 
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
-        ball-sim teleop-ball person-sim yolo-sim scenario scenarios smoke perf stop
+        ball-sim teleop-ball person-sim yolo-sim scenario scenarios scenario-summary smoke perf stop
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -81,6 +81,7 @@ help:
 	@echo "  scenario NAME=x - One scripted run: $(SCENARIO_NAMES)"
 	@echo "                    (GUI=true RVIZ=true to watch, RECORD=false: no rosbag)"
 	@echo "  scenarios       - All of them in a row; reports in ~/.ros/autonav_scenarios"
+	@echo "  scenario-summary - Table of the newest report of each scenario"
 	@echo "  smoke           - Headless smoke test (as in CI): short run, checks the stack came up"
 	@echo ""
 	@echo "Tools (run next to a scenario, in a second terminal):"
@@ -162,6 +163,11 @@ scenario:
 
 scenarios:
 	@for name in $(SCENARIO_NAMES); do $(MAKE) --no-print-directory scenario NAME=$$name || exit 1; done
+	@$(MAKE) --no-print-directory scenario-summary
+
+# One table of the newest report of each scenario (also what CI shows)
+scenario-summary:
+	$(EXEC) "$(SOURCE) && python3 -m $(PACKAGE_NAME).scenario_summary --latest ~/.ros/autonav_scenarios $(SCENARIO_NAMES)"
 
 smoke:
 	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && bash src/smoke_test.sh"

@@ -371,6 +371,11 @@ def test_smoke_workflow():
     src = _read(workflow)
     assert 'bash src/smoke_test.sh "$SCENARIO"' in src
     assert 'xvfb' in src and '/root/models' in src
+    # Phase 7: the matrix runs the smoke test and every scripted scenario
+    matrix = re.search(r"'(\[\"smoke\"[^']*\])'", src)
+    assert matrix, 'scenario matrix not found'
+    assert set(json.loads(matrix.group(1))) == set(load_scenarios(SCENARIOS_YAML))
+    assert 'python3 -m my_bot.scenario_summary' in src
     # Same YOLO export as the Dockerfile
     dockerfile = os.path.join(REPO_ROOT, 'Dockerfile')
     if os.path.exists(dockerfile):
