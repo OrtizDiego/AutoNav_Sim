@@ -11,6 +11,7 @@ services:
     environment:
       - DISPLAY=${DISPLAY:-:0}
       - QT_X11_NO_MITSHM=1
+      - TERM=xterm-256color
       # network_mode: host shares the host's ports with every other container,
       # so on the defaults (ROS domain 0, Gazebo master port 11345) another
       # simulation on this machine merges with this one: its gzserver takes
