@@ -8,8 +8,8 @@
 # no Gazebo window, no RViz and no rosbag; then the report must show that
 # every part came up and the loop closed (scenario_metrics.smoke_failures):
 # the scenario finished, the person was detected, the guard raised its
-# alert. The run's own targets (detection time, tracking) are not checked:
-# a runner without a GPU runs far below real time.
+# alert. The run's own targets (detection time, tracking) are not checked
+# here: CI reports them in the scenario summary table instead (Phase 7).
 #
 #   src/smoke_test.sh [scenario]
 #

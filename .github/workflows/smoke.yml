@@ -2,8 +2,13 @@ name: Headless smoke test
 
 # Phase 5b: the whole person-sim stack (Gazebo, Nav2, YOLO, fusion, tracker,
 # guard) on a GitHub runner, scored by src/smoke_test.sh. Slow (CPU
-# rendering, well below real time), so it runs on pushes to main, on PRs
-# that touch the simulation, weekly, and on demand, not on every PR.
+# rendering), so it runs on pushes to main, on PRs that touch the
+# simulation, weekly, and on demand, not on every PR.
+#
+# Phase 7: the scripted scenarios (walk_in, sprint, hide, crossing) run next
+# to the smoke test, one runner each (a runner holds a real-time factor of
+# about 0.8). Each must pass the smoke floor (completed, detected, alert);
+# their targets are reported, not enforced, in the summary job's table.
 
 on:
   push:
@@ -24,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Scenario from config/scenarios.yaml
+        description: Scenario from config/scenarios.yaml, or all
         default: smoke
 
 env:
@@ -59,6 +64,7 @@ jobs:
 
   smoke:
     needs: yolo-model
+    name: ${{ matrix.scenario == 'smoke' && 'smoke' || format('scenario {0}', matrix.scenario) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     container:
@@ -66,6 +72,11 @@ jobs:
     env:
       LIBGL_ALWAYS_SOFTWARE: '1'
       ROS_DOMAIN_ID: '42'
+    strategy:
+      fail-fast: false
+      matrix:
+        # A dispatch runs the scenario it names (all = every one)
+        scenario: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.scenario == 'all') && '["smoke", "walk_in", "sprint", "hide", "crossing"]' || format('["{0}"]', inputs.scenario)) }}
 
     steps:
       - name: Checkout repository
@@ -97,13 +108,15 @@ jobs:
           source /opt/ros/humble/setup.bash
           colcon build --symlink-install --packages-up-to my_bot
 
-      - name: Smoke test
+      - name: Run ${{ matrix.scenario }}
         timeout-minutes: 40
         shell: bash
         env:
           SMOKE_OUT: ${{ github.workspace }}/smoke
           SMOKE_WALL_TIMEOUT: '2100'
-          SCENARIO: ${{ github.event.inputs.scenario || 'smoke' }}
+          # smoke is short; the scenarios get the evaluator's own 600 s
+          SMOKE_SIM_TIMEOUT: ${{ matrix.scenario == 'smoke' && '300' || '600' }}
+          SCENARIO: ${{ matrix.scenario }}
         run: |
           source /opt/ros/humble/setup.bash
           source install/setup.bash
@@ -113,5 +126,33 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-report
+          name: ${{ matrix.scenario == 'smoke' && 'smoke-report' || format('report-{0}', matrix.scenario) }}
           path: smoke/
+
+  summary:
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+          pattern: '*report*'
+
+      - name: Scenario table
+        shell: bash
+        env:
+          PYTHONPATH: src/my_bot
+        run: |
+          shopt -s nullglob
+          reports=()
+          for dir in reports/*report*/; do
+              name=$(basename "$dir"); name=${name#report-}; name=${name%-report}
+              mkdir -p "named/$name" && cp -r "$dir". "named/$name/"
+              reports+=("named/$name/report.json")
+          done
+          [ ${#reports[@]} -gt 0 ] || { echo 'No reports.' >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          python3 -m my_bot.scenario_summary "${reports[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
