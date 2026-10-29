@@ -118,6 +118,7 @@ class ScenarioEvaluatorNode(Node):
         self._guard_state = ''
         self._scenario_status = {}
         self._finish_at: Optional[float] = None
+        self._wall_start: Optional[float] = None  # real time of the first sample
         self.finished = False
         self.report: Optional[dict] = None
 
@@ -201,10 +202,25 @@ class ScenarioEvaluatorNode(Node):
         self.metrics.add(now, self._robot, self._person, self._track_state,
                          self._track_now(now), self._guard_state,
                          others=[self._second] if self._second else [])
+        if self._wall_start is None:
+            self._wall_start = time.monotonic()
         if self._finish_at is not None and now >= self._finish_at:
             self.finish('completed')
         elif now - self.metrics.start >= self._timeout:
             self.finish('timeout')
+
+    def _speed(self, sim_secs: float) -> dict:
+        """Wall-clock length and real-time factor of the sampled run.
+
+        The metrics are in simulation time; the real-time factor says how
+        hard the machine was pushed (a CI runner, a GPU desktop) when
+        comparing reports.
+        """
+        if self._wall_start is None:
+            return {'wall_s': None, 'real_time_factor': None}
+        wall = time.monotonic() - self._wall_start
+        return {'wall_s': round(wall, 1),
+                'real_time_factor': round(sim_secs / wall, 2) if wall > 0.0 else None}
 
     def finish(self, outcome: str) -> dict:
         """Write, publish and log the report; the node is done after this."""
@@ -215,7 +231,7 @@ class ScenarioEvaluatorNode(Node):
                             f'(scenario status {self._scenario_status or "none"})')
         report = {'scenario': self.scenario, 'outcome': outcome,
                   'passed': not failures, 'failures': failures,
-                  'limits': self.limits, **report}
+                  'limits': self.limits, **report, **self._speed(report['duration_s'])}
         directory = os.path.dirname(self.report_path)
         if directory:
             os.makedirs(directory, exist_ok=True)

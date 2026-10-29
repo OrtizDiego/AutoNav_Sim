@@ -381,6 +381,23 @@ class TestEvaluatorNode:
         assert report['second_person_track_pct'] == pytest.approx(50.0, abs=6.0)
         assert node.limits['max_track_switches'] == 0.0
 
+    def test_real_time_factor(self, node, monkeypatch):
+        wall = [100.0]
+        monkeypatch.setattr(se.time, 'monotonic', lambda: wall[0])
+        node.subscriptions['/odom'](_odom(0.0, 0.0))
+        self._tick(node, 0.1)  # first sample: the wall clock starts
+        for _ in range(100):
+            wall[0] += 0.2  # 10 s of simulation in 20 s of wall time
+            self._tick(node, 0.1)
+        report = node.finish('interrupted')
+        assert report['duration_s'] == pytest.approx(10.0)
+        assert report['wall_s'] == pytest.approx(20.0)
+        assert report['real_time_factor'] == pytest.approx(0.5)
+
+    def test_no_samples_no_speed(self, node):
+        report = node.finish('interrupted')
+        assert report['wall_s'] is None and report['real_time_factor'] is None
+
     def test_timeout(self, node):
         node.subscriptions['/odom'](_odom(0.0, 0.0))
         self._tick(node, 61.0)
