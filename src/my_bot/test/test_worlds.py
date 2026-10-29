@@ -16,6 +16,7 @@
 
 import os
 import re
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -72,6 +73,29 @@ class TestRegistry:
         assert re.search(r'ARG WAREHOUSE_COMMIT=[0-9a-f]{40}\n', src)
         assert f'        {warehouse.root} \\' in src
         assert 'aws-robotics/aws-robomaker-small-warehouse-world.git' in src
+
+    def test_person_sim_files_exist(self, worlds):
+        """person_world is in worlds/, zones in config/ (person-sim, WORLD=<name>)."""
+        assert worlds['museum'].person_world == 'person.world'
+        assert worlds['museum'].zones == 'guard_zones.yaml'
+        assert worlds['warehouse'].person_world == 'warehouse_person.world'
+        assert worlds['warehouse'].zones == 'guard_zones_warehouse.yaml'
+        for world in worlds.values():
+            assert bool(world.person_world) == bool(world.zones), world.name
+            if world.person_world:
+                assert os.path.isfile(world.person_world_file(PKG_DIR))
+                assert os.path.isfile(world.zones_file(PKG_DIR))
+
+    def test_world_without_person_sim_content_says_so(self):
+        bare = World(name='bare', world='b.world', map='b')
+        with pytest.raises(ValueError, match='no person_world'):
+            bare.person_world_file(PKG_DIR)
+        with pytest.raises(ValueError, match='no zones file'):
+            bare.zones_file(PKG_DIR)
+
+    def test_warehouse_map_is_there(self, worlds):
+        # person-sim needs it (Nav2, person_controller, the sweep)
+        assert os.path.isfile(worlds['warehouse'].map_yaml(os.path.join(PKG_DIR, 'maps')))
 
     def test_every_world_has_a_description_and_a_distinct_map(self, worlds):
         assert all(w.description for w in worlds.values())
@@ -184,11 +208,49 @@ def test_nav_sim_maps_a_world_without_a_map():
     assert "'map_save_path': os.path.splitext(map_yaml)[0]" in src
 
 
+def test_sim_launch_can_add_the_person():
+    src = _read(PKG_DIR, 'launch', 'sim.launch.py')
+    assert "'with_person', default_value='false'" in src
+    assert "LaunchConfiguration('with_person').perform(context) == 'true'" in src
+    assert 'world.person_world_file(pkg_share)' in src
+
+
+def test_person_sim_takes_its_files_from_the_world():
+    src = _read(PKG_DIR, 'launch', 'person_sim.launch.py')
+    assert "'world_name', default_value=''" in src
+    assert 'OpaqueFunction(function=_setup)' in src
+    # The world's own map, zones and actor world ...
+    assert 'world.map_yaml(maps_source_dir(pkg))' in src
+    assert 'zones_file = world.zones_file(pkg)' in src
+    assert "{'world_name': name, 'with_person': 'true'}" in src
+    # ... shared by Nav2, the pedestrian and the guard
+    assert "'map': map_yaml," in src
+    assert "'map_yaml': map_yaml" in src and "'zones_file': zones_file" in src
+    # Without a world name it is the museum, as before
+    assert "'my_map.yaml'" in src and "'guard_zones.yaml'" in src
+    assert 'make nav-sim WORLD=' in src  # hint when the map is missing
+
+
+def test_warehouse_person_world_is_the_warehouse_plus_the_actor(worlds):
+    ours = ET.parse(os.path.join(PKG_DIR, 'worlds', 'warehouse_person.world')).getroot()
+    models = {m.get('name'): (m.findtext('include/uri'), m.findtext('pose'))
+              for m in ours.findall('./world/model')}
+    assert [a.get('name') for a in ours.iter('actor')] == ['person_intruder']
+    assert ours.findtext('./world/scene/shadows') == '0'
+    assert all(uri.startswith('model://aws_robomaker_warehouse_') for uri, _ in models.values())
+    original = worlds['warehouse'].world_file(PKG_DIR)
+    if not os.path.exists(original):
+        pytest.skip('warehouse not cloned (make image)')
+    theirs = ET.parse(original).getroot()
+    assert models == {m.get('name'): (m.findtext('include/uri'), m.findtext('pose'))
+                      for m in theirs.findall('./world/model')}
+
+
 def test_make_world():
     makefile = os.path.join(REPO_ROOT, 'Makefile')
     if not os.path.exists(makefile):
         pytest.skip('Makefile not available (only src/ is mounted)')
     src = _read(makefile)
     assert re.search(r'^WORLD \?= museum$', src, re.M)
-    for launch in ('sim', 'nav_sim'):
+    for launch in ('sim', 'nav_sim', 'person_sim'):
         assert f'{launch}.launch.py $(SCENARIO_ARGS) world_name:=$(WORLD)"' in src
