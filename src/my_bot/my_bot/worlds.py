@@ -14,8 +14,9 @@
 
 """The environments the robot can run in (config/worlds.yaml).
 
-`make sim WORLD=warehouse` / `make nav-sim WORLD=warehouse` pick one by
-name; sim.launch.py and nav_sim.launch.py resolve it here. Keys:
+`make sim WORLD=warehouse` / `make nav-sim WORLD=warehouse` /
+`make person-sim WORLD=warehouse` pick one by name; sim.launch.py,
+nav_sim.launch.py and person_sim.launch.py resolve it here. Keys:
 
 world          the Gazebo world file; relative to ``root``, or to this
                package's worlds/ when there is no root
@@ -25,6 +26,10 @@ resource_path  directories (relative to root) added to GAZEBO_RESOURCE_PATH,
                for meshes referenced as file://<relative path>
 map            maps/<map>.yaml; nav-sim builds it when it is missing
 spawn          [x, y, yaw] of the robot in the world frame
+person_world   this package's worlds/ file with the world plus the
+               `person_intruder` actor, for person-sim (optional)
+zones          this package's config/ file with the guard's patrol zones
+               and restricted areas on the world's map (optional)
 
 Pure Python + PyYAML, no ROS: the launch files and the tests share it.
 """
@@ -37,7 +42,7 @@ from typing import Dict, List, Mapping, Tuple
 import yaml
 
 WORLD_KEYS = {'description', 'world', 'root', 'model_path', 'resource_path',
-              'map', 'spawn'}
+              'map', 'spawn', 'person_world', 'zones'}
 # Gazebo's own media (materials, the actor skins): Gazebo uses it only while
 # GAZEBO_RESOURCE_PATH is unset, so setting the variable must keep it.
 GAZEBO_DEFAULT_RESOURCE_PATH = '/usr/share/gazebo-11'
@@ -55,6 +60,8 @@ class World:
     model_path: List[str] = field(default_factory=list)
     resource_path: List[str] = field(default_factory=list)
     spawn: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    person_world: str = ''
+    zones: str = ''
 
     @property
     def external(self) -> bool:
@@ -65,6 +72,18 @@ class World:
         """Return the absolute path of the world file."""
         base = self.root or os.path.join(pkg_share, 'worlds')
         return os.path.join(base, self.world)
+
+    def person_world_file(self, pkg_share: str) -> str:
+        """Return the absolute path of the world with the pedestrian actor."""
+        if not self.person_world:
+            raise ValueError(f'world {self.name!r} has no person_world (person-sim)')
+        return os.path.join(pkg_share, 'worlds', self.person_world)
+
+    def zones_file(self, pkg_share: str) -> str:
+        """Return the absolute path of the guard zones file."""
+        if not self.zones:
+            raise ValueError(f'world {self.name!r} has no zones file (person-sim)')
+        return os.path.join(pkg_share, 'config', self.zones)
 
     def model_paths(self) -> List[str]:
         return [os.path.normpath(os.path.join(self.root, p)) for p in self.model_path]
@@ -116,7 +135,9 @@ def parse_worlds(data: dict) -> Dict[str, World]:
             description=str(body.get('description', '')).strip(), root=root,
             model_path=_paths(body.get('model_path'), name),
             resource_path=_paths(body.get('resource_path'), name),
-            spawn=tuple(float(v) for v in spawn))
+            spawn=tuple(float(v) for v in spawn),
+            person_world=str(body.get('person_world', '')),
+            zones=str(body.get('zones', '')))
     return worlds
 
 

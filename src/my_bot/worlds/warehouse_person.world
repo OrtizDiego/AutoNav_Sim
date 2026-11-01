@@ -1,0 +1,234 @@
+<?xml version="1.0" ?>
+<!--
+  The AWS RoboMaker small warehouse (no roof; MIT-0,
+  github.com/aws-robotics/aws-robomaker-small-warehouse-world, the commit
+  pinned in the Dockerfile) plus the pedestrian intruder, for
+  `make person-sim WORLD=warehouse`. The model:// URIs resolve through the
+  GAZEBO_MODEL_PATH config/worlds.yaml sets for the warehouse (the
+  Dockerfile clones it into /opt/worlds). The warehouse part is a copy of its
+  world file, minus the commented-out roof and desks, with shadows off like
+  every world here; keep the models in step with it when WAREHOUSE_COMMIT
+  moves (test_worlds.py compares them when the clone is there).
+-->
+<sdf version="1.6">
+  <world name="default">
+    <!-- No shadows: with software rendering they cost the camera (and
+         gzclient) frames the perception chain needs. -->
+    <scene>
+      <shadows>0</shadows>
+    </scene>
+    <gravity>0 0 -9.8</gravity>
+    <physics default="0" name="default_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+        <model name="aws_robomaker_warehouse_ShelfF_01_001">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ShelfF_01</uri>
+        </include>
+        <pose frame="">-5.795143 -0.956635 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_WallB_01_001">
+        <include>
+            <uri>model://aws_robomaker_warehouse_WallB_01</uri>
+        </include>
+        <pose frame="">0.0 0.0 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_ShelfE_01_001">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ShelfE_01</uri>
+        </include>
+        <pose frame="">4.73156 0.57943 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_ShelfE_01_002">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ShelfE_01</uri>
+        </include>
+        <pose frame="">4.73156 -4.827049 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_ShelfE_01_003">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ShelfE_01</uri>
+        </include>
+        <pose frame="">4.73156 -8.6651 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_ShelfD_01_001">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ShelfD_01</uri>
+        </include>
+        <pose frame="">4.73156 -1.242668 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_ShelfD_01_002">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ShelfD_01</uri>
+        </include>
+        <pose frame="">4.73156 -3.038551 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_ShelfD_01_003">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ShelfD_01</uri>
+        </include>
+        <pose frame="">4.73156 -6.750542 0 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_GroundB_01_001">
+        <include>
+            <uri>model://aws_robomaker_warehouse_GroundB_01</uri>
+        </include>
+        <pose frame="">0.0 0.0 -0.090092 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_Lamp_01_005">
+        <include>
+            <uri>model://aws_robomaker_warehouse_Lamp_01</uri>
+        </include>
+        <pose frame="">0 0 -4 0 0 0</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_Bucket_01_020">
+        <include>
+            <uri>model://aws_robomaker_warehouse_Bucket_01</uri>
+        </include>
+        <pose frame="">0.433449 9.631706 0 0 0 -1.563161</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_Bucket_01_021">
+        <include>
+            <uri>model://aws_robomaker_warehouse_Bucket_01</uri>
+        </include>
+        <pose frame="">-1.8321 -6.3752 0 0 0 -1.563161</pose>
+	</model>
+        <model name="aws_robomaker_warehouse_Bucket_01_022">
+        <include>
+            <uri>model://aws_robomaker_warehouse_Bucket_01</uri>
+        </include>
+        <pose frame="">0.433449 8.59 0 0 0 -1.563161</pose>
+	</model>
+  <model name='aws_robomaker_warehouse_ClutteringA_01_016'>
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringA_01</uri>
+        </include>
+        <pose frame=''>5.708138 8.616844 -0.017477 0 0 0</pose>
+	</model>
+      <model name='aws_robomaker_warehouse_ClutteringA_01_017'>
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringA_01</uri>
+        </include>
+        <pose frame=''>3.408638 8.616844 -0.017477 0 0 0</pose>
+	</model>
+      <model name='aws_robomaker_warehouse_ClutteringA_01_018'>
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringA_01</uri>
+        </include>
+        <pose frame=''>-1.491287 5.222435 -0.017477 0 0 -1.583185</pose>
+	</model>
+     <model name="aws_robomaker_warehouse_ClutteringC_01_027">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringC_01</uri>
+        </include>
+        <pose frame="">3.324959 3.822449 -0.012064 0 0 1.563871</pose>
+	</model>
+     <model name="aws_robomaker_warehouse_ClutteringC_01_028">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringC_01</uri>
+        </include>
+        <pose frame="">5.54171 3.816475 -0.015663 0 0 -1.583191</pose>
+	</model>
+     <model name="aws_robomaker_warehouse_ClutteringC_01_029">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringC_01</uri>
+        </include>
+        <pose frame="">5.384239 6.137154 0 0 0 3.150000</pose>
+	</model>
+     <model name="aws_robomaker_warehouse_ClutteringC_01_030">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringC_01</uri>
+        </include>
+        <pose frame="">3.236 6.137154 0 0 0 3.150000</pose>
+	</model>
+     <model name="aws_robomaker_warehouse_ClutteringC_01_031">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringC_01</uri>
+        </include>
+        <pose frame="">-1.573677 2.301994 -0.015663 0 0 -3.133191</pose>
+	</model>
+     <model name="aws_robomaker_warehouse_ClutteringC_01_032">
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringC_01</uri>
+        </include>
+        <pose frame="">-1.2196 9.407 -0.015663 0 0 1.563871</pose>
+	</model>
+     <model name='aws_robomaker_warehouse_ClutteringD_01_005'>
+        <include>
+            <uri>model://aws_robomaker_warehouse_ClutteringD_01</uri>
+        </include>
+        <pose frame=''>-1.634682 -7.811813 -0.319559 0 0 0</pose>
+	</model>
+      <model name='aws_robomaker_warehouse_TrashCanC_01_002'>
+        <include>
+            <uri>model://aws_robomaker_warehouse_TrashCanC_01</uri>
+        </include>
+        <pose frame=''>-1.592441 7.715420 0 0 0 0</pose>
+	</model>
+      <model name='aws_robomaker_warehouse_PalletJackB_01_001'>
+        <include>
+            <uri>model://aws_robomaker_warehouse_PalletJackB_01</uri>
+        </include>
+        <pose frame=''>-0.276098 -9.481944 0.023266 0 0 0</pose>
+	</model>
+    <light name="Warehouse_CeilingLight_003" type="point">
+      <pose frame="">0 0 9 0 0 0</pose>
+      <diffuse>0.5 0.5 0.5 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>80</range>
+        <constant>0.3</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <cast_shadows>0</cast_shadows>
+      <direction>0.1 0.1 -1</direction>
+    </light>
+    <gui fullscreen='0'>
+      <camera name='user_camera'>
+        <pose frame=''>-4.70385 10.895 16.2659 -0 0.921795 -1.12701</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+
+    <!--
+      Pedestrian intruder for person-sim, on the open floor in the middle of
+      the warehouse (1.5 m+ from every shelf and clutter pile on
+      maps/warehouse), a few metres from the robot's start. person_controller
+      (which steers on that map) publishes /person/cmd_vel; see person.world
+      for how the actor and its plugin work. <pose> yaw is the initial heading.
+    -->
+    <actor name="person_intruder">
+      <pose>0.5 -3.5 0 0 0 1.5708</pose>
+      <skin>
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+      </skin>
+      <animation name="walking">
+        <filename>walk.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>false</interpolate_x>
+      </animation>
+      <animation name="running">
+        <filename>run.dae</filename>
+        <scale>1.0</scale>
+        <interpolate_x>false</interpolate_x>
+      </animation>
+      <plugin name="person_actor" filename="libperson_actor_plugin.so">
+        <ros>
+          <namespace>/person</namespace>
+        </ros>
+        <walking_animation>walking</walking_animation>
+        <running_animation>running</running_animation>
+        <run_threshold>1.6</run_threshold>
+        <walk_animation_factor>4.15</walk_animation_factor>
+        <run_animation_factor>1.71</run_animation_factor>
+        <height>0.98</height>
+        <cmd_timeout>0.5</cmd_timeout>
+      </plugin>
+    </actor>
+  </world>
+</sdf>

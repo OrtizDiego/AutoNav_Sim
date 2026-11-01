@@ -89,6 +89,7 @@ Each scenario is one command: Gazebo, an RViz layout made for it and every node 
 | `make sim` | The robot in the museum (`room.world`), nothing else. Drive it with `make teleop`. |
 | `make nav-sim` | `sim` + Nav2 in one go: map, costmaps and AMCL pose appear immediately. Send goals with RViz's **Nav2 Goal** tool. |
 | `make nav-sim WORLD=warehouse` | Another world from `config/worlds.yaml` (the AWS RoboMaker small warehouse, fetched by the Dockerfile). The first run has no map: SLAM + Nav2 + a frontier explorer map it autonomously and save `maps/warehouse.yaml`; later runs navigate on it. `make sim WORLD=...` shows the world alone. |
+| `make person-sim WORLD=warehouse` | The security guard in the warehouse: its world with the pedestrian, its map (run `make nav-sim WORLD=warehouse` once to build it) and its own patrol zones and restricted areas (`config/guard_zones_warehouse.yaml`). |
 
 > **Slow machine?** Add `GUI=false` to any scenario (`make person-sim GUI=false`): Gazebo runs without its window and RViz shows the robot, scan, map and camera. With software rendering the Gazebo window costs CPU the simulation needs.
 
@@ -247,6 +248,7 @@ src/my_bot/
     ├── room.world                       # the museum (sim, nav-sim)
     ├── ball.world                       # museum + red ball
     ├── person.world                     # museum + pedestrian actor
+    ├── warehouse_person.world           # AWS warehouse + pedestrian actor (person-sim WORLD=warehouse)
     └── yolo.world                       # flat ground + standing person, crate, barrel
 src/person_actor_plugin/                 # Gazebo plugin: velocity-driven walking/running actor
 ```

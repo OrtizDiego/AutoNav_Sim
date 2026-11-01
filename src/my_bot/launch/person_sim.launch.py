@@ -17,7 +17,7 @@
   1. Gazebo with person.world (museum + walking/running pedestrian) and RViz.
   2. Nav2 (map_server + AMCL + planners) on maps/my_map, for the patrol.
   3. person_controller: WALK / RUN / EXHAUSTED pedestrian that steers on the
-     museum map so it never walks into a wall, and sprints away once the
+     world's map so it never walks into a wall, and sprints away once the
      robot's tracker locks on.
   4. person_tracker: YOLOv8n + OpenCV tracker + Kalman -> /person_bbox.
   5. sensor_fusion (mode person): bbox + lidar -> range and bearing.
@@ -32,6 +32,12 @@
      viewpoints picked on the map, then reports the incident and resumes
      the patrol. Latched e-stop from system_monitor overrides everything.
   8. system_monitor: sensor watchdog, /trigger_estop and /clear_estop.
+
+``world_name:=<name>`` (`make person-sim WORLD=warehouse`) takes the world
+from config/worlds.yaml instead: its ``person_world`` (the world plus the
+actor), its map (must exist: `make nav-sim WORLD=<name>` builds it) for Nav2,
+the pedestrian and the sweep, and its ``zones`` file for the guard. Without
+it: person.world, maps/my_map and guard_zones.yaml (the museum).
 
 ``scenario:=<name>`` makes the person walk that scenario from
 config/scenarios.yaml instead of wandering (scenario.launch.py, which also
@@ -48,7 +54,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -56,10 +63,33 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 import yaml
 
+from my_bot.worlds import get_world, load_worlds, maps_source_dir
 
-def generate_launch_description():
-    """Compose the person-sim launch description."""
+
+def _setup(context):
+    """Everything that depends on the chosen world."""
     pkg = get_package_share_directory('my_bot')
+    name = LaunchConfiguration('world_name').perform(context)
+    scenario = LaunchConfiguration('scenario').perform(context)
+    second = LaunchConfiguration('second_person').perform(context) == 'true'
+
+    if name:
+        # config/worlds.yaml: the world with the actor, the world's map and
+        # the guard's zones on that map
+        world = get_world(load_worlds(os.path.join(pkg, 'config', 'worlds.yaml')), name)
+        map_yaml = world.map_yaml(maps_source_dir(pkg))
+        if not os.path.exists(map_yaml):
+            raise RuntimeError(
+                f'world {name!r}: no map at {map_yaml}; `make nav-sim WORLD={name}` builds it')
+        zones_file = world.zones_file(pkg)
+        world_args = {'world_name': name, 'with_person': 'true'}
+        if (scenario or second) and name != 'museum':
+            raise RuntimeError('scripted scenarios are written for the museum')
+    else:
+        map_yaml = os.path.join(pkg, 'maps', 'my_map.yaml')
+        zones_file = os.path.join(pkg, 'config', 'guard_zones.yaml')
+        world_args = {'world': LaunchConfiguration('world')}
+
     # behavior_params.yaml is a standard params file; each node picks up its
     # own <node_name>: ros__parameters: section.
     params = [os.path.join(pkg, 'config', 'behavior_params.yaml'),
@@ -68,7 +98,7 @@ def generate_launch_description():
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'sim.launch.py')),
         launch_arguments={
-            'world': LaunchConfiguration('world'),
+            **world_args,
             'rviz_config': os.path.join(pkg, 'config', 'person.rviz'),
         }.items(),
     )
@@ -80,7 +110,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg, 'launch', 'navigation.launch.py')),
         launch_arguments={
-            'map': os.path.join(pkg, 'maps', 'my_map.yaml'),
+            'map': map_yaml,
             'params_file': os.path.join(pkg, 'config', 'nav2_params.yaml'),
             'use_sim_time': 'true',
         }.items(),
@@ -90,11 +120,8 @@ def generate_launch_description():
         return Node(package='my_bot', executable=executable, name=executable,
                     output='screen', parameters=params + ([extra] if extra else []))
 
-    scenario_arg = DeclareLaunchArgument(
-        'scenario', default_value='',
-        description='Scripted person from config/scenarios.yaml; empty = wander')
     person_args = {
-        'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml'),
+        'map_yaml': map_yaml,
         # value_type=str: an empty scenario stays '' instead of YAML null
         'scenario': ParameterValue(LaunchConfiguration('scenario'), value_type=str),
         'scenarios_file': os.path.join(pkg, 'config', 'scenarios.yaml')}
@@ -112,14 +139,8 @@ def generate_launch_description():
                     ('/person_mode', '/person2/mode'),
                     ('/scenario/status', '/scenario/second_person_status')])
 
-    return LaunchDescription([
-        scenario_arg,
-        DeclareLaunchArgument(
-            'world', default_value=os.path.join(pkg, 'worlds', 'person.world'),
-            description='Gazebo world (two_person.world for second_person)'),
-        DeclareLaunchArgument(
-            'second_person', default_value='false',
-            description="Walk the scenario's second person (needs two_person.world)"),
+    return [
+        LogInfo(msg=f'person-sim: map {map_yaml}, zones {zones_file}'),
         sim,
         nav2,
         node('person_controller', person_args),
@@ -127,8 +148,27 @@ def generate_launch_description():
         node('person_tracker'),
         node('sensor_fusion', {'mode': 'person'}),
         node('target_tracker'),
-        node('security_guard_bt', {
-            'zones_file': os.path.join(pkg, 'config', 'guard_zones.yaml'),
-            'map_yaml': os.path.join(pkg, 'maps', 'my_map.yaml')}),
+        node('security_guard_bt', {'zones_file': zones_file, 'map_yaml': map_yaml}),
         node('system_monitor'),
+    ]
+
+
+def generate_launch_description():
+    """Compose the person-sim launch description."""
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'scenario', default_value='',
+            description='Scripted person from config/scenarios.yaml; empty = wander'),
+        DeclareLaunchArgument(
+            'world', default_value=os.path.join(
+                get_package_share_directory('my_bot'), 'worlds', 'person.world'),
+            description='Gazebo world (two_person.world for second_person)'),
+        DeclareLaunchArgument(
+            'world_name', default_value='',
+            description='Environment from config/worlds.yaml (museum, warehouse): its '
+                        "person_world, map and zones; overrides world"),
+        DeclareLaunchArgument(
+            'second_person', default_value='false',
+            description="Walk the scenario's second person (needs two_person.world)"),
+        OpaqueFunction(function=_setup),
     ])

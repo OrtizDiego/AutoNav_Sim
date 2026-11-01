@@ -408,6 +408,7 @@ def _actor(world, name='person_intruder'):
     ('yolo.world', 'person_intruder', '/person'),
     ('two_person.world', 'person_intruder', '/person'),
     ('two_person.world', 'second_person', '/person2'),
+    ('warehouse_person.world', 'person_intruder', '/person'),
 ])
 def test_actor_uses_plugin_not_script(world, name, namespace):
     actor = _actor(world, name)
@@ -424,6 +425,21 @@ def test_actor_uses_plugin_not_script(world, name, namespace):
 def test_person_spawns_on_open_floor(museum):
     x, y = (float(v) for v in _actor('person.world').findtext('pose').split()[:2])
     assert museum.clearance(x, y) >= 1.0
+
+
+def test_person_spawns_on_open_floor_in_the_warehouse():
+    """On the warehouse map and clear of every model of the world file."""
+    root = ET.parse(os.path.join(PKG_DIR, 'worlds', 'warehouse_person.world')).getroot()
+    x, y = (float(v) for v in root.find('.//actor').findtext('pose').split()[:2])
+    cmap = ClearanceMap.from_yaml(os.path.join(PKG_DIR, 'maps', 'warehouse.yaml'))
+    assert cmap.clearance(x, y) >= 1.0
+    for model in root.findall('./world/model'):
+        mx, my = (float(v) for v in model.findtext('pose').split()[:2])
+        if model.get('name').startswith(('aws_robomaker_warehouse_Ground',
+                                         'aws_robomaker_warehouse_Wall',
+                                         'aws_robomaker_warehouse_Lamp')):
+            continue  # the floor, the walls and the lamp are all around the origin
+        assert math.hypot(x - mx, y - my) >= 1.5, model.get('name')
 
 
 def test_two_person_world_is_person_world_plus_one():

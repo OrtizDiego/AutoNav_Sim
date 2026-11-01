@@ -30,6 +30,8 @@ GAZEBO_MODEL_PATH here, so no world needs Gazebo's online model database.
 of a ``world`` file (`make sim WORLD=warehouse`): its world file, the robot's
 spawn pose and, for an external world, its Gazebo model/resource paths and
 a copy of the world with shadows off (~/.ros/autonav_worlds).
+``with_person:=true`` (person_sim.launch.py) takes the world's ``person_world``
+instead: its world file plus the pedestrian actor.
 """
 
 import os
@@ -74,7 +76,10 @@ def _gazebo_and_robot(context):
     name = LaunchConfiguration('world_name').perform(context)
     if name:
         world = get_world(load_worlds(os.path.join(pkg_share, 'config', 'worlds.yaml')), name)
-        world_path = _world_file(world, pkg_share)
+        if LaunchConfiguration('with_person').perform(context) == 'true':
+            world_path = world.person_world_file(pkg_share)  # ours: shadows are off
+        else:
+            world_path = _world_file(world, pkg_share)
         spawn = world.spawn
         actions += [SetEnvironmentVariable(var, value)
                     for var, value in gazebo_env(world, context.environment).items()]
@@ -129,6 +134,9 @@ def generate_launch_description():
     world_name_arg = DeclareLaunchArgument(
         'world_name', default_value='',
         description='Environment from config/worlds.yaml; overrides world')
+    with_person_arg = DeclareLaunchArgument(
+        'with_person', default_value='false',
+        description="With world_name: the world's person_world (adds the pedestrian)")
 
     # model://iscas_museum and any other vendored model (models/README.md)
     model_path = AppendEnvironmentVariable(
@@ -151,6 +159,7 @@ def generate_launch_description():
         gui_arg,
         rviz_on_arg,
         world_name_arg,
+        with_person_arg,
         model_path,
         rsp,
         # 3. Gazebo + the robot (world and spawn pose depend on world_name)

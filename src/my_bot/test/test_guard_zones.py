@@ -20,6 +20,7 @@ import pytest
 
 from my_bot.clearance_map import ClearanceMap
 from my_bot.guard_zones import GuardZones, point_in_polygon
+from my_bot.worlds import load_worlds
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ZONES_YAML = os.path.join(PKG, 'config', 'guard_zones.yaml')
@@ -82,32 +83,70 @@ def test_from_yaml(tmp_path):
     assert list(zones.restricted) == ['r']
 
 
-# -- the shipped config/guard_zones.yaml on the museum map ------------------
+# -- the shipped zones files on the maps of their worlds --------------------
+# config/worlds.yaml names a zones file and a map per world: person-sim takes
+# both from there, so the same checks run on every world that has zones.
 
-@pytest.fixture(scope='module')
-def museum():
-    return GuardZones.from_yaml(ZONES_YAML), ClearanceMap.from_yaml(MAP_YAML)
+WORLDS = load_worlds(os.path.join(PKG, 'config', 'worlds.yaml'))
+ZONED = sorted(name for name, world in WORLDS.items() if world.zones)
 
 
-def test_config_has_zones_schedule_and_areas(museum):
-    zones, _ = museum
+def _load(name):
+    world = WORLDS[name]
+    return (GuardZones.from_yaml(world.zones_file(PKG)),
+            ClearanceMap.from_yaml(world.map_yaml(os.path.join(PKG, 'maps'))))
+
+
+@pytest.fixture(params=ZONED)
+def world_zones(request):
+    return (request.param,) + _load(request.param)
+
+
+def test_museum_and_warehouse_have_zones():
+    assert {'museum', 'warehouse'} <= set(ZONED)
+    assert WORLDS['museum'].zones_file(PKG) == ZONES_YAML
+
+
+def test_config_has_zones_schedule_and_areas(world_zones):
+    _, zones, _ = world_zones
     assert len(zones.zones) >= 2
     assert {name for name, _ in zones.schedule} == set(zones.zones)
     assert zones.restricted
 
 
-def test_config_waypoints_are_open_floor_outside_restricted_areas(museum):
-    zones, cmap = museum
-    for name, waypoints in zones.zones.items():
+def test_config_waypoints_are_open_floor_outside_restricted_areas(world_zones):
+    name, zones, cmap = world_zones
+    for zone, waypoints in zones.zones.items():
         for x, y in waypoints:
-            assert cmap.clearance(x, y) >= 0.5, f'{name} ({x}, {y}) near a wall'
-            assert zones.areas_containing(x, y) == [], f'{name} ({x}, {y}) restricted'
+            assert cmap.clearance(x, y) >= 0.5, f'{name}/{zone} ({x}, {y}) near a wall'
+            assert zones.areas_containing(x, y) == [], f'{name}/{zone} ({x}, {y}) restricted'
 
 
-def test_config_restricted_areas_are_on_the_map(museum):
-    zones, cmap = museum
-    for name, poly in zones.restricted.items():
+def test_config_restricted_areas_are_on_the_map(world_zones):
+    name, zones, cmap = world_zones
+    for area, poly in zones.restricted.items():
         cx = sum(x for x, _ in poly) / len(poly)
         cy = sum(y for _, y in poly) / len(poly)
         assert cmap.clearance(cx, cy) > 0.0 or any(
-            cmap.clearance(x, y) > 0.0 for x, y in poly), f'{name} is off the floor'
+            cmap.clearance(x, y) > 0.0 for x, y in poly), f'{name}/{area} is off the floor'
+
+
+def test_warehouse_legs_are_clear_straight_lines():
+    """Each leg of a warehouse route (including the one closing the loop)
+    keeps 0.5 m from the walls and shelves, so Nav2 needs no detour."""
+    zones, cmap = _load('warehouse')
+    for name, route in zones.zones.items():
+        for a, b in zip(route, route[1:] + route[:1]):
+            assert cmap.segment_clearance(a, b) >= 0.5, f'{name}: {a} -> {b}'
+
+
+def test_warehouse_restricted_areas_hold_floor_the_robot_can_see():
+    zones, cmap = _load('warehouse')
+    for name, poly in zones.restricted.items():
+        xs = [x for x, _ in poly]
+        ys = [y for _, y in poly]
+        floor = [(x, y)
+                 for x in (min(xs) + 0.1 * i for i in range(int((max(xs) - min(xs)) / 0.1)))
+                 for y in (min(ys) + 0.1 * j for j in range(int((max(ys) - min(ys)) / 0.1)))
+                 if point_in_polygon(x, y, poly) and cmap.clearance(x, y) >= 0.5]
+        assert floor, f'{name} has no floor an intruder could stand on'
