@@ -20,7 +20,7 @@ points. Everything is in the map frame (= Gazebo world frame, metres)::
 
   patrol_zones:            # name -> waypoints [[x, y], ...], visited in order
     north_hall: [[3.28, 6.85], [-0.92, 6.85]]
-  patrol_schedule:         # cycled on the node clock (simulation seconds)
+  patrol_schedule:         # cycled in simulation seconds from patrol start
     - {zone: north_hall, secs: 120.0}
   restricted_areas:        # name -> polygon [[x, y], ...]
     statue_circle: [[-8.0, 0.5], [-4.5, 0.5], [-4.5, 3.5], [-8.0, 3.5]]

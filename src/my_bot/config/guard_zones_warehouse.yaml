@@ -17,8 +17,9 @@ patrol_zones:
   # Aisle between the clutter piles, north of the open floor
   north_aisle: [[0.75, 7.0], [0.75, 2.5], [1.0, 1.0]]
 
-# Cycled on the node clock (simulation seconds), in the order that keeps
-# the legs between zones short. A zone switch waits for the current leg.
+# Cycled on the node clock (simulation seconds, counted from the moment the
+# guard has Nav2 active), in the order that keeps the legs between zones
+# short. A zone switch waits for the current leg.
 patrol_schedule:
   - {zone: central_floor, secs: 120.0}
   - {zone: south_channel, secs: 90.0}

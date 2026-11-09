@@ -11,8 +11,9 @@ patrol_zones:
   # West wing, past the statue circle
   west_wing: [[-7.5, 4.5], [-6.5, -1.5], [-7.5, -4.0], [-5.5, -7.0]]
 
-# Cycled on the node clock (simulation seconds). A zone switch waits for the
-# current leg to finish.
+# Cycled on the node clock (simulation seconds), counted from the moment the
+# guard has Nav2 active, so a slow startup does not eat north_hall's slot.
+# A zone switch waits for the current leg to finish.
 patrol_schedule:
   - {zone: north_hall, secs: 180.0}
   - {zone: south_gallery, secs: 180.0}
