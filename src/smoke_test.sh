@@ -47,3 +47,16 @@ bash "$(dirname "$0")/stop_sim.sh" > /dev/null 2>&1
 
 [ -f "$out/report.json" ] && cat "$out/report.json"
 python3 -m my_bot.scenario_metrics smoke "$out/report.json"
+status=$?
+
+# On failure, put the telling part of launch.log in the job's own log: CI
+# keeps launch.log only as an artifact, and a startup failure (Nav2 bringup
+# aborted, a node died, Gazebo stalled) is invisible in the report.
+if [ "$status" -ne 0 ] && [ -f "$out/launch.log" ]; then
+    echo "--- launch.log: errors, Nav2 lifecycle, guard (first 150) ---"
+    grep -aE '\[(ERROR|FATAL)\]|CRITICAL|Failed to|heartbeat|Traceback|Error:|process has died|lifecycle_manager|security_guard_bt' \
+        "$out/launch.log" | head -n 150
+    echo "--- launch.log: last 60 lines ---"
+    tail -n 60 "$out/launch.log"
+fi
+exit "$status"

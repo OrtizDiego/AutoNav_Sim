@@ -331,7 +331,8 @@ def smoke_failures(report: Optional[dict]) -> List[str]:
     if not report.get('events', {}).get('intruder_detected'):
         failures.append('no intruder_detected event from the guard')
     if not report.get('guard_state_pct'):
-        failures.append('no /security_guard/state received')
+        failures.append('no /security_guard/state received (the guard starts once '
+                        'Nav2 is active: did Nav2 bringup fail?)')
     return failures
 
 
