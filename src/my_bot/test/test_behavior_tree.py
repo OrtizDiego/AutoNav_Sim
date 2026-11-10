@@ -477,3 +477,54 @@ class TestTree:
         assert active_protocol(tree) == 'EmergencyStop'
         assert pub.last.linear.x == 0.0 and pub.last.angular.z == 0.0
         assert nav.goals == []
+
+
+def test_guard_navigator_asks_again_when_get_state_does_not_answer(monkeypatch):
+    """A lost get_state reply must not hang the guard (CI sprint, 2026-11-02)."""
+    import sys
+    import types
+
+    from my_bot import security_guard_bt as guard
+
+    class Future:
+        def __init__(self, label):
+            self.label = label
+
+        def done(self):
+            return self.label is not None
+
+        def cancel(self):
+            self.cancelled = True
+
+        def result(self):
+            return types.SimpleNamespace(
+                current_state=types.SimpleNamespace(label=self.label))
+
+    replies = [None, 'inactive', 'active']  # lost, not yet, active
+    asked = []
+
+    class Client:
+        def wait_for_service(self, timeout_sec=None):
+            return True
+
+        def call_async(self, request):
+            asked.append(request)
+            return Future(replies[len(asked) - 1])
+
+    class GetState:
+        Request = object
+
+    monkeypatch.setitem(sys.modules, 'lifecycle_msgs', types.ModuleType('lifecycle_msgs'))
+    monkeypatch.setitem(sys.modules, 'lifecycle_msgs.srv',
+                        types.SimpleNamespace(GetState=GetState))
+    timeouts = []
+    monkeypatch.setattr(guard.rclpy, 'spin_until_future_complete',
+                        lambda node, future, timeout_sec=None: timeouts.append(timeout_sec),
+                        raising=False)
+    nav = guard.GuardNavigator()
+    nav.poll_secs = 0.0
+    nav.create_client = lambda srv, name: Client()
+    nav.info = lambda msg: None
+    nav._waitForNodeToActivate('amcl')
+    assert len(asked) == 3
+    assert timeouts == [nav.call_timeout] * 3
