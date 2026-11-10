@@ -76,7 +76,9 @@ view. Without a map (no zones file, or no map -> odom yet) there is no sweep.
 
 Patrol zones, their schedule and restricted areas come from ``zones_file``
 (my_bot.guard_zones); without one the ``waypoints`` parameter is a single
-zone. The zone switches when the current leg ends, never mid-goal. An
+zone. The schedule counts from the moment Nav2 is active (so a slow
+bringup does not eat the first zone's slot). The zone switches when the
+current leg ends, never mid-goal. An
 intruder inside a restricted area raises a restricted_area event, once per
 area and incident.
 
@@ -715,10 +717,14 @@ class SecurityGuardBTNode(Node):
         self._navigator = BasicNavigator()
         self.get_logger().info('waiting for Nav2...')
         self._navigator.waitUntilNav2Active()
+        # The patrol schedule counts from here, not from the simulation's
+        # start: on a slow machine Gazebo, YOLO and Nav2 bringup took most
+        # of the first zone's slot, and the guard left it almost unseen.
+        self._patrol_start = self._now()
 
         self._bt = build_security_guard_tree(
             self._navigator, self._vel_pub.publish,
-            lambda: self._zones.route_at(self._now()), gains,
+            self._patrol_route, gains,
             target_timeout=float(gp('target_timeout').value),
             search_secs=float(gp('search_secs').value),
             search_speed=float(gp('search_angular_speed').value),
@@ -782,6 +788,10 @@ class SecurityGuardBTNode(Node):
 
     def _estop_cb(self, msg: Bool):
         py_trees.blackboard.Blackboard().set(BB_ESTOP, bool(msg.data))
+
+    def _patrol_route(self):
+        """(zone, waypoints) the schedule assigns now, timed from Nav2 up."""
+        return self._zones.route_at(self._now() - self._patrol_start)
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9

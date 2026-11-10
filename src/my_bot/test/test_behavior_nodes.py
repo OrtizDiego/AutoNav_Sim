@@ -473,7 +473,7 @@ class TestSecurityGuardZonesAndSweep:
         g = museum_guard
         assert set(g._zones.zones) == {'north_hall', 'south_gallery', 'west_wing'}
         _tick(g)
-        assert _bb(sg.BB_PATROL_ZONE) == g._zones.zone_at(g.clock.seconds)
+        assert _bb(sg.BB_PATROL_ZONE) == g._patrol_route()[0] == 'north_hall'
         markers = g.publishers['/guard_zones'].last.markers
         assert {m.ns for m in markers} >= {'restricted', 'restricted_labels',
                                            'patrol_north_hall'}
@@ -487,6 +487,16 @@ class TestSecurityGuardZonesAndSweep:
         g = sg.SecurityGuardBTNode()
         assert g._zones.route_at(0.0) == ('patrol', [(1.0, 2.0)])
         assert 'not usable' in g.logger.messages('error')[0]
+
+    def test_schedule_counts_from_nav2_active(self, museum_guard):
+        # The clock was already at 100 s when Nav2 came up: a slow startup
+        # must not cut the first zone's 180 s slot short (CI smoke runs left
+        # the north hall, where the intruder waits, after a few minutes).
+        g = museum_guard
+        g.clock.advance(150.0)
+        assert g._patrol_route()[0] == 'north_hall'
+        g.clock.advance(40.0)
+        assert g._patrol_route()[0] == 'south_gallery'
 
     def test_losing_the_intruder_plans_a_sweep(self, museum_guard):
         g = museum_guard

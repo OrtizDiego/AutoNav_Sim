@@ -242,7 +242,8 @@ class TestSmoke:
         assert smoke_failures(bad) == [
             'outcome timeout (want completed)', 'the person was never detected',
             'no intruder_detected event from the guard',
-            'no /security_guard/state received']
+            'no /security_guard/state received (the guard starts once '
+            'Nav2 is active: did Nav2 bringup fail?)']
 
     def test_the_targets_are_not_checked(self):
         # A slow runner misses the run's targets; the smoke test does not care
