@@ -231,6 +231,59 @@ class TestIntruderTracker:
         assert _see(trk, 0.5, (0.0, 4.0))           # third in a row: moved
         assert trk.state == TENTATIVE and trk.track_id == 2
 
+    def test_range_outliers_on_the_right_bearing_keep_the_track(self):
+        # The box's lidar beams miss the person and hit the wall behind:
+        # the bearing is right, the range 5 m long (walk_in, Phase 7b).
+        trk = IntruderTracker(max_outliers=3, max_range_outliers=15)
+        for i in range(3):
+            _see(trk, i * 0.1, (3.0, 0.0))
+        for i in range(3, 7):
+            assert trk.camera(i * 0.1, ORIGIN, 0.0, 8.0)  # used bearing-only
+        assert trk.confirmed and trk.track_id == 1
+        assert trk.hits == 7 and trk.range_outliers == 4
+        assert trk.filter.position == pytest.approx((3.0, 0.0), abs=1e-6)
+        _see(trk, 0.7, (3.0, 0.0))                  # a good range again
+        assert trk.range_outliers == 0
+
+    def test_a_persistent_range_is_absorbed_without_a_break(self):
+        # Bearing-only updates leave the range uncertain, so a range that
+        # keeps saying the same thing eventually fits the gate.
+        trk = IntruderTracker(max_range_outliers=100)
+        for i in range(3):
+            _see(trk, i * 0.1, (3.0, 0.0))
+        for i in range(3, 40):
+            trk.camera(i * 0.1, ORIGIN, 0.0, 8.0)
+        assert trk.confirmed and trk.track_id == 1
+        assert trk.filter.position[0] > 6.0
+
+    def test_a_range_that_keeps_disagreeing_restarts_the_track(self):
+        trk = IntruderTracker(max_range_outliers=3)
+        for i in range(3):
+            _see(trk, i * 0.1, (3.0, 0.0))
+        trk.camera(0.3, ORIGIN, 0.0, 8.0)
+        trk.camera(0.4, ORIGIN, 0.0, 8.0)
+        assert trk.track_id == 1
+        assert trk.camera(0.5, ORIGIN, 0.0, 8.0)    # third in a row
+        assert trk.state == TENTATIVE and trk.track_id == 2
+        assert trk.filter.position == pytest.approx((8.0, 0.0), abs=1e-6)
+
+    def test_lidar_vouches_for_the_range(self):
+        trk = IntruderTracker(max_range_outliers=3)
+        for i in range(3):
+            _see(trk, i * 0.1, (3.0, 0.0))
+        trk.camera(0.3, ORIGIN, 0.0, 8.0)
+        trk.camera(0.4, ORIGIN, 0.0, 8.0)
+        assert trk.lidar(0.45, [(3.0, 0.0)])
+        assert trk.range_outliers == 0
+        trk.camera(0.5, ORIGIN, 0.0, 8.0)
+        assert trk.confirmed and trk.track_id == 1
+
+    def test_tentative_range_outlier_still_restarts(self):
+        trk = IntruderTracker()
+        _see(trk, 0.0, (3.0, 0.0))
+        assert trk.camera(0.1, ORIGIN, 0.0, 8.0)
+        assert trk.track_id == 2                    # not confirmed: no benefit of the doubt
+
     def test_lidar_updates_a_confirmed_track(self):
         trk = IntruderTracker()
         assert not trk.lidar(0.0, [(3.0, 0.0)])     # nothing to update

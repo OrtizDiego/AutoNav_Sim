@@ -231,6 +231,15 @@ class TestTrackerHelpers:
         assert pt.clip_box((630, 470, 50, 50), 640, 480) == (630, 470, 10, 10)
         assert pt.clip_box((700, 10, 20, 20), 640, 480) is None
 
+    def test_leaving_frame(self):
+        # Boxes from the sprint run (320 px image): a sliver at the left
+        # edge after the person had left the view, and the person in full.
+        assert pt.leaving_frame((0, 56, 8, 67), 320)
+        assert pt.leaving_frame((310, 56, 10, 67), 320)       # right edge
+        assert not pt.leaving_frame((300, 64, 19, 57), 320)   # whole, at the edge
+        assert not pt.leaving_frame((150, 56, 8, 67), 320)    # narrow, mid-image
+        assert not pt.leaving_frame((0, 56, 8, 67), 320, min_aspect=0.1)
+
 
 class TestBoxKalman:
 
