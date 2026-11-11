@@ -25,6 +25,9 @@ Pipeline per camera frame
    the OpenCV tracker, so tracker drift never outlives one cycle.
    If YOLO misses the person ``max_yolo_misses`` times in a row, the track
    is dropped, so a tracker stuck on the background cannot hold a lock.
+   A tracker box squeezed against the left/right edge, narrower than
+   ``edge_min_aspect`` x its height, is dropped at once: the person has
+   left the frame and the sliver would point the bearing at the background.
 2. Between detections the OpenCV tracker (``tracker``: KCF by default, a few
    ms per frame where CSRT took tens; falls back to CSRT, then MIL,
    whichever this OpenCV build has) follows the box frame to frame.
@@ -106,6 +109,22 @@ def clip_box(box: Box, width: int, height: int) -> Optional[Box]:
     if x2 - x1 < 2 or y2 - y1 < 2:
         return None
     return (x1, y1, x2 - x1, y2 - y1)
+
+
+def leaving_frame(box: Box, width: int, min_aspect: float = 0.2,
+                  margin: int = 1) -> bool:
+    """Tell whether a box is a sliver squeezed against the left/right edge.
+
+    A tracker box clipped at the image's side and narrower than a person
+    can be (``w < min_aspect * h``; a standing person is ~0.3 wide per unit
+    height) has lost the person out of the frame: the OpenCV tracker keeps
+    the sliver on the background while the robot turns away, and its
+    centre gives a bearing that is off by tens of degrees (Phase 7b: the
+    sprint scenario's false alarms).
+    """
+    x, _, w, h = box
+    at_edge = x <= margin or x + w >= width - margin
+    return at_edge and w < min_aspect * h
 
 
 def select_person_box(detections: list,
@@ -314,6 +333,7 @@ class PersonTrackerNode(Node):
         self.declare_parameter('redetect_period', 0.5)
         self.declare_parameter('max_yolo_misses', 2)
         self.declare_parameter('max_coast_frames', 10)
+        self.declare_parameter('edge_min_aspect', 0.2)
         self.declare_parameter('publish_debug_image', True)
         self.declare_parameter('stats_period', 10.0)
         self.declare_parameter('tracker', 'kcf')
@@ -327,6 +347,7 @@ class PersonTrackerNode(Node):
         self._redetect_period = float(gp('redetect_period').value)
         self._max_misses = int(gp('max_yolo_misses').value)
         self._max_coast = int(gp('max_coast_frames').value)
+        self._edge_aspect = float(gp('edge_min_aspect').value)
         self._debug = bool(gp('publish_debug_image').value)
         self._stats_period = float(gp('stats_period').value)
         self._tracker_name = str(gp('tracker').value).lower()
@@ -482,6 +503,12 @@ class PersonTrackerNode(Node):
             self._track_timer.add(time.monotonic() - start)
             if ok:
                 measured = clip_box(tuple(int(v) for v in bb), w, h)
+            if measured is not None and leaving_frame(measured, w, self._edge_aspect):
+                # The person has left the frame; only YOLO may bring them back.
+                self._reset()
+                self._publish(msg, frame)
+                self._log_stats()
+                return
 
         if measured is not None:
             if self._kf is None:

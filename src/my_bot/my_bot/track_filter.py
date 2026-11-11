@@ -40,6 +40,17 @@ track. IntruderTracker adds the lifecycle around the filter:
   confirmed   after ``confirm_hits`` camera hits; only these are published
   lost        no accepted measurement for ``lost_timeout`` (``tentative_timeout``
               before confirmation); the next detection starts a new track
+  restart     ``max_outliers`` gated-out ranged detections in a row: the
+              target is somewhere else, a new tentative track starts there
+
+A ranged detection whose bearing fits a confirmed track but whose range
+does not is applied bearing-only and does not count towards a restart: the
+range comes from the lidar beams inside the camera box, which miss a person
+and hit the wall behind (Phase 7b: these restarts were most of the scenario
+runs' track breaks and false alarms). Only ``max_range_outliers`` of them in
+a row with no ranged update (camera or lidar) in between restart the track;
+a range that keeps disagreeing usually fits the gate earlier, as the
+bearing-only updates leave the track's range uncertain.
 
 Lidar clusters only update a confirmed track whose camera detection is at
 most ``lidar_coast_secs`` old, and only when exactly one cluster falls in
@@ -303,7 +314,8 @@ class IntruderTracker:
                  lidar_sigma: float = 0.12, speed_sigma: float = 1.0,
                  confirm_hits: int = 3, tentative_timeout: float = 0.5,
                  lost_timeout: float = 1.5, lidar_coast_secs: float = 1.5,
-                 max_outliers: int = 3, max_lag: float = 1.0):
+                 max_outliers: int = 3, max_lag: float = 1.0,
+                 max_range_outliers: int = 15):
         self.accel_noise = accel_noise
         self.bearing_sigma = bearing_sigma
         self.range_sigma = range_sigma
@@ -316,11 +328,13 @@ class IntruderTracker:
         self.lidar_coast_secs = lidar_coast_secs
         self.max_outliers = max_outliers
         self.max_lag = max_lag
+        self.max_range_outliers = max_range_outliers
 
         self.filter: Optional[ConstantVelocityEKF] = None
         self.state = NONE
         self.hits = 0
         self.outliers = 0
+        self.range_outliers = 0  # ranged hits used bearing-only, in a row
         self.track_id = 0
         self.last_update = -math.inf   # time of the last accepted measurement
         self.last_camera = -math.inf   # time of the last accepted camera hit
@@ -342,7 +356,7 @@ class IntruderTracker:
             pose[1] + range_m * math.sin(world), cov,
             self.speed_sigma, self.accel_noise, self.max_lag)
         self.state = TENTATIVE
-        self.hits, self.outliers = 1, 0
+        self.hits, self.outliers, self.range_outliers = 1, 0, 0
         self.track_id += 1
         self.last_update = self.last_camera = t
 
@@ -363,14 +377,32 @@ class IntruderTracker:
                                        self.bearing_sigma, sigma)
         if ok is None:
             return False
+        ranged = range_m is not None
+        if not ok and ranged and self.confirmed:
+            # The bearing comes from the image; the range from the lidar
+            # beams inside the box, which miss a person and hit the wall
+            # behind (or an exhibit in front). If the bearing alone fits,
+            # the range is the outlier: keep the track, use the bearing.
+            ok = self.filter.range_bearing(t, pose, bearing, None,
+                                           self.bearing_sigma, 0.0)
+            if ok:
+                self.range_outliers += 1
+                if self.range_outliers >= self.max_range_outliers:
+                    # The range has disagreed for a while with no ranged
+                    # update in between: the track's range is what is wrong.
+                    self._start(t, pose, bearing, range_m)
+                    return True
+                ranged = False
         if not ok:
             self.outliers += 1
-            if range_m is not None and (
+            if ranged and (
                     self.state == TENTATIVE or self.outliers >= self.max_outliers):
                 self._start(t, pose, bearing, range_m)  # it is somewhere else
                 return True
             return False
         self.outliers = 0
+        if ranged:
+            self.range_outliers = 0
         self.hits += 1
         self.last_update = max(self.last_update, t)
         self.last_camera = max(self.last_camera, t)
@@ -391,6 +423,7 @@ class IntruderTracker:
             return False  # nothing there, or ambiguous
         if self.filter.update_position(t, gated[0], self.lidar_sigma, gate=False):
             self.last_update = max(self.last_update, t)
+            self.range_outliers = 0  # the lidar vouches for the track's range
             return True
         return False
 

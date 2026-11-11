@@ -187,6 +187,38 @@ def _twist(linear: float = 0.0, angular: float = 0.0) -> Twist:
     return cmd
 
 
+class GuardNavigator(BasicNavigator):
+    """BasicNavigator whose wait for Nav2 cannot hang on a lost reply.
+
+    Humble's waitUntilNav2Active() asks each node's get_state service with
+    no timeout. Asked while AMCL was still being created, the reply never
+    came and the guard waited forever: no patrol, no /security_guard/state
+    (the CI sprint run of 2026-11-02, and a local one in Phase 7b). Here
+    each request gives up after ``call_timeout`` seconds and is sent again.
+    """
+
+    call_timeout = 2.0
+    poll_secs = 1.0
+
+    def _waitForNodeToActivate(self, node_name):  # noqa: N802 - overrides Nav2
+        from lifecycle_msgs.srv import GetState
+        client = self.create_client(GetState, f'{node_name}/get_state')
+        while not client.wait_for_service(timeout_sec=1.0):
+            self.info(f'{node_name}/get_state service not available, waiting...')
+        state = 'unknown'
+        while state != 'active':
+            future = client.call_async(GetState.Request())
+            rclpy.spin_until_future_complete(self, future, timeout_sec=self.call_timeout)
+            if not future.done():
+                future.cancel()
+                self.info(f'{node_name}/get_state did not answer; asking again')
+                continue
+            if future.result() is not None:
+                state = future.result().current_state.label
+            if state != 'active':
+                time.sleep(self.poll_secs)
+
+
 @dataclass
 class FollowGains:
     """Stand-off follow parameters (see follow_control.compute_command)."""
@@ -714,7 +746,7 @@ class SecurityGuardBTNode(Node):
 
         # Blocks until AMCL and bt_navigator are active (AMCL gets its
         # initial pose from nav2_params.yaml, so no RViz click is needed).
-        self._navigator = BasicNavigator()
+        self._navigator = GuardNavigator()
         self.get_logger().info('waiting for Nav2...')
         self._navigator.waitUntilNav2Active()
         # The patrol schedule counts from here, not from the simulation's

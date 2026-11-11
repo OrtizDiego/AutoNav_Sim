@@ -68,6 +68,10 @@ person_tracker:
     redetect_period: 0.5
     max_yolo_misses: 2
     max_coast_frames: 10
+    # Drop a tracker box squeezed against the left/right image edge and
+    # narrower than this x its height: the person has left the frame (a
+    # standing person is ~0.3); only YOLO may bring the track back
+    edge_min_aspect: 0.2
     publish_debug_image: true
     # Log frames/s and mean YOLO / tracker time every N wall seconds (0 = off)
     stats_period: 10.0
@@ -102,6 +106,11 @@ target_tracker:
     lost_timeout: 1.5
     # Gated-out ranged detections in a row that restart the track elsewhere
     max_outliers: 3
+    # A confirmed track keeps a detection whose bearing fits but whose range
+    # does not (the box's lidar beams hit the wall behind the person) as a
+    # bearing-only update; this many in a row with no ranged update (camera
+    # or lidar) in between restart it at the new range (15 = 1 s at 15 Hz)
+    max_range_outliers: 15
     # Measurements older than the filter by more than this are dropped
     max_lag: 1.0
     # Person-sized lidar clusters update a confirmed track for up to

@@ -81,6 +81,7 @@ class TargetTrackerNode(Node):
         self.declare_parameter('tentative_timeout', 0.5)
         self.declare_parameter('lost_timeout', 1.5)
         self.declare_parameter('max_outliers', 3)
+        self.declare_parameter('max_range_outliers', 15)
         self.declare_parameter('max_lag', 1.0)
         self.declare_parameter('use_lidar', True)
         self.declare_parameter('lidar_sigma', 0.12)
@@ -110,6 +111,7 @@ class TargetTrackerNode(Node):
             lost_timeout=float(gp('lost_timeout')),
             lidar_coast_secs=float(gp('lidar_coast_secs')),
             max_outliers=int(gp('max_outliers')),
+            max_range_outliers=int(gp('max_range_outliers')),
             max_lag=float(gp('max_lag')))
         self._use_lidar = bool(gp('use_lidar'))
         self._lidar_x = float(gp('lidar_offset_x'))
