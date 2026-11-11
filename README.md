@@ -15,6 +15,16 @@
 
 ---
 
+## 🕹️ Live demo in the browser
+
+**You play the intruder, the guard robot chases you**: a 3D page that runs this project's actual Python nodes (sensor fusion, EKF tracker, behaviour tree) in the browser through WebAssembly, with the robot's camera view, the live behaviour tree, the track and a guided tour of the technology. Gazebo, YOLO and Nav2 are replaced by light stand-ins, and the page says where.
+
+```bash
+make demo    # on the host: builds demo/_site and serves http://localhost:8000
+```
+
+It is a static site, published to GitHub Pages by `.github/workflows/demo.yml`. See [demo/README.md](demo/README.md).
+
 ## 📸 Demo & Visuals
 
 <!-- TODO: record these GIFs and drop them in assets/ (see the filenames below) -->

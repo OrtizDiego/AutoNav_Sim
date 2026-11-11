@@ -74,6 +74,14 @@ make smoke                  # headless smoke test, as in CI (src/smoke_test.sh)
 
 `src/smoke_test.sh` runs the short `smoke` scenario headless (xvfb-run when there is no display, wall-clock `timeout` around `ros2 launch`), then `python3 -m my_bot.scenario_metrics smoke report.json`: passes when the run completed, the person was detected and the guard raised intruder_detected (the "smoke floor"); the run's own targets are not checked there. `.github/workflows/smoke.yml` runs it on pushes to main, PRs touching the simulation, weekly and on demand; it exports the YOLO model like the Dockerfile (cached). Phase 7: the same job is a matrix, smoke + walk_in, sprint, hide, crossing on one runner each (a runner holds a real-time factor of ~0.8; the smoke entry keeps the check name `smoke`, the others are `scenario <name>`, artifacts `smoke-report` / `report-<name>`); each must pass the smoke floor, and the `summary` job appends the scenario_summary table (targets reported, not enforced) to the job summary. A dispatch runs the `scenario` input, or all. Dispatching from this integration returns 403, so agents get runs from PRs.
 
+### Web demo (demo/)
+```bash
+make demo    # host, not the container (node + python3): build demo/_site, serve :8000
+python3 -m pytest demo/test          # numpy, opencv-python-headless, pyyaml, py_trees; no ROS
+node demo/test/browser_smoke.js      # built site in headless Chromium (Playwright)
+```
+A static page where the visitor walks the intruder (WASD / click / touch stick) and the guard reacts, with RViz-like panels and a guided tour. The robot's software is the package itself on Pyodide in a Web Worker: `demo/py/brain.py` builds SensorFusionNode (person mode), TargetTrackerNode, SecurityGuardBTNode and PersonControllerNode on `demo/py/rosfake.py` (fake rclpy + messages: one topic graph, one sim clock, `spin_until(t)` fires due timers), with params from behavior_params.yaml + guard_zones.yaml + maps/my_map like person_sim.launch.py. Stand-ins: `demo/js/sim.js` for Gazebo (kinematics, ray-cast lidar with the person's legs, the person's box from line of sight with noise and 0.12 s latency, published as /person_bbox), `demo/py/demo_nav.py` for Nav2 (`DemoNavigator` = BasicNavigator's four calls on A* over a 0.1 m grid + a look-ahead follower; odom = map, TF identity), `demo/py/shims/cv2.py` for OpenCV (imread of a PGM + exact distanceTransform in numpy; Pyodide's OpenCV is 49 MB; test_brain.py checks it against the real one). `demo/build.py` assembles `_site/` (three.js from node_modules, `robot.zip` = the my_bot modules in its `MODULES` list + config + map + demo/py + py_trees/pydot/pyparsing wheels unpacked); a node that imports a new my_bot module needs it in `MODULES` (test_brain.py checks). Pyodide 0.26.4 loads from jsDelivr at run time (`--pyodide <url>/` overrides). `demo/test/minisim.py` is a Python copy of sim.js's message format for the pytest run; those tests cannot share a session with src/my_bot/test (different ROS fakes). `.github/workflows/demo.yml`: pytest, build, browser smoke, and on main a GitHub Pages deploy (Pages source must be "GitHub Actions"). The page's tour and "How it works" state every substitution; keep them true when the pipeline changes.
+
 ### Tools (second terminal)
 ```bash
 make teleop          # drive the robot
@@ -191,6 +199,12 @@ src/my_bot/
 │                              # clock, wire() for multi-node integration tests), no ROS needed
 └── package.xml
 
+demo/                             # browser demo (static site; see "Web demo")
+├── js/                           # main, world, sim, scene (three.js), brain-worker (Pyodide), ui, tour, input
+├── py/                           # brain.py, rosfake.py, demo_nav.py, shims/cv2.py
+├── test/                         # test_brain.py + minisim.py (pytest), browser_smoke.js
+└── build.py                      # -> demo/_site (gitignored)
+
 src/person_actor_plugin/          # ament_cmake Gazebo plugin package
 └── src/person_actor_plugin.cpp   # Twist-driven actor; walk/run clip switching, gait synced to distance;
                                   # enables + thickens the bone collisions so the lidar sees the person;
@@ -216,6 +230,8 @@ The GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and 
 2. **URDF Validation**: Xacro parsing of `robot.urdf.xacro`
 3. **Script Validation**: Checks shebangs and executability
 4. **Unit Tests**: Pytest coverage report uploaded to Codecov
+
+`.github/workflows/demo.yml` tests and builds the web demo (changes under demo/ or the package's nodes, config, maps) and deploys it to GitHub Pages from main.
 
 `.github/workflows/smoke.yml` (Phase 5b, 7) runs the headless smoke test (`src/smoke_test.sh`) and the four scripted scenarios in osrf/ros:humble-desktop-full, one runner each, then a summary table: pushes to main, PRs that touch launch/worlds/config/nodes/plugin, weekly, and workflow_dispatch (input `scenario`, or `all`).
 

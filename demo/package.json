@@ -1,0 +1,12 @@
+{
+  "name": "autonav-sim-demo",
+  "private": true,
+  "description": "Browser demo of AutoNav Sim: the security guard's nodes on Pyodide, a three.js world",
+  "scripts": {
+    "build": "python3 build.py",
+    "serve": "python3 build.py --serve"
+  },
+  "dependencies": {
+    "three": "0.170.0"
+  }
+}

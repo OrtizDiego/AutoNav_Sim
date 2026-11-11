@@ -48,7 +48,8 @@ ON_REQUEST = $(if $(filter command line,$(origin $(1))),$($(1)),false)
 
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
-        ball-sim teleop-ball person-sim yolo-sim scenario scenarios scenario-summary smoke perf stop
+        ball-sim teleop-ball person-sim yolo-sim scenario scenarios scenario-summary smoke perf stop \
+        demo
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -95,6 +96,8 @@ help:
 	@echo "  perf            - Real-time factor, topic rates and latencies of a running scenario"
 	@echo "  stop            - Stop every scenario process in the container (each scenario"
 	@echo "                    also does this first: a closed terminal leaves them running)"
+	@echo "Web demo (host, needs node + python3):"
+	@echo "  demo            - Build demo/_site and serve it on http://localhost:8000"
 
 # --- DOCKER MANAGEMENT ---
 
@@ -199,3 +202,9 @@ perf:
 
 stop:
 	$(EXEC) "$(STOP_LEFTOVERS)"
+
+# --- WEB DEMO ---
+# Runs on the host, not in the container: needs node/npm and python3.
+# Builds demo/_site and serves it on http://localhost:8000 (see demo/README.md).
+demo:
+	cd demo && npm ci && python3 build.py --serve

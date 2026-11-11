@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AutoNav Sim: live demo</title>
+  <meta name="description" content="A security-guard robot you can run from: the project's ROS 2 nodes (sensor fusion, EKF tracking, behaviour tree) running in your browser.">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": {
+        "three": "./vendor/three.module.min.js",
+        "three/addons/OrbitControls.js": "./vendor/OrbitControls.js"
+    } }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <canvas id="view" aria-label="3D view of the museum, the guard robot and the person you control"></canvas>
+
+    <header id="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <div>
+          <h1>AutoNav Sim</h1>
+          <p>ROS 2 security-guard robot, live in your browser</p>
+        </div>
+      </div>
+      <nav class="tools">
+        <div class="segmented" id="views" role="group" aria-label="Camera view">
+          <button data-view="overview" class="on">Overview</button>
+          <button data-view="top">Top</button>
+          <button data-view="person">Follow me</button>
+          <button data-view="robot">Follow robot</button>
+        </div>
+        <div class="menu">
+          <button id="btn-layers" aria-haspopup="true" aria-expanded="false">Layers</button>
+          <div class="popover" id="layers" hidden></div>
+        </div>
+        <button id="btn-how">How it works</button>
+        <button id="btn-tour" class="primary">Guided tour</button>
+      </nav>
+    </header>
+
+    <aside id="side">
+      <section class="card" id="card-camera">
+        <header><h2>What the robot sees</h2><span class="tag" id="cam-rate">camera · 320×240 · 15 Hz</span></header>
+        <div class="camwrap">
+          <canvas id="robot-cam" width="320" height="240"></canvas>
+          <div class="cam-status" id="cam-status">no person in view</div>
+        </div>
+        <p class="note" id="cam-note">Green box: person detection. Range from lidar, cross-checked with the camera.</p>
+      </section>
+
+      <section class="card" id="card-guard">
+        <header><h2>Guard behaviour</h2><span class="tag">py_trees · 10 Hz</span></header>
+        <div class="state-row">
+          <span class="pill" id="state-pill">starting</span>
+          <span class="zone" id="zone"></span>
+        </div>
+        <ol class="tree" id="bt-tree"></ol>
+      </section>
+
+      <section class="card" id="card-track">
+        <header><h2>Intruder track</h2><span class="tag">EKF · odom frame</span></header>
+        <div class="stats">
+          <div><span>Track</span><b id="tr-state">none</b></div>
+          <div><span>Range</span><b id="tr-range">–</b></div>
+          <div><span>Bearing</span><b id="tr-bearing">–</b></div>
+          <div><span>Speed</span><b id="tr-speed">–</b></div>
+          <div><span>Uncertainty (2σ)</span><b id="tr-sigma">–</b></div>
+          <div><span>Range source</span><b id="tr-source">–</b></div>
+        </div>
+      </section>
+
+      <section class="card" id="card-events">
+        <header><h2>Security events</h2><span class="tag">/security_events</span></header>
+        <ul class="events" id="events"><li class="empty">Nothing yet. Step into the robot's view.</li></ul>
+      </section>
+
+      <section class="card" id="card-log">
+        <details>
+          <summary><h2>Node log</h2><span class="tag">what the ROS nodes print</span></summary>
+          <pre id="log"></pre>
+        </details>
+      </section>
+    </aside>
+
+    <div id="hud">
+      <div class="boot" id="boot">
+        <span class="spinner" aria-hidden="true"></span>
+        <div><b id="boot-title">Robot computer starting</b><span id="boot-text">Loading the map</span></div>
+      </div>
+      <div class="controls" id="controls">
+        <div class="who">
+          <b id="who">Intruder: autopilot</b>
+          <button id="btn-autopilot" class="small">Hand back to autopilot</button>
+        </div>
+        <p class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> sprint · click the floor to walk there · drag to orbit</p>
+        <div class="stamina" title="Sprinting drains stamina"><span id="stamina"></span></div>
+        <div class="row">
+          <button id="btn-estop" class="danger small">Emergency stop</button>
+          <button id="btn-pause" class="small" title="Pause the simulation">Pause</button>
+          <button id="btn-reset" class="small" title="Start again">Reset</button>
+          <span class="perf" id="perf"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="stick" hidden>
+      <div class="stick-base" id="stick-base"><div class="stick-knob" id="stick-knob"></div></div>
+      <button id="stick-run">Sprint</button>
+    </div>
+
+    <div id="tour" hidden></div>
+    <div id="modal" hidden></div>
+    <div id="fatal" hidden></div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
