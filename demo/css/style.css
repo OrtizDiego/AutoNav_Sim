@@ -233,3 +233,37 @@ body.touring .keys { display: none; }
   body.touring #hud, body.touring #stick { display: none; }
   #tour .pair { grid-template-columns: 1fr; }
 }
+
+/* -- recorded runs ------------------------------------------------------------------- */
+.segmented.mode button.on { background: rgba(255, 138, 61, 0.22); color: #ffd2b3; }
+.segmented[hidden], .replay[hidden] { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.replay {
+  position: absolute; left: 16px; bottom: 16px; width: min(560px, calc(100vw - var(--side) - 32px));
+  padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.replay-head { display: flex; align-items: center; gap: 10px; }
+.replay select {
+  font: inherit; font-size: 13px; color: var(--text); background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+}
+.replay .select select { font-weight: 600; min-width: 170px; }
+.badge { font: 700 11px system-ui, sans-serif; letter-spacing: 0.6px; padding: 3px 8px; border-radius: 6px; background: #39424f; }
+.badge.pass { background: rgba(62, 224, 138, 0.18); color: var(--green); }
+.badge.fail { background: rgba(255, 77, 94, 0.18); color: #ff8f9a; }
+.rp-desc { margin: 8px 0 6px; font-size: 12.5px; line-height: 1.45; color: #cbd5e6; }
+.rp-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11.5px; color: var(--muted); }
+.rp-metrics b { font: 600 12px ui-monospace, monospace; color: var(--text); }
+.rp-metrics .miss b { color: #ff8f9a; }
+.rp-bar { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.rp-track { position: relative; flex: 1; }
+.rp-track input { width: 100%; accent-color: var(--blue); }
+.rp-ticks { position: absolute; left: 7px; right: 7px; top: -4px; height: 6px; pointer-events: none; }
+.rp-ticks i { position: absolute; width: 3px; height: 6px; border-radius: 2px; transform: translateX(-1px); }
+.rp-clock { font: 11.5px ui-monospace, monospace; color: var(--muted); white-space: nowrap; }
+.rp-note { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+body.replaying #hud, body.replaying #stick { display: none !important; }
+@media (max-width: 880px) {
+  .replay { left: 8px; right: 8px; width: auto; bottom: calc(34vh + 8px); }
+  .rp-desc, .rp-note { display: none; }
+}

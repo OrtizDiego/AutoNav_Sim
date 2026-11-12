@@ -6,7 +6,7 @@
     python3 build.py --serve     # build, then http://localhost:8000
 
 The site is static: index.html, css/, js/, three.js (vendor/), the map
-(assets/) and robot.zip, the robot's software for the in-browser Python:
+(assets/), the recorded runs (replays/, from demo/replays) and robot.zip, the robot's software for the in-browser Python:
 my_bot's modules, its config and map, demo/py and pure-Python py_trees.
 Nothing in src/ is copied by hand or changed; the demo always runs the
 package as it is in the repository.
@@ -111,7 +111,36 @@ def vendor_three(out):
             g.write(f.read())
 
 
-def build(out, pyodide_url):
+# Order of the recorded runs in the page's picker (others follow, by name)
+REPLAY_ORDER = ['walk_in', 'sprint', 'hide', 'crossing']
+
+
+def copy_replays(sources, out):
+    """Copy every <source>/<name>/replay.json (+ images/); write replays/index.json."""
+    runs = []
+    found = {}
+    for src in sources:
+        for name in (os.listdir(src) if os.path.isdir(src) else []):
+            found.setdefault(name, os.path.join(src, name))
+    names = sorted(found, key=lambda n: (
+        REPLAY_ORDER.index(n) if n in REPLAY_ORDER else len(REPLAY_ORDER), n))
+    for name in names:
+        replay = os.path.join(found[name], 'replay.json')
+        if not os.path.isfile(replay):
+            continue
+        with open(replay) as f:
+            data = json.load(f)
+        shutil.copytree(found[name], os.path.join(out, 'replays', name))
+        runs.append({'name': name, 'scenario': data.get('scenario', name),
+                     'result': data.get('result', ''), 'duration': data.get('duration', 0),
+                     'description': data.get('description', '')})
+    if runs:
+        with open(os.path.join(out, 'replays', 'index.json'), 'w') as f:
+            json.dump({'replays': runs}, f)
+    return runs
+
+
+def build(out, pyodide_url, replays=None):
     if os.path.isdir(out):
         shutil.rmtree(out)
     os.makedirs(os.path.join(out, 'assets'))
@@ -129,8 +158,10 @@ def build(out, pyodide_url):
         f.write(bundle)
     with open(os.path.join(out, 'config.json'), 'w') as f:
         json.dump({'pyodide': pyodide_url}, f)
+    runs = copy_replays(replays or [os.path.join(HERE, 'replays')], out)
     open(os.path.join(out, '.nojekyll'), 'w').close()
-    print(f'built {out} (robot.zip {len(bundle) / 1024:.0f} kB, Pyodide from {pyodide_url})')
+    print(f'built {out} (robot.zip {len(bundle) / 1024:.0f} kB, '
+          f'{len(runs)} recorded run(s), Pyodide from {pyodide_url})')
 
 
 def main():
@@ -138,10 +169,13 @@ def main():
     parser.add_argument('--out', default=os.path.join(HERE, '_site'))
     parser.add_argument('--pyodide', default=PYODIDE,
                         help='URL of a Pyodide distribution, ending in /')
+    parser.add_argument('--replays', action='append',
+                        help='directory of recorded runs (<name>/replay.json, from make demo-bag); '
+                             'repeatable; default demo/replays')
     parser.add_argument('--serve', action='store_true', help='serve the site after building')
     parser.add_argument('--port', type=int, default=8000)
     args = parser.parse_args()
-    build(args.out, args.pyodide)
+    build(args.out, args.pyodide, args.replays)
     if args.serve:
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=args.out)
         print(f'http://localhost:{args.port}  (Ctrl+C to stop)')

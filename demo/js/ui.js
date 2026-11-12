@@ -104,7 +104,7 @@ export class UI {
   }
 
   // The behaviour tree's shape, once the nodes are up
-  setInfo(info) {
+  setInfo(info, { keepEvents = false } = {}) {
     const list = $('bt-tree');
     list.innerHTML = '';
     this._rows = info.tree.map((node) => {
@@ -118,6 +118,7 @@ export class UI {
       list.appendChild(li);
       return li;
     });
+    if (keepEvents) return;
     $('events').innerHTML = '<li class="empty">Nothing yet. Step into the robot\'s view.</li>';
     $('log').textContent = '';
     this._logLines = 0;
@@ -167,13 +168,24 @@ export class UI {
     pill.style.background = state ? state.colour : '';
     $('zone').textContent = viz.zone ? `zone: ${viz.zone.replace(/_/g, ' ')} · waypoint ${viz.waypoint + 1}` : '';
 
-    viz.bt.forEach((status, i) => {
-      const li = this._rows[i];
-      if (!li) return;
-      li.classList.toggle('running', status === 'RUNNING');
-      li.classList.toggle('success', status === 'SUCCESS');
-      if (li.classList.contains('proto')) li.classList.toggle('active', li.dataset.name === viz.state);
-    });
+    if (viz.bt) {
+      viz.bt.forEach((status, i) => {
+        const li = this._rows[i];
+        if (!li) return;
+        li.classList.toggle('running', status === 'RUNNING');
+        li.classList.toggle('success', status === 'SUCCESS');
+        if (li.classList.contains('proto')) li.classList.toggle('active', li.dataset.name === viz.state);
+      });
+    } else {
+      // A recording has the active branch only (/security_guard/state)
+      for (const li of this._rows) {
+        if (!li) continue;
+        const active = li.classList.contains('proto') && li.dataset.name === viz.state;
+        li.classList.toggle('active', active);
+        li.classList.toggle('running', active);
+        li.classList.remove('success');
+      }
+    }
 
     const trState = $('tr-state');
     trState.textContent = viz.intruder;
@@ -196,6 +208,25 @@ export class UI {
 
     for (const e of viz.events) this._addEvent(e);
     for (const entry of viz.log) this._addLog(entry);
+  }
+
+  clearEvents(text = 'Nothing yet.') {
+    $('events').innerHTML = `<li class="empty">${text}</li>`;
+  }
+
+  clearLog() {
+    $('log').textContent = '';
+    this._logLines = 0;
+  }
+
+  // A recorded camera frame (already annotated by the tracker)
+  drawImage(img, status) {
+    if (img && img.complete && img.naturalWidth) {
+      this.cam.drawImage(img, 0, 0, CAMERA.width, CAMERA.height);
+    }
+    const el = $('cam-status');
+    el.textContent = status;
+    el.classList.toggle('hit', /confirmed/.test(status));
   }
 
   _addEvent(e) {

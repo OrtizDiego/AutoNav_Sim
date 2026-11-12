@@ -3,6 +3,9 @@
 //
 //   python3 build.py && node test/browser_smoke.js [site directory]
 //
+// With recorded runs in the site it also plays one and goes back to live
+// (CI adds a synthetic one: test/fake_replay.py).
+//
 // Needs Playwright with Chromium. Exits non-zero on failure.
 
 const http = require('http');
@@ -69,6 +72,26 @@ function serve() {
     });
     if (lit < 30) throw new Error('the robot camera panel is black');
     console.log('camera panel drawn');
+
+    // Recorded runs, when the site has any
+    const hasReplays = await page.evaluate(() => !document.getElementById('modes').hidden);
+    if (hasReplays) {
+      await page.click('[data-mode=replay]');
+      await page.waitForFunction(() => window.__demo.replay && window.__demo.replay.t > 1,
+        null, { timeout: 30000 });
+      const r = await page.evaluate(() => ({
+        state: document.getElementById('state-pill').textContent,
+        clock: document.getElementById('rp-clock').textContent,
+        frames: window.__demo.replay.data.frames.t.length,
+      }));
+      if (!r.frames || r.state === 'starting') throw new Error(`replay not playing: ${JSON.stringify(r)}`);
+      console.log(`recorded run playing (${r.clock}, ${r.state})`);
+      await page.click('[data-mode=live]');
+      await page.waitForFunction(() => window.__demo.ready && window.__demo.viz, null, { timeout: 60000 });
+      console.log('back to live');
+    } else {
+      console.log('no recorded runs in this build');
+    }
   } catch (err) {
     failed = err;
   }

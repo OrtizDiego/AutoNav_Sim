@@ -77,10 +77,13 @@ make smoke                  # headless smoke test, as in CI (src/smoke_test.sh)
 ### Web demo (demo/)
 ```bash
 make demo    # host, not the container (node + python3): build demo/_site, serve :8000
+make demo-bag NAME=sprint   # container: record a scenario with camera, export to demo/replays/sprint
 python3 -m pytest demo/test          # numpy, opencv-python-headless, pyyaml, py_trees; no ROS
 node demo/test/browser_smoke.js      # built site in headless Chromium (Playwright)
 ```
 A static page where the visitor walks the intruder (WASD / click / touch stick) and the guard reacts, with RViz-like panels and a guided tour. The robot's software is the package itself on Pyodide in a Web Worker: `demo/py/brain.py` builds SensorFusionNode (person mode), TargetTrackerNode, SecurityGuardBTNode and PersonControllerNode on `demo/py/rosfake.py` (fake rclpy + messages: one topic graph, one sim clock, `spin_until(t)` fires due timers), with params from behavior_params.yaml + guard_zones.yaml + maps/my_map like person_sim.launch.py. Stand-ins: `demo/js/sim.js` for Gazebo (kinematics, ray-cast lidar with the person's legs, the person's box from line of sight with noise and 0.12 s latency, published as /person_bbox), `demo/py/demo_nav.py` for Nav2 (`DemoNavigator` = BasicNavigator's four calls on A* over a 0.1 m grid + a look-ahead follower; odom = map, TF identity), `demo/py/shims/cv2.py` for OpenCV (imread of a PGM + exact distanceTransform in numpy; Pyodide's OpenCV is 49 MB; test_brain.py checks it against the real one). `demo/build.py` assembles `_site/` (three.js from node_modules, `robot.zip` = the my_bot modules in its `MODULES` list + config + map + demo/py + py_trees/pydot/pyparsing wheels unpacked); a node that imports a new my_bot module needs it in `MODULES` (test_brain.py checks). Pyodide 0.26.4 loads from jsDelivr at run time (`--pyodide <url>/` overrides). `demo/test/minisim.py` is a Python copy of sim.js's message format for the pytest run; those tests cannot share a session with src/my_bot/test (different ROS fakes). `.github/workflows/demo.yml`: pytest, build, browser smoke, and on main a GitHub Pages deploy (Pages source must be "GitHub Actions"). The page's tour and "How it works" state every substitution; keep them true when the pipeline changes.
+
+Recorded runs (the page's "Recorded runs" tab, shown when `demo/replays/` has any): `make demo-bag NAME=<scenario>` (`demo-bags` = all four) runs scenario.launch.py with `record_images:=true` (adds `/person_tracker/image` to the bag; RECORDED_TOPICS also has `/plan` and `/sweep_viewpoints`) into `/root/.ros/autonav_demo/<NAME>`, then `python3 -m my_bot.replay_export <run dir> <out dir>` (`ReplayBuilder`: pure Python on (topic, msg) in bag order, time from /clock since the bag stores wall receive times; 10 Hz frames of robot odom / person truth / person2 / guard + intruder state / track with 2σ ellipse, 5 Hz scans as base64 uint16 cm, plans, sweeps, events, JPEGs of the tracker image at `--image-fps` 4; meta from report.json + scenarios.yaml; `read_bag` = rosbag2_py, sqlite3 or mcap from metadata.yaml) and `docker cp`s the replay to `demo/replays/<NAME>/` (only `src/` is mounted). `src/smoke_test.sh` with `SMOKE_REPLAY=true` records and exports too (export failure does not fail the smoke); smoke.yml sets it for the four scenarios and uploads `replay-<name>` artifacts (the report artifact excludes bag/ and replay/). `demo/js/replay.js` (`ReplayPlayer`: the fields scene.js/ui.js read from the live `Sim` + a viz per frame, `bt: null` = highlight the recorded protocol only) and `replay-ui.js` (picker, verdict, timeline); `build.py --replays` (repeatable) copies runs + `replays/index.json`. test_replay_export.py (package) checks the builder and that scenario.launch.py records every topic in `replay_export.TOPICS`; `demo/test/fake_replay.py` makes a synthetic run from minisim through the exporter (test_brain.py, and demo.yml's browser test build).
 
 ### Tools (second terminal)
 ```bash
@@ -178,6 +181,7 @@ src/my_bot/
 │   ├── frontier.py            # frontier detection + choice (library)
 │   ├── map_io.py              # save a grid as a map_server map (library)
 │   ├── explorer.py            # nav-sim without a map: explore, save the map
+│   ├── replay_export.py       # scenario bag -> web demo replay (python3 -m)
 │   └── system_monitor.py      # watchdog + e-stop
 ├── launch/                    # sim, nav_sim, ball_sim, person_sim, yolo_sim,
 │                              # scenario, navigation, slam, rsp
@@ -202,7 +206,9 @@ src/my_bot/
 demo/                             # browser demo (static site; see "Web demo")
 ├── js/                           # main, world, sim, scene (three.js), brain-worker (Pyodide), ui, tour, input
 ├── py/                           # brain.py, rosfake.py, demo_nav.py, shims/cv2.py
-├── test/                         # test_brain.py + minisim.py (pytest), browser_smoke.js
+├── js/replay.js, replay-ui.js    # recorded runs player
+├── replays/                      # recorded runs (make demo-bag): <name>/replay.json + images/
+├── test/                         # test_brain.py + minisim.py + fake_replay.py (pytest), browser_smoke.js
 └── build.py                      # -> demo/_site (gitignored)
 
 src/person_actor_plugin/          # ament_cmake Gazebo plugin package
