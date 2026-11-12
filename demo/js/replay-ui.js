@@ -94,8 +94,15 @@ export class ReplayMode {
     this._restart();
   }
 
+  // Start a little before the first security event: the runs open with a
+  // minute or more of patrol, which the timeline still has
+  _startTime() {
+    const first = this.player.data.events[0];
+    return first ? Math.max(0, first.t - 10) : 0;
+  }
+
   _restart() {
-    this.seek(0);
+    this.seek(this._startTime());
     this.player.playing = true;
     $('rp-play').textContent = 'Pause';
   }
