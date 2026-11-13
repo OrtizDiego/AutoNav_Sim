@@ -32,9 +32,10 @@ PYODIDE = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/'
 WHEELS = ['py_trees==2.6.0', 'pydot==4.0.1', 'pyparsing==3.3.3']
 # What the browser's nodes import (no YOLO, no OpenCV tracker, no launch)
 MODULES = [
-    '__init__', 'clearance_map', 'follow_control', 'guard_zones', 'incident_log',
-    'person_controller', 'room_sweep', 'scenario_script', 'security_guard_bt',
-    'sensor_fusion', 'target_estimate', 'target_tracker', 'track_filter',
+    '__init__', 'clearance_map', 'conversions', 'follow_control', 'guard_zones',
+    'incident_log', 'node_utils', 'person_controller', 'room_sweep',
+    'scenario_script', 'security_guard_bt', 'sensor_fusion', 'target_estimate',
+    'target_tracker', 'track_filter',
 ]
 CONFIG = ['behavior_params.yaml', 'guard_zones.yaml']
 MAP = 'my_map'

@@ -109,11 +109,13 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 
 from my_bot.clearance_map import ClearanceMap
+from my_bot.conversions import stamp_to_sec, yaw_from_quaternion
 from my_bot.follow_control import compute_command, front_clearance, search_command
 from my_bot.guard_zones import GuardZones
 from my_bot.incident_log import IncidentLog
+from my_bot.node_utils import spin_node
 from my_bot.room_sweep import plan_sweep
-from my_bot.target_estimate import TargetEstimate, stamp_to_sec, yaw_from_quaternion
+from my_bot.target_estimate import TargetEstimate
 
 # Types only needed by the running node (metrics, markers, alerts). Guarded
 # so the unit tests can import the leaves with stubbed ROS packages.
@@ -1169,16 +1171,7 @@ class SecurityGuardBTNode(Node):
 
 def main(args=None):
     """Initialize and spin the SecurityGuardBTNode."""
-    rclpy.init(args=args)
-    node = SecurityGuardBTNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(SecurityGuardBTNode, args)
 
 
 if __name__ == '__main__':

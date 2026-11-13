@@ -65,7 +65,8 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from my_bot.target_estimate import Pose, wrap_angle
+from my_bot.conversions import wrap_angle
+from my_bot.target_estimate import Pose
 
 # Chi-square 99.9 % gates by measurement dimension
 GATE = {1: 10.83, 2: 13.82}

@@ -53,14 +53,15 @@ from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Point, PointStamped, Vector3Stamped
 from nav_msgs.msg import Odometry
 import numpy as np
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Header, String
 from visualization_msgs.msg import Marker, MarkerArray
 
-from my_bot.target_estimate import PoseHistory, stamp_to_sec, yaw_from_quaternion
+from my_bot.conversions import stamp_to_sec, yaw_from_quaternion
+from my_bot.node_utils import spin_node
+from my_bot.target_estimate import PoseHistory
 from my_bot.track_filter import CONFIRMED, IntruderTracker, scan_clusters, to_world
 
 STATE_COLOURS = {'tentative': (1.0, 0.8, 0.0), CONFIRMED: (1.0, 0.1, 0.1)}
@@ -274,16 +275,7 @@ def _cov6(cov2) -> list:
 
 def main(args=None):
     """Initialize and spin the TargetTrackerNode."""
-    rclpy.init(args=args)
-    node = TargetTrackerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(TargetTrackerNode, args)
 
 
 if __name__ == '__main__':

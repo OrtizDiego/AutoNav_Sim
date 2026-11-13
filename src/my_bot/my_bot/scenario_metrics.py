@@ -55,16 +55,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from my_bot.clearance_map import ClearanceMap
+from my_bot.conversions import wrap_angle
 
 
 Point = Tuple[float, float]
 Pose = Tuple[float, float, float]  # x, y, yaw
 
 CONFIRMED = 'confirmed'
-
-
-def _wrap(a):
-    return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 
 def line_of_sight(cmap: ClearanceMap, a: Point, b: Point) -> bool:
@@ -78,7 +75,7 @@ def in_camera_view(cmap: ClearanceMap, robot: Pose, target: Point,
     dx, dy = target[0] - robot[0], target[1] - robot[1]
     if math.hypot(dx, dy) > view_range:
         return False
-    if abs(_wrap(math.atan2(dy, dx) - robot[2])) > hfov / 2.0:
+    if abs(wrap_angle(math.atan2(dy, dx) - robot[2])) > hfov / 2.0:
         return False
     return line_of_sight(cmap, (robot[0], robot[1]), target)
 

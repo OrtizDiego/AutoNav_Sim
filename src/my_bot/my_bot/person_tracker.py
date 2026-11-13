@@ -70,12 +70,12 @@ import cv2
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point32, PointStamped, PolygonStamped
 import numpy as np
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 
+from my_bot.node_utils import spin_node
 from my_bot.object_detector import DEFAULT_INPUT_SIZE, postprocess, preprocess
 
 Box = Tuple[int, int, int, int]
@@ -647,16 +647,7 @@ class PersonTrackerNode(Node):
 
 def main(args=None):
     """Initialize and spin the PersonTrackerNode."""
-    rclpy.init(args=args)
-    node = PersonTrackerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(PersonTrackerNode, args)
 
 
 if __name__ == '__main__':

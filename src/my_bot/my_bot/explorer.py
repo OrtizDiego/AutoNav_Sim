@@ -45,7 +45,6 @@ from geometry_msgs.msg import PoseStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from nav_msgs.msg import OccupancyGrid
 import numpy as np
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.time import Time
@@ -55,6 +54,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from my_bot.frontier import (
     Grid, choose_frontier, find_frontiers, known_area, unknown_near)
 from my_bot.map_io import save_map
+from my_bot.node_utils import spin_node
 
 EXPLORING, RETURNING, DONE = 'exploring', 'returning', 'done'
 
@@ -244,16 +244,7 @@ class ExplorerNode(Node):
 
 def main(args=None):
     """Initialize and spin the ExplorerNode."""
-    rclpy.init(args=args)
-    node = ExplorerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(ExplorerNode, args)
 
 
 if __name__ == '__main__':

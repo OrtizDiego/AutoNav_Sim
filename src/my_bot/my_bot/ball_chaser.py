@@ -34,13 +34,14 @@ import threading
 
 from geometry_msgs.msg import Twist, Vector3Stamped
 from nav_msgs.msg import Odometry
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
+from my_bot.conversions import stamp_to_sec, yaw_from_quaternion
 from my_bot.follow_control import compute_command, front_clearance, search_command
-from my_bot.target_estimate import TargetEstimate, stamp_to_sec, yaw_from_quaternion
+from my_bot.node_utils import spin_node
+from my_bot.target_estimate import TargetEstimate
 
 
 class BallChaser(Node):
@@ -131,17 +132,8 @@ class BallChaser(Node):
 
 
 def main(args=None):
-    """Initialize and spin the BallChaser node."""
-    rclpy.init(args=args)
-    node = BallChaser()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    """Initialize and spin the BallChaser."""
+    spin_node(BallChaser, args)
 
 
 if __name__ == '__main__':
