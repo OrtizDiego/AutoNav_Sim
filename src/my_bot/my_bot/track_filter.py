@@ -242,20 +242,14 @@ def polar_covariance(bearing_world: float, range_m: float,
 # Lidar clusters
 # ---------------------------------------------------------------------------
 
-def scan_clusters(ranges: Sequence[float], angle_min: float,
-                  angle_increment: float, range_min: float = 0.12,
-                  range_max: float = 8.0, jump: float = 0.1,
-                  jump_rel: float = 0.03, merge_distance: float = 0.5,
-                  max_width: float = 0.8, min_points: int = 2
-                  ) -> List[Tuple[float, float]]:
-    """Centroids (x, y in the scan frame) of person-sized scan clusters.
+def _centroid(points: Sequence[Tuple[float, float]]) -> Tuple[float, float]:
+    return (sum(p[0] for p in points) / len(points),
+            sum(p[1] for p in points) / len(points))
 
-    Consecutive valid beams belong to one segment while their end points
-    are within ``jump + jump_rel * range`` of each other. Segments whose
-    centroids are within ``merge_distance`` are merged (a person's two legs),
-    and merged groups wider than ``max_width`` (walls, furniture) or made of
-    fewer than ``min_points`` beams are dropped.
-    """
+
+def _scan_segments(ranges, angle_min, angle_increment, range_min, range_max,
+                   jump, jump_rel) -> List[List[Tuple[float, float]]]:
+    """Runs of consecutive valid beams whose end points lie close together."""
     segments, current, prev = [], [], None
     for i, r in enumerate(ranges):
         if not (math.isfinite(r) and range_min <= r <= range_max):
@@ -272,26 +266,46 @@ def scan_clusters(ranges: Sequence[float], angle_min: float,
         prev = p
     if current:
         segments.append(current)
+    return segments
 
-    groups = []  # [points, centroid]
+
+def _merge_segments(segments, merge_distance: float) -> list:
+    """[points, centroid] groups: neighbouring segments with close centroids."""
+    groups = []
     for seg in segments:
-        cx = sum(p[0] for p in seg) / len(seg)
-        cy = sum(p[1] for p in seg) / len(seg)
-        if groups and math.dist(groups[-1][1], (cx, cy)) <= merge_distance:
+        centroid = _centroid(seg)
+        if groups and math.dist(groups[-1][1], centroid) <= merge_distance:
             pts = groups[-1][0] + seg
-            groups[-1] = [pts, (sum(p[0] for p in pts) / len(pts),
-                                sum(p[1] for p in pts) / len(pts))]
+            groups[-1] = [pts, _centroid(pts)]
         else:
-            groups.append([seg, (cx, cy)])
+            groups.append([seg, centroid])
+    return groups
 
-    out = []
-    for pts, centroid in groups:
-        if len(pts) < min_points:
-            continue
-        width = max(math.dist(a, b) for a in pts for b in (pts[0], pts[-1]))
-        if width <= max_width:
-            out.append(centroid)
-    return out
+
+def _width(points: Sequence[Tuple[float, float]]) -> float:
+    """Largest distance from any point to either end of the run."""
+    return max(math.dist(a, b) for a in points for b in (points[0], points[-1]))
+
+
+def scan_clusters(ranges: Sequence[float], angle_min: float,
+                  angle_increment: float, range_min: float = 0.12,
+                  range_max: float = 8.0, jump: float = 0.1,
+                  jump_rel: float = 0.03, merge_distance: float = 0.5,
+                  max_width: float = 0.8, min_points: int = 2
+                  ) -> List[Tuple[float, float]]:
+    """Centroids (x, y in the scan frame) of person-sized scan clusters.
+
+    Consecutive valid beams belong to one segment while their end points
+    are within ``jump + jump_rel * range`` of each other. Segments whose
+    centroids are within ``merge_distance`` are merged (a person's two legs),
+    and merged groups wider than ``max_width`` (walls, furniture) or made of
+    fewer than ``min_points`` beams are dropped.
+    """
+    segments = _scan_segments(ranges, angle_min, angle_increment, range_min,
+                              range_max, jump, jump_rel)
+    return [centroid
+            for points, centroid in _merge_segments(segments, merge_distance)
+            if len(points) >= min_points and _width(points) <= max_width]
 
 
 def to_world(points: Sequence[Tuple[float, float]], pose: Pose,
@@ -361,6 +375,13 @@ class IntruderTracker:
         self.track_id += 1
         self.last_update = self.last_camera = t
 
+    def _fits(self, t: float, pose: Pose, bearing: float,
+              range_m: Optional[float]) -> Optional[bool]:
+        """Gate and apply a detection; None if it is too old for the filter."""
+        sigma = self._range_sigma(range_m) if range_m is not None else 0.0
+        return self.filter.range_bearing(t, pose, bearing, range_m,
+                                         self.bearing_sigma, sigma)
+
     def camera(self, t: float, pose: Pose, bearing: float,
                range_m: Optional[float]) -> bool:
         """Update with a /target detection; True if the track changed."""
@@ -373,9 +394,7 @@ class IntruderTracker:
                 return False  # a bearing alone does not place a new track
             self._start(t, pose, bearing, range_m)
             return True
-        sigma = self._range_sigma(range_m) if range_m is not None else 0.0
-        ok = self.filter.range_bearing(t, pose, bearing, range_m,
-                                       self.bearing_sigma, sigma)
+        ok = self._fits(t, pose, bearing, range_m)
         if ok is None:
             return False
         ranged = range_m is not None
@@ -384,23 +403,31 @@ class IntruderTracker:
             # beams inside the box, which miss a person and hit the wall
             # behind (or an exhibit in front). If the bearing alone fits,
             # the range is the outlier: keep the track, use the bearing.
-            ok = self.filter.range_bearing(t, pose, bearing, None,
-                                           self.bearing_sigma, 0.0)
-            if ok:
+            if self._fits(t, pose, bearing, None):
                 self.range_outliers += 1
                 if self.range_outliers >= self.max_range_outliers:
                     # The range has disagreed for a while with no ranged
                     # update in between: the track's range is what is wrong.
                     self._start(t, pose, bearing, range_m)
                     return True
-                ranged = False
+                ok, ranged = True, False
         if not ok:
-            self.outliers += 1
-            if ranged and (
-                    self.state == TENTATIVE or self.outliers >= self.max_outliers):
-                self._start(t, pose, bearing, range_m)  # it is somewhere else
-                return True
-            return False
+            return self._reject(t, pose, bearing, range_m)
+        self._accept(t, ranged)
+        return True
+
+    def _reject(self, t: float, pose: Pose, bearing: float,
+                range_m: Optional[float]) -> bool:
+        """Count a gated-out detection; True if it restarted the track."""
+        self.outliers += 1
+        if range_m is not None and (
+                self.state == TENTATIVE or self.outliers >= self.max_outliers):
+            self._start(t, pose, bearing, range_m)  # it is somewhere else
+            return True
+        return False
+
+    def _accept(self, t: float, ranged: bool) -> None:
+        """Book an applied camera detection; confirm after enough of them."""
         self.outliers = 0
         if ranged:
             self.range_outliers = 0
@@ -409,7 +436,6 @@ class IntruderTracker:
         self.last_camera = max(self.last_camera, t)
         if self.state == TENTATIVE and self.hits >= self.confirm_hits:
             self.state = CONFIRMED
-        return True
 
     def lidar(self, t: float, clusters: Sequence[Tuple[float, float]]) -> bool:
         """Update with odom-frame scan clusters at ``t``; True if one was used."""

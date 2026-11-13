@@ -48,7 +48,8 @@ class MiniSim:
     def _scan(self):
         x, y, yaw = self.robot[:3]
         ox, oy = x + LIDAR_X * math.cos(yaw), y + LIDAR_X * math.sin(yaw)
-        ang = yaw + brain_module.SCAN_ANGLE_MIN + brain_module.SCAN_ANGLE_INCREMENT * np.arange(360)
+        ang = (yaw + brain_module.SCAN_ANGLE_MIN
+               + brain_module.SCAN_ANGLE_INCREMENT * np.arange(360))
         d = np.arange(0.12, 12.0, 0.04)
         xs = ox + np.outer(np.cos(ang), d)
         ys = oy + np.outer(np.sin(ang), d)

@@ -192,19 +192,9 @@ class ScenarioMetrics:
             self.first_in_view = t
         if matched and self.first_detection is None:
             self.first_detection = t
-        if confirmed and not self._confirmed:
-            self.episodes.append(False)
-            self._on = None
-        if self._confirmed and not confirmed:
-            self.track_breaks += 1
-        if on is not None:
-            self.episodes[-1] = True
-            if self._on is not None and on != self._on:
-                self.track_switches += 1
-            self._on = on
+        self._track_episode(confirmed, on)
         if matched:
             self.follow_ranges.append(math.dist(robot[:2], person))
-        self._confirmed = confirmed
 
         if self._prev is not None:
             self._accumulate(t - self.last, self._prev)
@@ -216,6 +206,20 @@ class ScenarioMetrics:
                       'guard': guard_state,
                       'detected': self.first_detection is not None}
         self.last = t
+
+    def _track_episode(self, confirmed: bool, on: Optional[int]) -> None:
+        """Follow the confirmed episodes: starts, breaks, who each is on."""
+        if confirmed and not self._confirmed:
+            self.episodes.append(False)
+            self._on = None
+        if self._confirmed and not confirmed:
+            self.track_breaks += 1
+        if on is not None:
+            self.episodes[-1] = True
+            if self._on is not None and on != self._on:
+                self.track_switches += 1
+            self._on = on
+        self._confirmed = confirmed
 
     def _accumulate(self, dt: float, s: dict) -> None:
         """Credit the interval since the previous sample to its state."""

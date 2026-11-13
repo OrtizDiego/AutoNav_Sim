@@ -125,31 +125,35 @@ def parse_leg(raw: dict, where: str) -> Leg:
     return leg
 
 
+def _parse_legs(holder, where: str) -> List[Leg]:
+    """Legs of a scenario body or its second_person block (must have some)."""
+    legs = holder.get('legs') if isinstance(holder, dict) else None
+    if not legs:
+        raise ValueError(f'{where} needs a non-empty legs list')
+    return legs
+
+
+def _parse_scenario(name: str, body) -> Scenario:
+    """Validate one entry of the scenarios file."""
+    legs = _parse_legs(body, f'{name}:')
+    unknown = set(body) - SCENARIO_KEYS
+    if unknown:
+        raise ValueError(f'{name}: unknown keys {sorted(unknown)}')
+    second = body.get('second_person')
+    second_legs = [] if second is None else _parse_legs(
+        second, f'{name}: second_person')
+    return Scenario(
+        name=name, description=str(body.get('description', '')).strip(),
+        legs=[parse_leg(raw, f'{name} leg {i}') for i, raw in enumerate(legs)],
+        second_legs=[parse_leg(raw, f'{name} second_person leg {i}')
+                     for i, raw in enumerate(second_legs)])
+
+
 def parse_scenarios(data: dict) -> Dict[str, Scenario]:
     """Turn the loaded YAML mapping into {name: Scenario}."""
     if not isinstance(data, dict) or not data:
         raise ValueError('scenarios file must map names to scenarios')
-    scenarios = {}
-    for name, body in data.items():
-        legs = body.get('legs') if isinstance(body, dict) else None
-        if not legs:
-            raise ValueError(f'{name}: needs a non-empty legs list')
-        unknown = set(body) - SCENARIO_KEYS
-        if unknown:
-            raise ValueError(f'{name}: unknown keys {sorted(unknown)}')
-        second = body.get('second_person')
-        second_legs = []
-        if second is not None:
-            raw_legs = second.get('legs') if isinstance(second, dict) else None
-            if not raw_legs:
-                raise ValueError(f'{name}: second_person needs a non-empty legs list')
-            second_legs = [parse_leg(raw, f'{name} second_person leg {i}')
-                           for i, raw in enumerate(raw_legs)]
-        scenarios[name] = Scenario(
-            name=name, description=str(body.get('description', '')).strip(),
-            legs=[parse_leg(raw, f'{name} leg {i}') for i, raw in enumerate(legs)],
-            second_legs=second_legs)
-    return scenarios
+    return {name: _parse_scenario(name, body) for name, body in data.items()}
 
 
 def load_scenarios(path: str) -> Dict[str, Scenario]:
