@@ -24,7 +24,7 @@ import pytest
 
 from my_bot import ball_controller as bc
 from my_bot import follow_control as fc
-from my_bot import security_guard_bt as sg
+from my_bot import guard_tree
 from my_bot import sensor_fusion as sf
 from my_bot.clearance_map import ClearanceMap, safe_heading
 from my_bot.object_detector import postprocess
@@ -183,9 +183,9 @@ def test_robot_view_on_top_of_the_robot_falls_back_to_world_axes():
 def test_wait_at_waypoint_keeps_running_during_the_dwell():
     py_trees.blackboard.Blackboard.clear()
     try:
-        wait = sg.WaitAtWaypoint(dwell_secs=60.0)
+        wait = guard_tree.WaitAtWaypoint(dwell_secs=60.0)
         assert wait.update() == py_trees.common.Status.RUNNING   # starts dwell
         assert wait.update() == py_trees.common.Status.RUNNING   # still dwelling
-        assert py_trees.blackboard.Blackboard.get(sg.BB_DWELL_START) is not None
+        assert py_trees.blackboard.Blackboard.get(guard_tree.BB_DWELL_START) is not None
     finally:
         py_trees.blackboard.Blackboard.clear()
