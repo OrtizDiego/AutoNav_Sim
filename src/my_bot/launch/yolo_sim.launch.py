@@ -19,7 +19,8 @@
   2. person_tracker: YOLOv8n detection + OpenCV tracker + Kalman filter
      -> /person_bbox, /person_detected, /person_tracker/image.
   3. sensor_fusion (mode person): bbox + lidar (+ monocular check)
-     -> /target_range (~2.6 m here: the lidar hits the front shin), /target_bearing, /target_position.
+     -> /target_range (~2.6 m here: the lidar hits the front shin),
+     /target_bearing, /target_position.
   4. target_tracker: odom-frame track of the person -> /intruder/track,
      /intruder/markers (should sit still on the person, velocity ~0).
 

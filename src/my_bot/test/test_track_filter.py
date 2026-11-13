@@ -20,7 +20,8 @@ import random
 import numpy as np
 import pytest
 
-from my_bot.target_estimate import TargetEstimate, wrap_angle
+from my_bot.conversions import wrap_angle
+from my_bot.target_estimate import TargetEstimate
 from my_bot.track_filter import (
     CONFIRMED, ConstantVelocityEKF, IntruderTracker, LOST, NONE, TENTATIVE,
     polar_covariance, scan_clusters, to_world)

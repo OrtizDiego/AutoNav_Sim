@@ -50,17 +50,19 @@ Publishes
 import math
 
 from builtin_interfaces.msg import Time
-from geometry_msgs.msg import Point, PointStamped, Vector3Stamped
+from geometry_msgs.msg import PointStamped, Vector3Stamped
 from nav_msgs.msg import Odometry
 import numpy as np
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Header, String
+from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 
-from my_bot.target_estimate import PoseHistory, stamp_to_sec, yaw_from_quaternion
+from my_bot.conversions import stamp_to_sec, yaw_from_quaternion
+from my_bot.markers import delete_all, make_marker, make_point
+from my_bot.node_utils import spin_node
+from my_bot.target_estimate import PoseHistory
 from my_bot.track_filter import CONFIRMED, IntruderTracker, scan_clusters, to_world
 
 STATE_COLOURS = {'tentative': (1.0, 0.8, 0.0), CONFIRMED: (1.0, 0.1, 0.1)}
@@ -204,58 +206,37 @@ class TargetTrackerNode(Node):
 
     def _publish_markers(self):
         f = self._tracker.filter
-        markers = MarkerArray()
         if f is None:
             if self._markers_shown:  # clear them once
-                gone = Marker()
-                gone.action = Marker.DELETEALL
-                markers.markers.append(gone)
-                self._marker_pub.publish(markers)
+                self._marker_pub.publish(MarkerArray(markers=[delete_all()]))
                 self._markers_shown = False
             return
         self._markers_shown = True
-        colour = STATE_COLOURS.get(self._tracker.state, (0.5, 0.5, 0.5))
+        r, g, b = STATE_COLOURS.get(self._tracker.state, (0.5, 0.5, 0.5))
         x, y = f.position
         vx, vy = f.velocity
-        header = Header(stamp=self.get_clock().now().to_msg(), frame_id=self._frame)
+        stamp = self.get_clock().now().to_msg()
 
-        def marker(mid, mtype):
-            m = Marker()
-            m.header = header
-            m.ns = 'intruder'
-            m.id = mid
-            m.type = mtype
-            m.action = Marker.ADD
-            m.pose.orientation.w = 1.0
-            m.color.r, m.color.g, m.color.b = colour
-            m.color.a = 0.9
-            return m
+        def marker(marker_id, marker_type, alpha=0.9, **fields):
+            return make_marker(self._frame, stamp, 'intruder', marker_id, marker_type,
+                               rgba=(r, g, b, alpha), **fields)
 
-        body = marker(0, Marker.CYLINDER)
-        body.pose.position.x, body.pose.position.y, body.pose.position.z = x, y, 0.9
-        body.scale.x = body.scale.y = 0.35
-        body.scale.z = 1.8
+        body = marker(0, Marker.CYLINDER, position=(x, y, 0.9), scale=(0.35, 0.35, 1.8))
 
         # 2-sigma position ellipse, flat on the floor
         vals, vecs = np.linalg.eigh(f.P[:2, :2])
-        ellipse = marker(1, Marker.CYLINDER)
-        ellipse.pose.position.x, ellipse.pose.position.y = x, y
-        ellipse.pose.position.z = 0.01
-        yaw = math.atan2(vecs[1, 1], vecs[0, 1])
-        ellipse.pose.orientation.z = math.sin(yaw / 2.0)
-        ellipse.pose.orientation.w = math.cos(yaw / 2.0)
-        ellipse.scale.x = 4.0 * math.sqrt(max(vals[1], 1e-6))
-        ellipse.scale.y = 4.0 * math.sqrt(max(vals[0], 1e-6))
-        ellipse.scale.z = 0.02
-        ellipse.color.a = 0.3
+        ellipse = marker(
+            1, Marker.CYLINDER, alpha=0.3, position=(x, y, 0.01),
+            yaw=math.atan2(vecs[1, 1], vecs[0, 1]),
+            scale=(4.0 * math.sqrt(max(vals[1], 1e-6)),
+                   4.0 * math.sqrt(max(vals[0], 1e-6)), 0.02))
 
-        arrow = marker(2, Marker.ARROW)
-        arrow.points = [Point(x=x, y=y, z=0.1),
-                        Point(x=x + vx * self._horizon, y=y + vy * self._horizon, z=0.1)]
-        arrow.scale.x, arrow.scale.y, arrow.scale.z = 0.06, 0.12, 0.15
+        arrow = marker(
+            2, Marker.ARROW, scale=(0.06, 0.12, 0.15),
+            points=[make_point(x, y, 0.1),
+                    make_point(x + vx * self._horizon, y + vy * self._horizon, 0.1)])
 
-        markers.markers = [body, ellipse, arrow]
-        self._marker_pub.publish(markers)
+        self._marker_pub.publish(MarkerArray(markers=[body, ellipse, arrow]))
 
 
 def _to_stamp(t: float) -> Time:
@@ -274,16 +255,7 @@ def _cov6(cov2) -> list:
 
 def main(args=None):
     """Initialize and spin the TargetTrackerNode."""
-    rclpy.init(args=args)
-    node = TargetTrackerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(TargetTrackerNode, args)
 
 
 if __name__ == '__main__':

@@ -44,7 +44,6 @@ Publishes
 """
 
 import json
-import math
 import os
 import time
 from typing import Optional
@@ -55,13 +54,9 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from my_bot.clearance_map import ClearanceMap
+from my_bot.conversions import yaw_from_quaternion
 from my_bot.scenario_metrics import (
     ScenarioMetrics, TARGETS, check_targets, format_report)
-
-
-def _yaw(q) -> float:
-    return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                      1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
 class ScenarioEvaluatorNode(Node):
@@ -144,7 +139,7 @@ class ScenarioEvaluatorNode(Node):
 
     def _robot_cb(self, msg: Odometry) -> None:
         p = msg.pose.pose
-        self._robot = (p.position.x, p.position.y, _yaw(p.orientation))
+        self._robot = (p.position.x, p.position.y, yaw_from_quaternion(p.orientation))
 
     def _person_cb(self, msg: Odometry) -> None:
         self._person = (msg.pose.pose.position.x, msg.pose.pose.position.y)

@@ -20,8 +20,8 @@ import types
 import pytest
 
 from my_bot.follow_control import compute_command
-from my_bot.target_estimate import (
-    TargetEstimate, stamp_to_sec, wrap_angle, yaw_from_quaternion)
+from my_bot.conversions import stamp_to_sec, wrap_angle, yaw_from_quaternion
+from my_bot.target_estimate import TargetEstimate
 
 
 def _stamp(t):

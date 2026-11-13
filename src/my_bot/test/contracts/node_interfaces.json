@@ -1,0 +1,1057 @@
+{
+  "ball_chaser": {
+    "node_name": "ball_chaser",
+    "parameters": {
+      "deadband": 0.1,
+      "desired_distance": 1.0,
+      "k_lin": 0.6,
+      "k_yaw": 1.8,
+      "max_angular_speed": 1.5,
+      "max_back_speed": 0.15,
+      "max_linear_speed": 0.6,
+      "safety_distance": 0.35,
+      "search_angular_speed": 0.6,
+      "search_secs": 20.0,
+      "target_timeout": 0.5
+    },
+    "publishers": [
+      [
+        "/cmd_vel",
+        "Twist",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ],
+      [
+        "/target",
+        "Vector3Stamped",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      0.05
+    ]
+  },
+  "ball_controller": {
+    "node_name": "ball_controller",
+    "parameters": {
+      "accel": 1.5,
+      "autopilot": true,
+      "cruise_speed": 0.35,
+      "flee_distance": 1.8,
+      "flee_speed": 0.8,
+      "max_speed": 1.0,
+      "path_center": [
+        2.5,
+        -2.5
+      ],
+      "path_half_height": 1.25,
+      "path_half_width": 3.5,
+      "teleop_timeout": 1.0,
+      "update_rate_hz": 30.0,
+      "wait_distance": 4.5
+    },
+    "publishers": [
+      [
+        "/ball/cmd_vel",
+        "Twist",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/ball/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/ball/teleop",
+        "TwistStamped",
+        "depth 10"
+      ],
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      0.033333
+    ]
+  },
+  "ball_teleop": {
+    "node_name": "ball_teleop",
+    "parameters": {},
+    "publishers": [
+      [
+        "/ball/teleop",
+        "TwistStamped",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [],
+    "timer_periods": []
+  },
+  "explorer": {
+    "node_name": "explorer",
+    "parameters": {
+      "blacklist_radius": 0.5,
+      "done_checks": 3,
+      "goal_timeout": 60.0,
+      "map_frame": "map",
+      "map_save_path": "",
+      "min_clearance": 0.3,
+      "min_frontier_size": 8,
+      "return_home": true,
+      "robot_frame": "base_link",
+      "seen_radius": 0.6,
+      "size_weight": 0.5,
+      "start_delay": 5.0,
+      "update_period": 1.0
+    },
+    "publishers": [
+      [
+        "/exploration/status",
+        "String",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/map",
+        "OccupancyGrid",
+        "depth=1, durability=1"
+      ]
+    ],
+    "timer_periods": [
+      1.0
+    ]
+  },
+  "perf_monitor": {
+    "node_name": "perf_monitor",
+    "parameters": {
+      "report_period": 5.0,
+      "watch_camera": true
+    },
+    "publishers": [
+      [
+        "/perf_monitor",
+        "DiagnosticArray",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/camera/image_raw",
+        "Image",
+        "sensor_data"
+      ],
+      [
+        "/cmd_vel",
+        "Twist",
+        "depth 10"
+      ],
+      [
+        "/intruder/track",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/person_bbox",
+        "PolygonStamped",
+        "depth 10"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ],
+      [
+        "/target",
+        "Vector3Stamped",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      5.0
+    ]
+  },
+  "person_controller": {
+    "node_name": "person_controller",
+    "parameters": {
+      "accel": 2.0,
+      "bounds": 8.0,
+      "calm_down_secs": 4.0,
+      "decel": 3.0,
+      "exhausted_speed": 0.5,
+      "map_yaml": "",
+      "max_run_secs": 3.5,
+      "min_clearance": 0.5,
+      "notice_radius": 7.0,
+      "recovery_secs": 8.0,
+      "resume_stamina": 0.6,
+      "run_max_yaw_rate": 1.0,
+      "run_speed": 2.5,
+      "scenario": "",
+      "scenario_person": "intruder",
+      "scenarios_file": "",
+      "update_rate_hz": 20.0,
+      "walk_max_yaw_rate": 1.5,
+      "walk_speed": 0.7,
+      "walk_speed_jitter": 0.1,
+      "waypoint_clearance": 1.0
+    },
+    "publishers": [
+      [
+        "/person/cmd_vel",
+        "Twist",
+        "depth 10"
+      ],
+      [
+        "/person_mode",
+        "String",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/person/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/person_detected",
+        "Bool",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      0.05
+    ]
+  },
+  "person_controller[scenario]": {
+    "node_name": "person_controller",
+    "parameters": {
+      "accel": 2.0,
+      "bounds": 8.0,
+      "calm_down_secs": 4.0,
+      "decel": 3.0,
+      "exhausted_speed": 0.5,
+      "map_yaml": "<pkg>/maps/my_map.yaml",
+      "max_run_secs": 3.5,
+      "min_clearance": 0.5,
+      "notice_radius": 7.0,
+      "recovery_secs": 8.0,
+      "resume_stamina": 0.6,
+      "run_max_yaw_rate": 1.0,
+      "run_speed": 2.5,
+      "scenario": "sprint",
+      "scenario_person": "intruder",
+      "scenarios_file": "<pkg>/config/scenarios.yaml",
+      "update_rate_hz": 20.0,
+      "walk_max_yaw_rate": 1.5,
+      "walk_speed": 0.7,
+      "walk_speed_jitter": 0.1,
+      "waypoint_clearance": 1.0
+    },
+    "publishers": [
+      [
+        "/person/cmd_vel",
+        "Twist",
+        "depth 10"
+      ],
+      [
+        "/person_mode",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/scenario/status",
+        "String",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/person/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/person_detected",
+        "Bool",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      0.05,
+      1.0
+    ]
+  },
+  "person_tracker": {
+    "node_name": "person_tracker",
+    "parameters": {
+      "async_detection": true,
+      "confidence_threshold": 0.4,
+      "edge_min_aspect": 0.2,
+      "inference_threads": 0,
+      "max_coast_frames": 10,
+      "max_yolo_misses": 2,
+      "model_path": "/nonexistent/yolov8n.onnx",
+      "nms_iou_threshold": 0.45,
+      "publish_debug_image": true,
+      "redetect_every": 10,
+      "redetect_period": 0.5,
+      "stats_period": 10.0,
+      "tracker": "kcf"
+    },
+    "publishers": [
+      [
+        "/person_bbox",
+        "PolygonStamped",
+        "depth 10"
+      ],
+      [
+        "/person_detected",
+        "Bool",
+        "depth 10"
+      ],
+      [
+        "/person_track",
+        "PointStamped",
+        "depth 10"
+      ],
+      [
+        "/person_tracker/image",
+        "Image",
+        "depth=1, history=1, reliability=2"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/camera/image_raw",
+        "Image",
+        "depth=1, history=1, reliability=2"
+      ]
+    ],
+    "timer_periods": []
+  },
+  "scenario_evaluator": {
+    "node_name": "scenario_evaluator",
+    "parameters": {
+      "camera_hfov": 1.089,
+      "coverage_cell": 0.5,
+      "linger_secs": 30.0,
+      "map_yaml": "<pkg>/maps/my_map.yaml",
+      "match_radius": 1.5,
+      "max_false_alarms": 0.0,
+      "max_time_to_detect_s": 5.0,
+      "max_track_breaks_per_min": 1.0,
+      "max_track_switches": 0.0,
+      "min_patrol_coverage_pct": -1.0,
+      "min_tracked_in_view_pct": 80.0,
+      "report_dir": "~/.ros/autonav_scenarios",
+      "report_path": "<tmp>/report.json",
+      "sample_rate_hz": 10.0,
+      "scenario": "",
+      "second_person_topic": "/person2/odom",
+      "timeout_secs": 600.0,
+      "track_timeout": 2.0,
+      "view_range": 8.0
+    },
+    "publishers": [
+      [
+        "/scenario/report",
+        "String",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/intruder/state",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/intruder/track",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/person/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/person2/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/scenario/status",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/security_events",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/security_guard/state",
+        "String",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      0.1
+    ]
+  },
+  "security_guard_bt": {
+    "node_name": "security_guard_bt",
+    "parameters": {
+      "deadband": 0.15,
+      "desired_distance": 2.5,
+      "incident_dir": "",
+      "k_ff": 1.0,
+      "k_lin": 0.8,
+      "k_yaw": 1.5,
+      "map_yaml": "",
+      "max_angular_speed": 1.5,
+      "max_back_speed": 0.2,
+      "max_linear_speed": 1.0,
+      "safety_distance": 0.6,
+      "search_angular_speed": 0.6,
+      "search_lead_secs": 2.0,
+      "search_max_distance": 4.0,
+      "search_secs": 20.0,
+      "snapshot_topic": "/camera/image_raw",
+      "sweep_dwell_secs": 2.0,
+      "sweep_max_points": 4,
+      "sweep_radius": 5.0,
+      "sweep_secs": 60.0,
+      "sweep_view_range": 4.0,
+      "target_timeout": 0.5,
+      "track_max_predict": 1.0,
+      "use_track": true,
+      "waypoint_dwell_secs": 2.0,
+      "waypoints": [
+        3.28,
+        6.85,
+        -0.92,
+        6.85,
+        5.13,
+        -2.45,
+        0.23,
+        -2.55,
+        -4.52,
+        8.6,
+        0.0,
+        0.0
+      ],
+      "zones_file": ""
+    },
+    "publishers": [
+      [
+        "/cmd_vel",
+        "Twist",
+        "depth 10"
+      ],
+      [
+        "/guard_zones",
+        "MarkerArray",
+        "depth=1, durability=1"
+      ],
+      [
+        "/intruder_sightings",
+        "MarkerArray",
+        "depth 10"
+      ],
+      [
+        "/security_events",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/security_guard/metrics",
+        "DiagnosticArray",
+        "depth 10"
+      ],
+      [
+        "/security_guard/state",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/sweep_viewpoints",
+        "MarkerArray",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/estop",
+        "Bool",
+        "depth=1, durability=1"
+      ],
+      [
+        "/intruder/track",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ]
+    ],
+    "timer_periods": [
+      0.1,
+      5.0
+    ]
+  },
+  "security_guard_bt[person-sim]": {
+    "node_name": "security_guard_bt",
+    "parameters": {
+      "deadband": 0.15,
+      "desired_distance": 2.5,
+      "incident_dir": "<tmp>",
+      "k_ff": 1.0,
+      "k_lin": 0.8,
+      "k_yaw": 1.5,
+      "map_yaml": "<pkg>/maps/my_map.yaml",
+      "max_angular_speed": 1.5,
+      "max_back_speed": 0.2,
+      "max_linear_speed": 1.0,
+      "safety_distance": 0.6,
+      "search_angular_speed": 0.6,
+      "search_lead_secs": 2.0,
+      "search_max_distance": 4.0,
+      "search_secs": 20.0,
+      "snapshot_topic": "/camera/image_raw",
+      "sweep_dwell_secs": 2.0,
+      "sweep_max_points": 4,
+      "sweep_radius": 5.0,
+      "sweep_secs": 60.0,
+      "sweep_view_range": 4.0,
+      "target_timeout": 0.5,
+      "track_max_predict": 1.0,
+      "use_track": true,
+      "waypoint_dwell_secs": 2.0,
+      "waypoints": [
+        3.28,
+        6.85,
+        -0.92,
+        6.85,
+        5.13,
+        -2.45,
+        0.23,
+        -2.55,
+        -4.52,
+        8.6,
+        0.0,
+        0.0
+      ],
+      "zones_file": "<pkg>/config/guard_zones.yaml"
+    },
+    "publishers": [
+      [
+        "/cmd_vel",
+        "Twist",
+        "depth 10"
+      ],
+      [
+        "/guard_zones",
+        "MarkerArray",
+        "depth=1, durability=1"
+      ],
+      [
+        "/intruder_sightings",
+        "MarkerArray",
+        "depth 10"
+      ],
+      [
+        "/security_events",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/security_guard/metrics",
+        "DiagnosticArray",
+        "depth 10"
+      ],
+      [
+        "/security_guard/state",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/sweep_viewpoints",
+        "MarkerArray",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/camera/image_raw",
+        "Image",
+        "sensor_data"
+      ],
+      [
+        "/estop",
+        "Bool",
+        "depth=1, durability=1"
+      ],
+      [
+        "/intruder/track",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ]
+    ],
+    "timer_periods": [
+      0.1,
+      5.0
+    ]
+  },
+  "security_guard_bt[use_track=false]": {
+    "node_name": "security_guard_bt",
+    "parameters": {
+      "deadband": 0.15,
+      "desired_distance": 2.5,
+      "incident_dir": "",
+      "k_ff": 1.0,
+      "k_lin": 0.8,
+      "k_yaw": 1.5,
+      "map_yaml": "",
+      "max_angular_speed": 1.5,
+      "max_back_speed": 0.2,
+      "max_linear_speed": 1.0,
+      "safety_distance": 0.6,
+      "search_angular_speed": 0.6,
+      "search_lead_secs": 2.0,
+      "search_max_distance": 4.0,
+      "search_secs": 20.0,
+      "snapshot_topic": "/camera/image_raw",
+      "sweep_dwell_secs": 2.0,
+      "sweep_max_points": 4,
+      "sweep_radius": 5.0,
+      "sweep_secs": 60.0,
+      "sweep_view_range": 4.0,
+      "target_timeout": 0.5,
+      "track_max_predict": 1.0,
+      "use_track": false,
+      "waypoint_dwell_secs": 2.0,
+      "waypoints": [
+        3.28,
+        6.85,
+        -0.92,
+        6.85,
+        5.13,
+        -2.45,
+        0.23,
+        -2.55,
+        -4.52,
+        8.6,
+        0.0,
+        0.0
+      ],
+      "zones_file": ""
+    },
+    "publishers": [
+      [
+        "/cmd_vel",
+        "Twist",
+        "depth 10"
+      ],
+      [
+        "/guard_zones",
+        "MarkerArray",
+        "depth=1, durability=1"
+      ],
+      [
+        "/intruder_sightings",
+        "MarkerArray",
+        "depth 10"
+      ],
+      [
+        "/security_events",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/security_guard/metrics",
+        "DiagnosticArray",
+        "depth 10"
+      ],
+      [
+        "/security_guard/state",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/sweep_viewpoints",
+        "MarkerArray",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/estop",
+        "Bool",
+        "depth=1, durability=1"
+      ],
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ],
+      [
+        "/target",
+        "Vector3Stamped",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      0.1,
+      5.0
+    ]
+  },
+  "sensor_fusion": {
+    "node_name": "sensor_fusion",
+    "parameters": {
+      "camera_height": 0.103,
+      "horizontal_fov": 1.089,
+      "hsv_red_lower1": [
+        0,
+        100,
+        100
+      ],
+      "hsv_red_lower2": [
+        160,
+        100,
+        100
+      ],
+      "hsv_red_upper1": [
+        10,
+        255,
+        255
+      ],
+      "hsv_red_upper2": [
+        180,
+        255,
+        255
+      ],
+      "image_height": 240,
+      "image_width": 320,
+      "min_contour_area": 75.0,
+      "mode": "hsv",
+      "person_height": 1.72,
+      "range_max": 12.0,
+      "range_min": 0.3
+    },
+    "publishers": [
+      [
+        "/sensor_fusion/image",
+        "Image",
+        "depth=1, history=1, reliability=2"
+      ],
+      [
+        "/target",
+        "Vector3Stamped",
+        "depth 10"
+      ],
+      [
+        "/target_bearing",
+        "Float32",
+        "depth 10"
+      ],
+      [
+        "/target_position",
+        "PointStamped",
+        "depth 10"
+      ],
+      [
+        "/target_range",
+        "Float32",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/camera/image_raw",
+        "Image",
+        "sensor_data"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ]
+    ],
+    "timer_periods": []
+  },
+  "sensor_fusion[person]": {
+    "node_name": "sensor_fusion",
+    "parameters": {
+      "camera_height": 0.103,
+      "horizontal_fov": 1.089,
+      "hsv_red_lower1": [
+        0,
+        100,
+        100
+      ],
+      "hsv_red_lower2": [
+        160,
+        100,
+        100
+      ],
+      "hsv_red_upper1": [
+        10,
+        255,
+        255
+      ],
+      "hsv_red_upper2": [
+        180,
+        255,
+        255
+      ],
+      "image_height": 240,
+      "image_width": 320,
+      "min_contour_area": 75.0,
+      "mode": "person",
+      "person_height": 1.72,
+      "range_max": 12.0,
+      "range_min": 0.3
+    },
+    "publishers": [
+      [
+        "/sensor_fusion/image",
+        "Image",
+        "depth=1, history=1, reliability=2"
+      ],
+      [
+        "/target",
+        "Vector3Stamped",
+        "depth 10"
+      ],
+      [
+        "/target_bearing",
+        "Float32",
+        "depth 10"
+      ],
+      [
+        "/target_position",
+        "PointStamped",
+        "depth 10"
+      ],
+      [
+        "/target_range",
+        "Float32",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/camera/image_raw",
+        "Image",
+        "sensor_data"
+      ],
+      [
+        "/person_bbox",
+        "PolygonStamped",
+        "depth 10"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ]
+    ],
+    "timer_periods": []
+  },
+  "system_monitor": {
+    "node_name": "system_monitor",
+    "parameters": {
+      "camera_timeout": 2.0,
+      "health_publish_rate": 1.0,
+      "scan_timeout": 2.0
+    },
+    "publishers": [
+      [
+        "/cmd_vel",
+        "Twist",
+        "depth 10"
+      ],
+      [
+        "/estop",
+        "Bool",
+        "depth=1, durability=1"
+      ],
+      [
+        "/system_health",
+        "DiagnosticArray",
+        "depth 10"
+      ]
+    ],
+    "services": [
+      [
+        "/clear_estop",
+        "Trigger"
+      ],
+      [
+        "/trigger_estop",
+        "Trigger"
+      ]
+    ],
+    "subscriptions": [
+      [
+        "/camera/image_raw",
+        "Image",
+        "sensor_data"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ]
+    ],
+    "timer_periods": [
+      1.0
+    ]
+  },
+  "target_tracker": {
+    "node_name": "target_tracker",
+    "parameters": {
+      "accel_noise": 1.5,
+      "bearing_sigma": 0.04,
+      "cluster_jump": 0.1,
+      "cluster_jump_rel": 0.03,
+      "cluster_max_width": 0.8,
+      "cluster_merge_distance": 0.5,
+      "cluster_range_max": 8.0,
+      "confirm_hits": 3,
+      "frame_id": "odom",
+      "lidar_coast_secs": 1.5,
+      "lidar_offset_x": -0.064,
+      "lidar_sigma": 0.12,
+      "lost_timeout": 1.5,
+      "max_lag": 1.0,
+      "max_outliers": 3,
+      "max_range_outliers": 15,
+      "prediction_horizon": 1.0,
+      "publish_rate": 10.0,
+      "range_sigma": 0.15,
+      "range_sigma_rel": 0.05,
+      "speed_sigma": 1.0,
+      "tentative_timeout": 0.5,
+      "use_lidar": true
+    },
+    "publishers": [
+      [
+        "/intruder/markers",
+        "MarkerArray",
+        "depth 10"
+      ],
+      [
+        "/intruder/predicted",
+        "PointStamped",
+        "depth 10"
+      ],
+      [
+        "/intruder/state",
+        "String",
+        "depth 10"
+      ],
+      [
+        "/intruder/track",
+        "Odometry",
+        "depth 10"
+      ]
+    ],
+    "services": [],
+    "subscriptions": [
+      [
+        "/odom",
+        "Odometry",
+        "depth 10"
+      ],
+      [
+        "/scan",
+        "LaserScan",
+        "sensor_data"
+      ],
+      [
+        "/target",
+        "Vector3Stamped",
+        "depth 10"
+      ]
+    ],
+    "timer_periods": [
+      0.1
+    ]
+  }
+}
