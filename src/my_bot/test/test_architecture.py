@@ -22,6 +22,9 @@ Three layers, each allowed to import only from the ones above it:
               executor (no rclpy, tf2, Nav2).
   NODES       the console scripts, plus NODE_SUPPORT they share.
 
+TOOLS are offline command-line programs (python3 -m my_bot.<tool>) that read
+recorded ROS data; they may import what they need and nothing imports them.
+
 A new module must be put in one of the lists below, which is where its
 author decides what it may depend on. Functions stay under a branching
 limit, so the next long callback is split when it is written, not later.
@@ -44,6 +47,7 @@ LIBRARIES = {
 }
 MESSAGES = {'guard_markers', 'guard_tree', 'markers'}
 NODE_SUPPORT = {'node_utils'}
+TOOLS = {'replay_export'}
 
 ROS_RUNTIME = {'rclpy', 'tf2_ros', 'nav2_simple_commander', 'cv_bridge',
                'launch', 'launch_ros', 'ament_index_python'}
@@ -91,7 +95,7 @@ def _is_message_package(package):
 
 
 def test_every_module_has_a_layer():
-    layers = [LIBRARIES, MESSAGES, NODE_SUPPORT, _nodes()]
+    layers = [LIBRARIES, MESSAGES, NODE_SUPPORT, TOOLS, _nodes()]
     listed = set().union(*layers)
     assert _modules() == listed, (
         'put new modules in a layer of test_architecture.py; drop removed ones: '
@@ -117,13 +121,13 @@ def test_message_layer_needs_no_running_ros(module):
         f'{module} imports {sorted(internal - LIBRARIES - MESSAGES)}')
 
 
-def test_nothing_imports_a_node():
-    """Nodes are entry points; code two of them need belongs in a lower layer."""
-    nodes = _nodes()
+def test_nothing_imports_a_node_or_a_tool():
+    """They are entry points; code two of them need belongs in a lower layer."""
+    entry_points = _nodes() | TOOLS
     for module in sorted(_modules()):
         _, internal = _imports(module)
-        assert not internal & nodes, (
-            f'{module} imports the node module(s) {sorted(internal & nodes)}')
+        assert not internal & entry_points, (
+            f'{module} imports the entry point(s) {sorted(internal & entry_points)}')
 
 
 _BRANCHES = (ast.If, ast.For, ast.While, ast.ExceptHandler, ast.IfExp,

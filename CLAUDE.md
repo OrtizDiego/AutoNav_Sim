@@ -256,7 +256,7 @@ make test   # Runs pytest without coverage
 
 ### Structure checks (run with the unit tests)
 - `test_node_contracts.py` compares every node's interface (node name, parameters + defaults, publishers/subscriptions with type and QoS, services, timer periods; one entry per configuration that changes it) with `test/contracts/node_interfaces.json`. A refactoring must leave that file untouched. An intended interface change regenerates it (`UPDATE_CONTRACTS=1 python3 -m pytest src/my_bot/test/test_node_contracts.py`) and its diff goes in the commit; a new console script needs an entry in that test's `NODES`.
-- `test_architecture.py` puts every module in a layer: `LIBRARIES` (no ROS import, import only libraries), `MESSAGES` (ROS messages but no rclpy/tf2/Nav2: guard_tree, guard_markers, markers), nodes (setup.py's console scripts) and `NODE_SUPPORT` (node_utils). Nothing imports a node module. No function exceeds McCabe complexity 15. A new module must be added to one of the lists (and to `MODULES` in demo/build.py if a bundled node imports it).
+- `test_architecture.py` puts every module in a layer: `LIBRARIES` (no ROS import, import only libraries), `MESSAGES` (ROS messages but no rclpy/tf2/Nav2: guard_tree, guard_markers, markers), nodes (setup.py's console scripts), `NODE_SUPPORT` (node_utils) and `TOOLS` (offline `python3 -m` programs: replay_export). Nothing imports a node or a tool. No function exceeds McCabe complexity 15. A new module must be added to one of the lists (and to `MODULES` in demo/build.py if a bundled node imports it).
 
 ## Important Notes
 
