@@ -31,6 +31,7 @@ import pytest
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool
 
+from conftest import Clock
 from my_bot import person_controller as pc
 from my_bot import security_guard_bt as sg
 
@@ -493,9 +494,29 @@ class TestSecurityGuardZonesAndSweep:
         # must not cut the first zone's 180 s slot short (CI smoke runs left
         # the north hall, where the intruder waits, after a few minutes).
         g = museum_guard
+        assert _tick(g) == 'PatrolProtocol'
         g.clock.advance(150.0)
         assert g._patrol_route()[0] == 'north_hall'
         g.clock.advance(40.0)
+        assert g._patrol_route()[0] == 'south_gallery'
+
+    def test_schedule_ignores_the_clock_before_the_node_is_spun(
+            self, fresh_blackboard, ros_params, monkeypatch):
+        # Real rclpy: with use_sim_time the node clock follows /clock only
+        # while the node is spun, so it still reads 0 in __init__, and the
+        # world file starts the simulation at 788 s. Counted from 0 the
+        # patrol began 308 s into the schedule, in the south gallery (the
+        # CI smoke run of 2026-11-13 never reached the intruder's hall).
+        ros_params.update(waypoint_dwell_secs=0.0, zones_file=ZONES_YAML,
+                          map_yaml=MAP_YAML)
+        monkeypatch.setattr(Clock, '__init__',
+                            lambda self, seconds=0.0: setattr(self, 'seconds', seconds))
+        g = sg.SecurityGuardBTNode()
+        assert g._now() == 0.0
+        g.clock.seconds = 798.0  # first tick: spun, 10 s after the world's start
+        assert _tick(g) == 'PatrolProtocol'
+        assert g._patrol_route()[0] == 'north_hall'
+        g.clock.advance(185.0)
         assert g._patrol_route()[0] == 'south_gallery'
 
     def test_losing_the_intruder_plans_a_sweep(self, museum_guard):
