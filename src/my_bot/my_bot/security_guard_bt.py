@@ -254,15 +254,10 @@ class SecurityGuardBTNode(Node):
         self._navigator = GuardNavigator()
         self.get_logger().info('waiting for Nav2...')
         self._navigator.waitUntilNav2Active()
-        # The patrol schedule counts from the first patrol leg, not from the
-        # simulation's start: on a slow machine Gazebo, YOLO and Nav2 bringup
-        # took most of the first zone's slot, and the guard left it almost
-        # unseen. The clock cannot be read here: under use_sim_time it
-        # follows /clock only while this node is spun, and so far only the
-        # navigator's node was. It still reads 0, and a schedule counted
-        # from 0 starts wherever the world file's saved sim time (788 s in
-        # the museum) falls in it.
-        self._patrol_start: Optional[float] = None
+        # The patrol schedule counts from here, not from the simulation's
+        # start: on a slow machine Gazebo, YOLO and Nav2 bringup took most
+        # of the first zone's slot, and the guard left it almost unseen.
+        self._patrol_start = self._now()
 
         self._bt = build_security_guard_tree(
             self._navigator, self._vel_pub.publish,
@@ -332,15 +327,8 @@ class SecurityGuardBTNode(Node):
         bb_set(BB_ESTOP, bool(msg.data))
 
     def _patrol_route(self):
-        """(zone, waypoints) the schedule assigns now, timed from the first call.
-
-        The tree asks when it starts a patrol leg, i.e. from a timer
-        callback: the node is spun by then and its clock is the simulation's.
-        """
-        now = self._now()
-        if self._patrol_start is None:
-            self._patrol_start = now
-        return self._zones.route_at(now - self._patrol_start)
+        """(zone, waypoints) the schedule assigns now, timed from Nav2 up."""
+        return self._zones.route_at(self._now() - self._patrol_start)
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
