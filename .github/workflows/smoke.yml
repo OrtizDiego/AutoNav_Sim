@@ -117,6 +117,9 @@ jobs:
           # smoke is short; the scenarios get the evaluator's own 600 s
           SMOKE_SIM_TIMEOUT: ${{ matrix.scenario == 'smoke' && '300' || '600' }}
           SCENARIO: ${{ matrix.scenario }}
+          # The scripted scenarios also give the web demo a replay
+          # (demo/replays/<name>: download the replay-<name> artifact)
+          SMOKE_REPLAY: ${{ matrix.scenario != 'smoke' }}
         run: |
           source /opt/ros/humble/setup.bash
           source install/setup.bash
@@ -127,7 +130,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.scenario == 'smoke' && 'smoke-report' || format('report-{0}', matrix.scenario) }}
-          path: smoke/
+          path: |
+            smoke/
+            !smoke/bag/
+            !smoke/replay/
+
+      - name: Upload web demo replay
+        if: always() && matrix.scenario != 'smoke'
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-${{ matrix.scenario }}
+          path: smoke/replay/
+          if-no-files-found: warn
 
   summary:
     needs: smoke

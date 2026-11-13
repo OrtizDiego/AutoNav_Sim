@@ -26,6 +26,10 @@
         </div>
       </div>
       <nav class="tools">
+        <div class="segmented mode" id="modes" role="group" aria-label="Mode" hidden>
+          <button data-mode="live" class="on" title="You control the intruder; the robot's software runs in your browser">Play live</button>
+          <button data-mode="replay" title="Recordings of the full ROS 2 + Gazebo stack">Recorded runs</button>
+        </div>
         <div class="segmented" id="views" role="group" aria-label="Camera view">
           <button data-view="overview" class="on">Overview</button>
           <button data-view="top">Top</button>
@@ -104,6 +108,30 @@
           <span class="perf" id="perf"></span>
         </div>
       </div>
+    </div>
+
+    <div id="replay" class="replay" hidden>
+      <div class="replay-head">
+        <label class="select">
+          <span class="sr-only">Recorded run</span>
+          <select id="rp-select" aria-label="Recorded run"></select>
+        </label>
+        <span class="badge" id="rp-result"></span>
+      </div>
+      <p class="rp-desc" id="rp-desc"></p>
+      <div class="rp-metrics" id="rp-metrics"></div>
+      <div class="rp-bar">
+        <button id="rp-play" class="small" aria-label="Pause">Pause</button>
+        <div class="rp-track">
+          <input type="range" id="rp-time" min="0" max="1" step="0.05" value="0" aria-label="Time">
+          <div class="rp-ticks" id="rp-ticks" aria-hidden="true"></div>
+        </div>
+        <span class="rp-clock" id="rp-clock">0:00 / 0:00</span>
+        <select id="rp-speed" aria-label="Playback speed">
+          <option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option>
+        </select>
+      </div>
+      <p class="rp-note">Recorded from the full stack: Gazebo, YOLOv8n, Nav2 and the ROS 2 nodes, run headless in Docker. The person follows a script; the robot does not.</p>
     </div>
 
     <div id="stick" hidden>

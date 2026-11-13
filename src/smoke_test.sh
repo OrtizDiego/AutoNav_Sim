@@ -19,6 +19,9 @@
 #   SMOKE_SIM_TIMEOUT   evaluator timeout in sim seconds (default 300)
 #   SMOKE_WALL_TIMEOUT  wall-clock limit in seconds (default 1800); then the
 #                       launch gets Ctrl+C and the evaluator scores what it has
+#   SMOKE_REPLAY        true: also record a bag with the tracker's camera view
+#                       and export it as a web demo replay into $out/replay
+#                       (my_bot.replay_export; the bag is left in $out/bag)
 #
 # Exit status: 0 = pass, 1 = fail. Needs the workspace sourced.
 
@@ -29,9 +32,13 @@ out=${SMOKE_OUT:-$HOME/.ros/autonav_scenarios/smoke_$(date +%Y%m%d-%H%M%S)}
 mkdir -p "$out"
 
 # timeout signals its own child, so it wraps ros2 launch directly
+record=(record:=false)
+if [ "${SMOKE_REPLAY:-false}" = true ]; then
+    record=(record:=true record_images:=true)
+fi
 launch=(timeout --signal=INT --kill-after=60 "${SMOKE_WALL_TIMEOUT:-1800}"
         ros2 launch my_bot scenario.launch.py "scenario:=$scenario"
-        "out_dir:=$out" record:=false "timeout_secs:=${SMOKE_SIM_TIMEOUT:-300}")
+        "out_dir:=$out" "${record[@]}" "timeout_secs:=${SMOKE_SIM_TIMEOUT:-300}")
 # gzserver renders the camera with OpenGL even without a window: with no X
 # display (CI) it needs a virtual one.
 if [ -z "${DISPLAY:-}" ] && command -v xvfb-run > /dev/null; then
@@ -46,6 +53,11 @@ echo "launch exited with status $? (log: $out/launch.log)"
 bash "$(dirname "$0")/stop_sim.sh" > /dev/null 2>&1
 
 [ -f "$out/report.json" ] && cat "$out/report.json"
+if [ "${SMOKE_REPLAY:-false}" = true ]; then
+    # A replay is a by-product: its failure does not fail the smoke test
+    python3 -m my_bot.replay_export "$out" "$out/replay" \
+        || echo "replay export failed (see above)"
+fi
 python3 -m my_bot.scenario_metrics smoke "$out/report.json"
 status=$?
 

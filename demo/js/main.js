@@ -8,6 +8,8 @@ import { Scene3D } from './scene.js';
 import { Input } from './input.js';
 import { UI } from './ui.js';
 import { Tour, howItWorks } from './tour.js';
+import { loadIndex } from './replay.js';
+import { ReplayMode } from './replay-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const SEND_EVERY = 2; // simulation steps per message to the robot (30 Hz)
@@ -26,6 +28,7 @@ async function main() {
   }
 
   let paused = false;
+  let mode = 'live';    // or 'replay': a recorded run plays instead
   let viz = null;
   let brainReady = false;
   let pending = 0;      // messages the robot has not answered yet
@@ -79,6 +82,14 @@ async function main() {
       ui.boot(m.text);
     } else if (m.type === 'ready') {
       if (m.epoch !== epoch) return;
+      if (mode === 'replay') { // keep the recording's panels; adopt the tree's shape only
+        brainReady = true;
+        pending = 0;
+        scene.setZones(m.info);
+        ui.setInfo(m.info, { keepEvents: true });
+        ui.boot('The project\'s ROS 2 nodes are running in your browser.', 'ready');
+        return;
+      }
       brainReady = true;
       pending = 0;
       scene.setZones(m.info);
@@ -86,7 +97,7 @@ async function main() {
       ui.boot('The project\'s ROS 2 nodes are running in your browser.', 'ready');
     } else if (m.type === 'out') {
       pending = Math.max(0, pending - 1);
-      if (m.epoch !== epoch) return;
+      if (m.epoch !== epoch || mode === 'replay') return;
       brainMs += (m.ms - brainMs) * 0.05;
       const out = m.out;
       if (out.cmd) sim.setCommand(out.cmd[0], out.cmd[1]);
@@ -114,6 +125,34 @@ async function main() {
     worker.postMessage({ type: 'restart', startTime: sim.t, epoch });
   }
 
+  // -- recorded runs -----------------------------------------------------------------
+  let replay = null;
+  const replays = await loadIndex('replays/');
+  if (replays.length) {
+    replay = new ReplayMode({ scene, ui, base: 'replays/', list: replays });
+    $('modes').hidden = false;
+    for (const button of document.querySelectorAll('#modes button')) {
+      button.addEventListener('click', () => setMode(button.dataset.mode));
+    }
+  }
+  async function setMode(next) {
+    if (next === mode || !replay) return;
+    mode = next;
+    for (const b of document.querySelectorAll('#modes button')) b.classList.toggle('on', b.dataset.mode === mode);
+    if (mode === 'replay') {
+      paused = true;
+      await replay.enter();
+    } else {
+      replay.exit();
+      scene.clearRun();
+      ui.clearEvents('Nothing yet. Step into the robot\'s view.');
+      ui.clearLog();
+      paused = false;
+      $('btn-pause').textContent = 'Pause';
+      reset();
+    }
+  }
+
   // -- main loop ------------------------------------------------------------------
   let last = performance.now();
   let acc = 0;
@@ -125,6 +164,12 @@ async function main() {
     requestAnimationFrame(frame);
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
+    if (mode === 'replay') {
+      const player = replay.frame(dt);
+      if (player) scene.update(player);
+      scene.render();
+      return;
+    }
     input.apply(sim);
     let newFrame = false;
     if (!paused) {
@@ -157,7 +202,11 @@ async function main() {
   requestAnimationFrame(frame);
 
   // For the browser tests
-  window.__demo = { sim, scene, world, get viz() { return viz; }, get ready() { return brainReady; } };
+  window.__demo = {
+    sim, scene, world, setMode,
+    get viz() { return viz; }, get ready() { return brainReady; },
+    get replay() { return replay && replay.player; },
+  };
 
   if (!sessionStorage.getItem('autonav-tour-seen')) {
     try { sessionStorage.setItem('autonav-tour-seen', '1'); } catch (e) { /* private mode */ }

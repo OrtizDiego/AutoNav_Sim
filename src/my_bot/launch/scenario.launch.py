@@ -20,7 +20,8 @@
      A scenario with a second_person runs in two_person.world with a
      second scripted person_controller.
   2. ros2 bag record of the topics needed to replay and re-score the run
-     (no images), into ``out_dir``/bag.
+     (no images unless ``record_images``: the tracker's annotated camera
+     view, for the web demo's replays), into ``out_dir``/bag.
   3. scenario_evaluator: scores the run against the person's ground truth
      and writes ``out_dir``/report.json. When it exits, the whole launch
      shuts down (which also closes the bag).
@@ -55,8 +56,11 @@ RECORDED_TOPICS = [
     '/target', '/intruder/track', '/intruder/state',
     '/security_guard/state', '/security_guard/metrics', '/security_events',
     '/scenario/status', '/scenario/second_person_status', '/scenario/report',
-    '/amcl_pose',
+    '/amcl_pose', '/plan', '/sweep_viewpoints',
 ]
+# record_images:=true (make demo-bag): the tracker's annotated 320x240 view,
+# ~0.23 MB a frame; my_bot.replay_export turns it into the replay's JPEGs.
+IMAGE_TOPICS = ['/person_tracker/image']
 
 
 def _setup(context):
@@ -98,9 +102,11 @@ def _setup(context):
             on_exit=[EmitEvent(event=Shutdown(reason='scenario scored'))])),
     ]
     if LaunchConfiguration('record').perform(context).lower() == 'true':
+        topics = list(RECORDED_TOPICS)
+        if LaunchConfiguration('record_images').perform(context).lower() == 'true':
+            topics += IMAGE_TOPICS
         actions.append(ExecuteProcess(
-            cmd=['ros2', 'bag', 'record', '-o', os.path.join(out_dir, 'bag'),
-                 *RECORDED_TOPICS],
+            cmd=['ros2', 'bag', 'record', '-o', os.path.join(out_dir, 'bag'), *topics],
             output='screen'))
     return actions
 
@@ -117,6 +123,9 @@ def generate_launch_description():
                         '~/.ros/autonav_scenarios/<scenario>_<date-time>'),
         DeclareLaunchArgument(
             'record', default_value='true', description='Record a rosbag'),
+        DeclareLaunchArgument(
+            'record_images', default_value='false',
+            description="Also record the tracker's annotated camera image (web demo replays)"),
         DeclareLaunchArgument(
             'timeout_secs', default_value='',
             description="Evaluator timeout (sim s); empty = behavior_params.yaml's"),

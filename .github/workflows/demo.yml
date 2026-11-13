@@ -9,6 +9,7 @@ on:
     branches: [ main ]
     paths:
       - 'demo/**'
+      - 'src/my_bot/launch/scenario.launch.py'
       - 'src/my_bot/my_bot/**'
       - 'src/my_bot/config/**'
       - 'src/my_bot/maps/**'
@@ -17,6 +18,7 @@ on:
     branches: [ main ]
     paths:
       - 'demo/**'
+      - 'src/my_bot/launch/scenario.launch.py'
       - 'src/my_bot/my_bot/**'
       - 'src/my_bot/config/**'
       - 'src/my_bot/maps/**'
@@ -47,6 +49,8 @@ jobs:
         run: |
           pip install numpy opencv-python-headless pyyaml py_trees==2.6.0 pytest
           python -m pytest demo/test -q
+          # the replay exporter (stub ROS from the package's conftest)
+          python -m pytest src/my_bot/test/test_replay_export.py -q
 
       - uses: actions/setup-node@v4
         with:
@@ -65,7 +69,11 @@ jobs:
         run: |
           npm install --no-save playwright@1.56.1
           npx playwright install --with-deps chromium
-          node test/browser_smoke.js
+          # A copy of the site plus a synthetic recorded run, so the replay
+          # player is tested whether or not demo/replays has real ones
+          (cd test && python fake_replay.py "$RUNNER_TEMP/synthetic/synthetic" 40)
+          python build.py --out _site_test --replays replays --replays "$RUNNER_TEMP/synthetic"
+          node test/browser_smoke.js _site_test
 
       - name: Upload the site
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
