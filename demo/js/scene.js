@@ -489,6 +489,7 @@ export class Scene3D {
     this.legs[0].rotation.y = -swing; this.legs[1].rotation.y = swing;
     this.arms[0].rotation.y = swing * 0.8; this.arms[1].rotation.y = -swing * 0.8;
     this.personExtras.position.set(p.x, p.y, 0);
+    this._updateSecondPerson(sim.person2 || null);
     const goal = !sim.autopilot && sim.input.goal;
     this.goalMarker.visible = !!goal;
     if (goal) this.goalMarker.position.set(goal[0], goal[1], 0.03);
@@ -617,6 +618,36 @@ export class Scene3D {
         g.traverse((o) => { if (o.material) o.material.opacity = name === viz.zone ? 0.75 : 0.22; });
       }
     }
+  }
+
+  // The second person of a recorded two-person run (teal jacket), or none
+  _updateSecondPerson(pose) {
+    if (!pose) {
+      if (this.person2) this.person2.visible = false;
+      return;
+    }
+    if (!this.person2) {
+      this.person2 = this.person.clone();
+      this.person2.traverse((o) => {
+        if (!o.material) return;
+        o.material = o.material.clone();
+        if (o.material.color.getHex() === 0xff8a3d) o.material.color.setHex(0x3fb8a8);
+      });
+      this._person2Prev = null;
+      this._person2Phase = 0;
+      this.scene.add(this.person2);
+    }
+    const g = this.person2;
+    g.visible = true;
+    const moved = this._person2Prev ? Math.hypot(pose.x - this._person2Prev[0], pose.y - this._person2Prev[1]) : 0;
+    this._person2Prev = [pose.x, pose.y];
+    this._person2Phase += Math.min(moved, 0.2) * 3.4;
+    const swing = (moved > 0.002 ? 0.55 : 0) * Math.sin(this._person2Phase);
+    g.position.set(pose.x, pose.y, 0);
+    g.rotation.z = pose.yaw;
+    // children: torso, head, two leg pivots, two arm pivots (as built above)
+    g.children[2].rotation.y = -swing; g.children[3].rotation.y = swing;
+    g.children[4].rotation.y = swing * 0.8; g.children[5].rotation.y = -swing * 0.8;
   }
 
   clearRun() {

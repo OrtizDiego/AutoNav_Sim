@@ -151,3 +151,25 @@ def test_step_output_is_plain_json():
     for _ in range(90):
         out = sim.step()
         json.dumps(out, allow_nan=False)  # what the page parses
+
+
+def test_synthetic_replay_has_what_the_player_reads(tmp_path):
+    """fake_replay.py -> my_bot.replay_export -> the fields js/replay.js uses."""
+    import json
+    import fake_replay
+    from my_bot import replay_export as rx
+    out = tmp_path / 'synthetic'
+    replay = rx.export(str(tmp_path), str(out), image_fps=2.0,
+                       messages=fake_replay.messages(20.0))
+    data = json.loads((out / 'replay.json').read_text())
+    assert data == json.loads(json.dumps(replay))
+    frames = data['frames']
+    n = len(frames['t'])
+    assert n > 150 and all(len(frames[k]) == n for k in
+                           ('robot', 'person', 'person2', 'guard', 'intruder', 'track', 'mode'))
+    assert data['scan']['samples'] == 360 and len(data['scans']) > 60
+    assert {data['guard_states'][g] for g in frames['guard']} >= {'PatrolProtocol',
+                                                                 'IntruderProtocol'}
+    assert [e['event'] for e in data['events']][:1] == ['intruder_detected']
+    assert data['plans'] and data['images']
+    assert all((out / img['file']).exists() for img in data['images'])

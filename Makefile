@@ -49,7 +49,7 @@ ON_REQUEST = $(if $(filter command line,$(origin $(1))),$($(1)),false)
 .PHONY: help up up-gpu down shell image build clean lint test \
         sim nav-sim slam nav teleop save-map system-monitor \
         ball-sim teleop-ball person-sim yolo-sim scenario scenarios scenario-summary smoke perf stop \
-        demo
+        demo demo-bag demo-bags
 
 help:
 	@echo "AutoNav_Sim Makefile"
@@ -98,6 +98,8 @@ help:
 	@echo "                    also does this first: a closed terminal leaves them running)"
 	@echo "Web demo (host, needs node + python3):"
 	@echo "  demo            - Build demo/_site and serve it on http://localhost:8000"
+	@echo "  demo-bag        - Record scenario NAME with camera and export it to demo/replays/NAME"
+	@echo "  demo-bags       - demo-bag for walk_in, sprint, hide and crossing"
 
 # --- DOCKER MANAGEMENT ---
 
@@ -204,6 +206,24 @@ stop:
 	$(EXEC) "$(STOP_LEFTOVERS)"
 
 # --- WEB DEMO ---
+# make demo-bag NAME=sprint: run a scenario recording the tracker's camera
+# view, export it as a replay (my_bot.replay_export) and copy it to
+# demo/replays/<NAME> on the host; demo-bags does every scenario.
+DEMO_RUN = /root/.ros/autonav_demo/$(NAME)
+
+demo-bag:
+	$(EXEC) "$(STOP_LEFTOVERS) $(NEED_YOLO) $(SOURCE) && rm -rf $(DEMO_RUN) && \
+		ros2 launch $(PACKAGE_NAME) scenario.launch.py scenario:=$(NAME) \
+			gui:=$(call ON_REQUEST,GUI) rviz:=$(call ON_REQUEST,RVIZ) \
+			record:=true record_images:=true out_dir:=$(DEMO_RUN); \
+		python3 -m $(PACKAGE_NAME).replay_export $(DEMO_RUN) $(DEMO_RUN)/replay"
+	rm -rf demo/replays/$(NAME) && mkdir -p demo/replays
+	docker cp $(CONTAINER_NAME):$(DEMO_RUN)/replay demo/replays/$(NAME)
+	@echo "demo/replays/$(NAME): rebuild the demo (make demo) to see it"
+
+demo-bags:
+	@for name in $(SCENARIO_NAMES); do $(MAKE) --no-print-directory demo-bag NAME=$$name || exit 1; done
+
 # Runs on the host, not in the container: needs node/npm and python3.
 # Builds demo/_site and serves it on http://localhost:8000 (see demo/README.md).
 demo:

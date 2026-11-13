@@ -137,6 +137,9 @@ const STEPS = [
       <p>On top of that, scripted scenarios (walk in, sprint, hide, two people crossing) run in
       headless Gazebo on GitHub Actions and are scored against ground truth: time to detect,
       share of time tracked, track breaks, false alarms.</p>
+      <p><b>Recorded runs</b> (top left) plays those runs back in this same view: the real
+      camera images with YOLO's boxes, the real Nav2 plans, the real track and the score each
+      run got.</p>
       <p>Open <b>How it works</b> for the full pipeline and a table of what is real on this page,
       or read the code on <a href="${REPO}" target="_blank" rel="noopener" style="color:var(--blue)">GitHub</a>.</p>
       <p class="try">Now go and be a nuisance to the robot.</p>`,
@@ -185,6 +188,13 @@ export function howItWorks() {
       <tr><td>Navigation</td><td>Nav2: AMCL, planner, DWB controller, costmaps</td><td>A* on the map + look-ahead follower</td></tr>
       <tr><td>3D view</td><td>Gazebo client + RViz</td><td>three.js</td></tr>
     </table>
+
+    <h4>Recorded runs</h4>
+    <p>The <b>Recorded runs</b> tab is the real thing: the full stack (Gazebo, YOLOv8n, Nav2 and every
+    ROS 2 node) running a scripted intruder headless in Docker, recorded with <code>ros2 bag</code> and
+    exported by <code>my_bot.replay_export</code>. The camera panel shows the tracker's own annotated image;
+    the badge is the run's score against its targets (time to detect, share of time tracked, track breaks,
+    false alarms). Nothing in a recording is simulated by this page.</p>
 
     <h4>Technologies in the project</h4>
     <ul>
