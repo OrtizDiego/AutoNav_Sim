@@ -81,11 +81,11 @@ from typing import Optional, Tuple
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
 from my_bot.clearance_map import ClearanceMap, safe_heading
+from my_bot.node_utils import spin_node
 from my_bot.scenario_script import Leg, Scenario, load_scenarios
 
 
@@ -512,16 +512,7 @@ class PersonControllerNode(Node):
 
 def main(args=None):
     """Initialize and spin the PersonControllerNode."""
-    rclpy.init(args=args)
-    node = PersonControllerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(PersonControllerNode, args)
 
 
 if __name__ == '__main__':

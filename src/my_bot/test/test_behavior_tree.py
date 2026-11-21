@@ -26,7 +26,7 @@ import time
 import py_trees
 import pytest
 
-from my_bot.security_guard_bt import (
+from my_bot.guard_tree import (
     BB_ESTOP,
     BB_FRONT_CLEAR,
     BB_LAST_SEEN,

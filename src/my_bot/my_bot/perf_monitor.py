@@ -45,12 +45,12 @@ from typing import Optional
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import PolygonStamped, Twist, Vector3Stamped
 from nav_msgs.msg import Odometry
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
 
-from my_bot.target_estimate import stamp_to_sec
+from my_bot.conversions import stamp_to_sec
+from my_bot.node_utils import spin_node
 
 
 class TopicStats:
@@ -170,16 +170,7 @@ class PerfMonitorNode(Node):
 
 def main(args=None):
     """Initialize and spin the PerfMonitorNode."""
-    rclpy.init(args=args)
-    node = PerfMonitorNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(PerfMonitorNode, args)
 
 
 if __name__ == '__main__':

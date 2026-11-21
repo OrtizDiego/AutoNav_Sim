@@ -70,12 +70,12 @@ import cv2
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point32, PointStamped, PolygonStamped
 import numpy as np
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 
+from my_bot.node_utils import spin_node
 from my_bot.object_detector import DEFAULT_INPUT_SIZE, postprocess, preprocess
 
 Box = Tuple[int, int, int, int]
@@ -467,49 +467,68 @@ class PersonTrackerNode(Node):
             return
         h, w = frame.shape[:2]
         self._seq += 1
+        self._take_async_detection(frame)
+        detected = self._detect_if_due(frame)
+        self._filter_box(self._measure(frame, detected, w, h), w, h)
+        self._publish(msg, frame)
+        self._log_stats()
 
-        # A finished background detection re-seeds the tracker first, so
-        # this frame is tracked from the corrected box.
-        if self._worker is not None:
-            self._history.append((self._seq, frame))
-            result = self._worker.take()
-            if result is not None:
-                self._apply_async_detection(*result)
+    def _take_async_detection(self, frame) -> None:
+        """Remember the frame; fold in a background detection that finished.
 
+        It re-seeds the tracker first, so this frame is tracked from the
+        corrected box.
+        """
+        if self._worker is None:
+            return
+        self._history.append((self._seq, frame))
+        result = self._worker.take()
+        if result is not None:
+            self._apply_async_detection(*result)
+
+    def _detect_if_due(self, frame) -> Optional[Box]:
+        """Run YOLO when it is time to; its box if it ran inline and found one.
+
+        With the worker thread the frame is only handed over (the result
+        comes back through _take_async_detection on a later frame).
+        """
         self._frames_since_detect += 1
         now = self.get_clock().now().nanoseconds * 1e-9
-        detected: Optional[Box] = None
-        if ((self._tracker is None
-                or self._frames_since_detect >= self._redetect_every
-                or now - self._last_yolo >= self._redetect_period)
-                and (self._worker is None or not self._worker.busy)):
-            self._frames_since_detect = 0
-            self._last_yolo = now
-            if self._worker is not None:
-                self._worker.submit(self._seq, frame)
-            else:
-                start = time.monotonic()
-                detected = self._run_yolo(frame)
-                self._yolo_timer.add(time.monotonic() - start)
-                self._count_detection(detected)
+        due = (self._tracker is None
+               or self._frames_since_detect >= self._redetect_every
+               or now - self._last_yolo >= self._redetect_period)
+        if not due or (self._worker is not None and self._worker.busy):
+            return None
+        self._frames_since_detect = 0
+        self._last_yolo = now
+        if self._worker is not None:
+            self._worker.submit(self._seq, frame)
+            return None
+        start = time.monotonic()
+        detected = self._run_yolo(frame)
+        self._yolo_timer.add(time.monotonic() - start)
+        self._count_detection(detected)
+        return detected
 
-        measured: Optional[Box] = None
+    def _measure(self, frame, detected: Optional[Box], w: int, h: int) -> Optional[Box]:
+        """This frame's box: YOLO's if there is one, else the tracker's."""
         if detected is not None:
-            measured = detected
             self._seed_tracker(frame, detected)
-        elif self._tracker is not None:
-            start = time.monotonic()
-            ok, bb = self._tracker.update(frame)
-            self._track_timer.add(time.monotonic() - start)
-            if ok:
-                measured = clip_box(tuple(int(v) for v in bb), w, h)
-            if measured is not None and leaving_frame(measured, w, self._edge_aspect):
-                # The person has left the frame; only YOLO may bring them back.
-                self._reset()
-                self._publish(msg, frame)
-                self._log_stats()
-                return
+            return detected
+        if self._tracker is None:
+            return None
+        start = time.monotonic()
+        ok, bb = self._tracker.update(frame)
+        self._track_timer.add(time.monotonic() - start)
+        measured = clip_box(tuple(int(v) for v in bb), w, h) if ok else None
+        if measured is not None and leaving_frame(measured, w, self._edge_aspect):
+            # The person has left the frame; only YOLO may bring them back.
+            self._reset()
+            return None
+        return measured
 
+    def _filter_box(self, measured: Optional[Box], w: int, h: int) -> None:
+        """Smooth the measured box; without one, coast on the motion model."""
         if measured is not None:
             if self._kf is None:
                 self._kf = BoxKalman(measured)
@@ -525,9 +544,6 @@ class PersonTrackerNode(Node):
                 self._reset()
             else:
                 self._box = clip_box(self._kf.predict(), w, h)
-
-        self._publish(msg, frame)
-        self._log_stats()
 
     def _count_detection(self, detected: Optional[Box]) -> None:
         """Track YOLO's misses; enough in a row drop the track."""
@@ -647,16 +663,7 @@ class PersonTrackerNode(Node):
 
 def main(args=None):
     """Initialize and spin the PersonTrackerNode."""
-    rclpy.init(args=args)
-    node = PersonTrackerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(PersonTrackerNode, args)
 
 
 if __name__ == '__main__':

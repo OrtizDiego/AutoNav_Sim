@@ -61,7 +61,8 @@ def test_bundle_has_every_module_the_nodes_import():
         with open(os.path.join(PKG, 'my_bot', name + '.py')) as f:
             tree = ast.parse(f.read())
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('my_bot.'):
+            if (isinstance(node, ast.ImportFrom) and node.module
+                    and node.module.startswith('my_bot.')):
                 assert node.module.split('.')[1] in build.MODULES, (name, node.module)
     for name in build.CONFIG:
         assert os.path.exists(os.path.join(PKG, 'config', name))

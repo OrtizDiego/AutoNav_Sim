@@ -41,27 +41,9 @@ from collections import deque
 import math
 from typing import Optional, Tuple
 
+from my_bot.conversions import wrap_angle
+
 Pose = Tuple[float, float, float]  # x, y, yaw in the odom frame
-
-
-def wrap_angle(a: float) -> float:
-    """Wrap an angle to (-pi, pi]."""
-    return math.atan2(math.sin(a), math.cos(a))
-
-
-def stamp_to_sec(stamp) -> Optional[float]:
-    """Seconds of a builtin_interfaces/Time, or None if it carries no time."""
-    sec = getattr(stamp, 'sec', None)
-    if sec is None:
-        return None
-    t = sec + getattr(stamp, 'nanosec', 0) * 1e-9
-    return t if t > 0.0 else None
-
-
-def yaw_from_quaternion(q) -> float:
-    """Yaw (rad) of a geometry_msgs/Quaternion."""
-    return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                      1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
 class PoseHistory:

@@ -50,30 +50,38 @@ def point_in_polygon(x: float, y: float, polygon: Sequence[Point]) -> bool:
     return inside
 
 
+def _points(raw) -> List[Point]:
+    return [(float(x), float(y)) for x, y in raw]
+
+
+def _validate(zones, schedule, restricted) -> None:
+    """Raise ValueError for zones, a schedule or areas that cannot be used."""
+    if not zones:
+        raise ValueError('at least one patrol zone is needed')
+    for name, waypoints in zones.items():
+        if not waypoints:
+            raise ValueError(f'patrol zone {name} has no waypoints')
+    for name, secs in schedule:
+        if name not in zones:
+            raise ValueError(f'schedule names unknown zone {name}')
+        if secs <= 0.0:
+            raise ValueError(f'schedule slot for {name} must be > 0 s')
+    for name, polygon in restricted.items():
+        if len(polygon) < 3:
+            raise ValueError(f'restricted area {name} needs >= 3 points')
+
+
 class GuardZones:
     """Patrol route by schedule + restricted-area lookups."""
 
     def __init__(self, zones: Dict[str, List[Point]],
                  schedule: Sequence[Tuple[str, float]] = (),
                  restricted: Optional[Dict[str, List[Point]]] = None):
-        if not zones:
-            raise ValueError('at least one patrol zone is needed')
-        for name, waypoints in zones.items():
-            if not waypoints:
-                raise ValueError(f'patrol zone {name} has no waypoints')
-        for name, secs in schedule:
-            if name not in zones:
-                raise ValueError(f'schedule names unknown zone {name}')
-            if secs <= 0.0:
-                raise ValueError(f'schedule slot for {name} must be > 0 s')
-        for name, polygon in (restricted or {}).items():
-            if len(polygon) < 3:
-                raise ValueError(f'restricted area {name} needs >= 3 points')
-        self.zones = {name: [(float(x), float(y)) for x, y in wps]
-                      for name, wps in zones.items()}
+        restricted = restricted or {}
+        _validate(zones, schedule, restricted)
+        self.zones = {name: _points(wps) for name, wps in zones.items()}
         self.schedule = [(name, float(secs)) for name, secs in schedule]
-        self.restricted = {name: [(float(x), float(y)) for x, y in poly]
-                           for name, poly in (restricted or {}).items()}
+        self.restricted = {name: _points(poly) for name, poly in restricted.items()}
         self._period = sum(secs for _, secs in self.schedule)
 
     @classmethod

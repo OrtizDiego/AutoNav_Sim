@@ -23,7 +23,7 @@ import pytest
 from sensor_msgs.msg import LaserScan
 
 from my_bot import target_tracker as tt
-from my_bot.target_estimate import stamp_to_sec
+from my_bot.conversions import stamp_to_sec
 
 
 def _stamp(t):

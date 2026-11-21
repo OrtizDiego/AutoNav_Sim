@@ -66,13 +66,13 @@ import cv2
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, PolygonStamped, Vector3Stamped
 import numpy as np
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Float32, Header
 
-from my_bot.target_estimate import stamp_to_sec
+from my_bot.conversions import stamp_to_sec
+from my_bot.node_utils import spin_node
 
 Box = Tuple[float, float, float, float]
 
@@ -399,16 +399,7 @@ class SensorFusionNode(Node):
 
 def main(args=None):
     """Initialize and spin the SensorFusionNode."""
-    rclpy.init(args=args)
-    node = SensorFusionNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(SensorFusionNode, args)
 
 
 if __name__ == '__main__':

@@ -52,6 +52,8 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
+from my_bot.conversions import yaw_from_quaternion
+
 GUARD_STATES = ['', 'PatrolProtocol', 'IntruderProtocol', 'SearchProtocol',
                 'SweepProtocol', 'ReportProtocol', 'EmergencyStop', 'Idle']
 INTRUDER_STATES = ['none', 'tentative', 'confirmed', 'lost']
@@ -65,13 +67,10 @@ TOPICS = [
 ]
 
 
-def _yaw(q) -> float:
-    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-
-
 def _pose(msg) -> List[float]:
     p = msg.pose.pose.position
-    return [round(p.x, 3), round(p.y, 3), round(_yaw(msg.pose.pose.orientation), 3)]
+    return [round(p.x, 3), round(p.y, 3),
+            round(yaw_from_quaternion(msg.pose.pose.orientation), 3)]
 
 
 def ellipse(cov_xx: float, cov_xy: float, cov_yy: float):
@@ -221,7 +220,8 @@ class ReplayBuilder:
                 points = []
             elif getattr(m, 'ns', '') == 'sweep':
                 p = m.pose.position
-                points.append([round(p.x, 2), round(p.y, 2), round(_yaw(m.pose.orientation), 2)])
+                points.append([round(p.x, 2), round(p.y, 2),
+                               round(yaw_from_quaternion(m.pose.orientation), 2)])
         if points != self._sweep:
             self._sweep = points
             self.sweeps.append({'t': self._t(), 'points': points})

@@ -106,39 +106,40 @@ def _paths(value, where):
     raise ValueError(f'{where}: expected a path or a list of paths')
 
 
+def _parse_world(name: str, body) -> World:
+    """Validate one entry of the worlds file."""
+    if not isinstance(body, dict):
+        raise ValueError(f'{name}: a world must be a mapping')
+    unknown = set(body) - WORLD_KEYS
+    if unknown:
+        raise ValueError(f'{name}: unknown keys {sorted(unknown)}')
+    for key in ('world', 'map'):
+        if not body.get(key):
+            raise ValueError(f'{name}: needs {key}')
+    root = str(body.get('root', ''))
+    if root and not os.path.isabs(root):
+        raise ValueError(f'{name}: root must be absolute')
+    model_path = _paths(body.get('model_path'), f'{name} model_path')
+    resource_path = _paths(body.get('resource_path'), f'{name} resource_path')
+    if (model_path or resource_path) and not root:
+        raise ValueError(f'{name}: model_path and resource_path need a root')
+    spawn = body.get('spawn', [0.0, 0.0, 0.0])
+    if not isinstance(spawn, list) or len(spawn) != 3:
+        raise ValueError(f'{name}: spawn must be [x, y, yaw]')
+    return World(
+        name=name, world=str(body['world']), map=str(body['map']),
+        description=str(body.get('description', '')).strip(), root=root,
+        model_path=model_path, resource_path=resource_path,
+        spawn=tuple(float(v) for v in spawn),
+        person_world=str(body.get('person_world', '')),
+        zones=str(body.get('zones', '')))
+
+
 def parse_worlds(data: dict) -> Dict[str, World]:
     """Turn the loaded YAML mapping into {name: World}."""
     if not isinstance(data, dict) or not data:
         raise ValueError('worlds file must map names to worlds')
-    worlds = {}
-    for name, body in data.items():
-        if not isinstance(body, dict):
-            raise ValueError(f'{name}: a world must be a mapping')
-        unknown = set(body) - WORLD_KEYS
-        if unknown:
-            raise ValueError(f'{name}: unknown keys {sorted(unknown)}')
-        for key in ('world', 'map'):
-            if not body.get(key):
-                raise ValueError(f'{name}: needs {key}')
-        root = str(body.get('root', ''))
-        if root and not os.path.isabs(root):
-            raise ValueError(f'{name}: root must be absolute')
-        extra = _paths(body.get('model_path'), f'{name} model_path') + _paths(
-            body.get('resource_path'), f'{name} resource_path')
-        if extra and not root:
-            raise ValueError(f'{name}: model_path and resource_path need a root')
-        spawn = body.get('spawn', [0.0, 0.0, 0.0])
-        if not isinstance(spawn, list) or len(spawn) != 3:
-            raise ValueError(f'{name}: spawn must be [x, y, yaw]')
-        worlds[name] = World(
-            name=name, world=str(body['world']), map=str(body['map']),
-            description=str(body.get('description', '')).strip(), root=root,
-            model_path=_paths(body.get('model_path'), name),
-            resource_path=_paths(body.get('resource_path'), name),
-            spawn=tuple(float(v) for v in spawn),
-            person_world=str(body.get('person_world', '')),
-            zones=str(body.get('zones', '')))
-    return worlds
+    return {name: _parse_world(name, body) for name, body in data.items()}
 
 
 def load_worlds(path: str) -> Dict[str, World]:

@@ -18,12 +18,13 @@
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Twist
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
+
+from my_bot.node_utils import spin_node
 
 
 class SystemMonitorNode(Node):
@@ -146,16 +147,7 @@ class SystemMonitorNode(Node):
 
 def main(args=None):
     """Initialize and spin the SystemMonitorNode."""
-    rclpy.init(args=args)
-    node = SystemMonitorNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(SystemMonitorNode, args)
 
 
 if __name__ == '__main__':

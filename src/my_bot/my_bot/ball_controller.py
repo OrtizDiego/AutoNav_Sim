@@ -51,8 +51,10 @@ from typing import List, Optional, Tuple
 
 from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
-import rclpy
 from rclpy.node import Node
+
+from my_bot.conversions import yaw_from_quaternion
+from my_bot.node_utils import spin_node
 
 Point = Tuple[float, float]
 
@@ -257,8 +259,7 @@ class BallControllerNode(Node):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         first = self._ball is None
         self._ball = (p.x, p.y)
-        self._ball_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                                    1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._ball_yaw = yaw_from_quaternion(q)
         if first:
             self._pilot.snap_to(self._ball)
 
@@ -311,16 +312,7 @@ class BallControllerNode(Node):
 
 def main(args=None):
     """Initialize and spin the BallControllerNode."""
-    rclpy.init(args=args)
-    node = BallControllerNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass  # Ctrl+C: rclpy has already shut the context down
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    spin_node(BallControllerNode, args)
 
 
 if __name__ == '__main__':

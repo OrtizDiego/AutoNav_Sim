@@ -436,8 +436,8 @@ _module('geometry_msgs.msg', Twist=Twist, PoseStamped=PoseStamped,
 _module('sensor_msgs')
 _module('sensor_msgs.msg', Image=Image, LaserScan=LaserScan)
 _module('std_msgs')
-_module('std_msgs.msg', Header=Header, Bool=_Data, Float32=_Data, String=_Data,
-        Float32MultiArray=Float32MultiArray)
+_module('std_msgs.msg', Header=Header, Float32MultiArray=Float32MultiArray,
+        **{name: type(name, (_Data,), {}) for name in ('Bool', 'Float32', 'String')})
 _module('std_srvs')
 _module('std_srvs.srv', **_plain('Trigger'))
 _module('nav_msgs')
